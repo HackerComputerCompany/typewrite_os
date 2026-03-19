@@ -12,7 +12,10 @@
 #include <sys/mman.h>
 #include <sys/ioctl.h>
 #include <errno.h>
+#include <signal.h>
 #include <linux/fb.h>
+#include <linux/kd.h>
+#include <linux/vt.h>
 #include <ft2build.h>
 #include FT_FREETYPE_H
 
@@ -68,6 +71,8 @@ typedef struct {
 static Display display;
 static FontState font;
 static Document doc;
+static int tty_fd = -1;
+static int original_kb_mode = KD_TEXT;
 
 static Color COLOR_BLACK = {0, 0, 0, 255};
 static Color COLOR_WHITE = {255, 255, 255, 255};
@@ -83,6 +88,46 @@ static void init_ink_colors(void) {
     ink_colors[0] = COLOR_BLACK;
     ink_colors[1] = COLOR_RED;
     ink_colors[2] = COLOR_BLUE;
+}
+
+static void restore_console(void) {
+    if (tty_fd >= 0) {
+        ioctl(tty_fd, KDSETMODE, original_kb_mode);
+        close(tty_fd);
+        tty_fd = -1;
+    }
+}
+
+static void signal_handler(int sig) {
+    (void)sig;
+    restore_console();
+    _exit(1);
+}
+
+static int set_graphics_mode(void) {
+    tty_fd = open("/dev/tty0", O_RDWR);
+    if (tty_fd < 0) {
+        tty_fd = open("/dev/console", O_RDWR);
+    }
+    if (tty_fd < 0) {
+        return -1;
+    }
+    
+    if (ioctl(tty_fd, KDGETMODE, &original_kb_mode) < 0) {
+        original_kb_mode = KD_TEXT;
+    }
+    
+    if (ioctl(tty_fd, KDSETMODE, KD_GRAPHICS) < 0) {
+        close(tty_fd);
+        tty_fd = -1;
+        return -1;
+    }
+    
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+    signal(SIGSEGV, signal_handler);
+    
+    return 0;
 }
 
 static Color invert_color(Color c) {
@@ -348,6 +393,9 @@ static int init_framebuffer(void) {
     display.margin_x = 80;
     display.margin_y = 50;
     
+    memset(display.fb_map, 0, display.fb_size);
+    memset(display.backbuffer, 0, display.fb_size);
+    
     printf("Framebuffer: %dx%d stride=%d\n", display.width, display.height, display.stride);
     return 0;
 }
@@ -604,6 +652,10 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     
+    if (set_graphics_mode() != 0) {
+        fprintf(stderr, "Warning: Could not set graphics mode\n");
+    }
+    
     int font_loaded = 0;
     for (size_t i = 0; i < sizeof(font_paths) / sizeof(font_paths[0]); i++) {
         if (init_font(font_paths[i]) == 0) {
@@ -706,6 +758,7 @@ int main(int argc, char *argv[]) {
     if (doc.dirty) save_document();
     
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &old_tty);
+    restore_console();
     close_font();
     close_framebuffer();
     
