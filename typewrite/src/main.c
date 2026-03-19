@@ -32,6 +32,7 @@ typedef struct {
     char text[MAX_LINE_LEN];
     int char_count;
     bool strikethrough[MAX_LINE_LEN];
+    uint8_t ink_idx[MAX_LINE_LEN];
 } Line;
 
 typedef struct {
@@ -40,9 +41,8 @@ typedef struct {
     int cursor_line;
     int cursor_col;
     int top_line;
-    Color ink_color;
     int ink_idx;
-    int scale;
+    int zoom;
     bool inverted;
     bool dirty;
 } Document;
@@ -74,21 +74,24 @@ static Document doc;
 static int tty_fd = -1;
 static int original_kb_mode = KD_TEXT;
 static FILE *debug_log = NULL;
+static int show_help = 0;
 
 static Color COLOR_BLACK = {0, 0, 0, 255};
 static Color COLOR_WHITE = {255, 255, 255, 255};
 static Color COLOR_RED = {180, 30, 30, 255};
+static Color COLOR_GREEN = {30, 140, 30, 255};
 static Color COLOR_BLUE = {30, 60, 180, 255};
 static Color COLOR_GRAY = {200, 200, 200, 255};
 static Color COLOR_PAGE = {250, 250, 250, 255};
 static Color COLOR_BG = {220, 220, 220, 255};
-static Color ink_colors[3];
-static const char *ink_names[] = {"Black", "Red", "Blue"};
+static Color ink_colors[4];
+static const char *ink_names[] = {"Black", "Green", "Red", "Blue"};
 
 static void init_ink_colors(void) {
     ink_colors[0] = COLOR_BLACK;
-    ink_colors[1] = COLOR_RED;
-    ink_colors[2] = COLOR_BLUE;
+    ink_colors[1] = COLOR_GREEN;
+    ink_colors[2] = COLOR_RED;
+    ink_colors[3] = COLOR_BLUE;
 }
 
 static void restore_console(void) {
@@ -140,11 +143,11 @@ static Color get_color(Color normal) {
 }
 
 static int get_char_width(void) {
-    return (font.max_advance * doc.scale) / 64;
+    return (font.max_advance * doc.zoom) / 64;
 }
 
 static int get_char_height(void) {
-    return (font.height * doc.scale) / 64;
+    return (font.height * doc.zoom) / 64;
 }
 
 static int get_page_content_width(void) {
@@ -239,19 +242,19 @@ static void blit_text(int x, int y, const char *text, Color c) {
     FT_GlyphSlot slot = font.slot;
     const char *p = text;
     int pen_x = x;
-    int baseline_y = y + (font.height * doc.scale) / 64;
+    int baseline_y = y + (font.height * doc.zoom) / 64;
     
     while (*p) {
         FT_Load_Glyph(font.face, FT_Get_Char_Index(font.face, (unsigned char)*p), FT_LOAD_RENDER);
         
-        int sx = pen_x + slot->bitmap_left * doc.scale;
-        int sy = baseline_y - slot->bitmap_top * doc.scale;
+        int sx = pen_x + slot->bitmap_left * doc.zoom;
+        int sy = baseline_y - slot->bitmap_top * doc.zoom;
         
         if (slot->bitmap.pixel_mode == FT_PIXEL_MODE_GRAY) {
             blit_glyph(sx, sy, &slot->bitmap, c);
         }
         
-        pen_x += (slot->advance.x >> 6) * doc.scale;
+        pen_x += (slot->advance.x >> 6) * doc.zoom;
         p++;
     }
 }
@@ -286,7 +289,8 @@ static void draw_char(int line_idx, int char_idx) {
     if (py + ch < get_page_start_y() || py >= display.height - STATUS_BAR_HEIGHT) return;
     
     char buf[2] = {doc.lines[line_idx].text[char_idx], 0};
-    Color c = get_color(doc.ink_color);
+    uint8_t idx = doc.lines[line_idx].ink_idx[char_idx];
+    Color c = get_color(ink_colors[idx]);
     
     blit_text(px, py, buf, c);
     
@@ -305,6 +309,8 @@ static void draw_cursor(void) {
     blit_rect(x, y + ch - 3, cw, 3, c);
 }
 
+static void draw_help_overlay(void);
+
 static void draw_status_bar(void) {
     int y = display.height - STATUS_BAR_HEIGHT;
     
@@ -322,8 +328,8 @@ static void draw_status_bar(void) {
     
     char buf[256];
     const char *mode = doc.inverted ? "Dark" : "Light";
-    snprintf(buf, sizeof(buf), "Scale:%dx | %s | Ink:%s | Ln:%d/%d | F1:ink F2:smaller F3:larger F4:dark | Ctrl+S:save Ctrl+Q:quit",
-             doc.scale, mode, ink_names[doc.ink_idx], total_lines_used, get_lines_per_page());
+    snprintf(buf, sizeof(buf), "Zoom:%dx | %s | Ink:%s | Ln:%d/%d | F1:help F2:zoom- F3:zoom+ F4:dark | Ctrl+S:save Ctrl+Q:quit",
+             doc.zoom, mode, ink_names[doc.ink_idx], total_lines_used, get_lines_per_page());
     
     blit_text(10, y + 8, buf, get_color(COLOR_BLACK));
 }
@@ -342,6 +348,10 @@ static void render_to_backbuffer(void) {
     
     draw_cursor();
     draw_status_bar();
+    
+    if (show_help) {
+        draw_help_overlay();
+    }
 }
 
 static void flip_buffers(void) {
@@ -419,7 +429,7 @@ static int init_font(const char *path) {
         return -1;
     }
     
-    font.size = DEFAULT_FONT_SIZE * doc.scale;
+    font.size = DEFAULT_FONT_SIZE * doc.zoom;
     if (FT_Set_Char_Size(font.face, 0, font.size * 64, 72, 72)) {
         FT_Done_Face(font.face);
         FT_Done_FreeType(font.ft);
@@ -440,11 +450,11 @@ static int init_font(const char *path) {
 }
 
 static void update_font_size(void) {
-    font.size = DEFAULT_FONT_SIZE * doc.scale;
+    font.size = DEFAULT_FONT_SIZE * doc.zoom;
     FT_Set_Char_Size(font.face, 0, font.size * 64, 72, 72);
     font.height = font.face->height;
     font.max_advance = font.face->max_advance_width;
-    printf("Scale %d: %dx%d chars, %dx%d lines\n", doc.scale, get_chars_per_line(), get_char_width(), get_lines_per_page(), get_char_height());
+    printf("Scale %d: %dx%d chars, %dx%d lines\n", doc.zoom, get_chars_per_line(), get_char_width(), get_lines_per_page(), get_char_height());
 }
 
 static void close_font(void) {
@@ -455,17 +465,38 @@ static void close_font(void) {
 static void init_document(void) {
     memset(&doc, 0, sizeof(doc));
     doc.total_lines = 1;
-    doc.ink_color = ink_colors[0];
     doc.ink_idx = 0;
-    doc.scale = 2;
+    doc.zoom = 2;
     doc.dirty = false;
 }
 
 static void cycle_ink_color(void) {
-    doc.ink_idx = (doc.ink_idx + 1) % 3;
-    doc.ink_color = ink_colors[doc.ink_idx];
+    doc.ink_idx = (doc.ink_idx + 1) % 4;
     doc.dirty = true;
     printf("Ink: %s\n", ink_names[doc.ink_idx]);
+}
+
+static void draw_help_overlay(void) {
+    int x = display.margin_x;
+    int y = display.margin_y;
+    int w = display.width - display.margin_x * 2;
+    int h = 200;
+    
+    blit_rect(x, y, w, h, get_color(COLOR_WHITE));
+    blit_rect(x + 2, y + 2, w - 4, h - 4, get_color(COLOR_BLACK));
+    blit_rect(x + 4, y + 4, w - 8, h - 8, get_color(COLOR_PAGE));
+    
+    int ty = y + 15;
+    int tx = x + 20;
+    blit_text(tx, ty, "Typewrite Help", get_color(COLOR_BLACK)); ty += 25;
+    blit_text(tx, ty, "F1: Show/hide this help", get_color(COLOR_BLACK)); ty += 20;
+    blit_text(tx, ty, "F2: Zoom out (smaller text)", get_color(COLOR_BLACK)); ty += 20;
+    blit_text(tx, ty, "F3: Zoom in (larger text)", get_color(COLOR_BLACK)); ty += 20;
+    blit_text(tx, ty, "F4: Toggle dark mode", get_color(COLOR_BLACK)); ty += 20;
+    blit_text(tx, ty, "F5: Next ink color (Black/Green/Red/Blue)", get_color(COLOR_BLACK)); ty += 20;
+    blit_text(tx, ty, "Arrow keys: Move cursor", get_color(COLOR_BLACK)); ty += 20;
+    blit_text(tx, ty, "Backspace: Delete or strikethrough", get_color(COLOR_BLACK)); ty += 20;
+    blit_text(tx, ty, "Ctrl+S: Save document | Ctrl+Q: Quit", get_color(COLOR_BLACK)); ty += 20;
 }
 
 static void insert_char(char c) {
@@ -476,9 +507,11 @@ static void insert_char(char c) {
     for (int i = line->char_count; i > doc.cursor_col; i--) {
         line->text[i] = line->text[i - 1];
         line->strikethrough[i] = line->strikethrough[i - 1];
+        line->ink_idx[i] = line->ink_idx[i - 1];
     }
     line->text[doc.cursor_col] = c;
     line->strikethrough[doc.cursor_col] = false;
+    line->ink_idx[doc.cursor_col] = doc.ink_idx;
     line->char_count++;
     doc.cursor_col++;
     doc.dirty = true;
@@ -493,6 +526,7 @@ static void handle_backspace(void) {
             for (int i = pos; i < line->char_count - 1; i++) {
                 line->text[i] = line->text[i + 1];
                 line->strikethrough[i] = line->strikethrough[i + 1];
+                line->ink_idx[i] = line->ink_idx[i + 1];
             }
             line->char_count--;
         } else {
@@ -516,6 +550,7 @@ static void handle_enter(void) {
     for (int i = doc.cursor_col; i < current->char_count; i++) {
         next->text[i - doc.cursor_col] = current->text[i];
         next->strikethrough[i - doc.cursor_col] = current->strikethrough[i];
+        next->ink_idx[i - doc.cursor_col] = current->ink_idx[i];
     }
     next->char_count = current->char_count - doc.cursor_col;
     current->char_count = doc.cursor_col;
@@ -696,7 +731,7 @@ int main(int argc, char *argv[]) {
     tcsetattr(STDIN_FILENO, TCSANOW, &new_tty);
     
     render();
-    printf("Ready! F1:ink F2:smaller F3:larger F4:dark | Ctrl+S:save Ctrl+Q:quit\n");
+    printf("Ready! F1:help F2:zoom- F3:zoom+ F4:dark F5:ink | Ctrl+S:save Ctrl+Q:quit\n");
     
     unsigned char buf[64];
     int running = 1;
@@ -730,9 +765,9 @@ int main(int argc, char *argv[]) {
                                 unsigned char fcode = buf[i];
                                 i++;
                                 switch (fcode) {
-                                    case 'A': cycle_ink_color(); break;
-                                    case 'B': if (doc.scale < 5) { doc.scale++; update_font_size(); } break;
-                                    case 'C': if (doc.scale > 1) { doc.scale--; update_font_size(); } break;
+                                    case 'A': show_help = !show_help; break;
+                                    case 'B': if (doc.zoom > 1) { doc.zoom--; update_font_size(); } break;
+                                    case 'C': if (doc.zoom < 5) { doc.zoom++; update_font_size(); } break;
                                     case 'D': doc.inverted = !doc.inverted; break;
                                 }
                             }
@@ -743,16 +778,19 @@ int main(int argc, char *argv[]) {
                                 case 'C': move_cursor(1, 0); break;
                                 case 'D': move_cursor(-1, 0); break;
                                 case '1':
-                                    if (i < n && buf[i] == '~') { i++; cycle_ink_color(); }
+                                    if (i < n && buf[i] == '~') { i++; show_help = !show_help; }
                                     break;
                                 case '2':
-                                    if (i < n && buf[i] == '~') { i++; if (doc.scale < 5) { doc.scale++; update_font_size(); } }
+                                    if (i < n && buf[i] == '~') { i++; if (doc.zoom > 1) { doc.zoom--; update_font_size(); } }
                                     break;
                                 case '3':
-                                    if (i < n && buf[i] == '~') { i++; if (doc.scale > 1) { doc.scale--; update_font_size(); } }
+                                    if (i < n && buf[i] == '~') { i++; if (doc.zoom < 5) { doc.zoom++; update_font_size(); } }
                                     break;
                                 case '4':
                                     if (i < n && buf[i] == '~') { i++; doc.inverted = !doc.inverted; }
+                                    break;
+                                case '5':
+                                    if (i < n && buf[i] == '~') { i++; cycle_ink_color(); }
                                     break;
                             }
                         }
@@ -763,9 +801,9 @@ int main(int argc, char *argv[]) {
                         unsigned char code = buf[i];
                         i++;
                         switch (code) {
-                            case 'P': cycle_ink_color(); break;
-                            case 'Q': if (doc.scale < 5) { doc.scale++; update_font_size(); } break;
-                            case 'R': if (doc.scale > 1) { doc.scale--; update_font_size(); } break;
+                            case 'P': show_help = !show_help; break;
+                            case 'Q': if (doc.zoom > 1) { doc.zoom--; update_font_size(); } break;
+                            case 'R': if (doc.zoom < 5) { doc.zoom++; update_font_size(); } break;
                             case 'S': doc.inverted = !doc.inverted; break;
                         }
                     }
