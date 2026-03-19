@@ -605,8 +605,10 @@ static void draw_help_overlay(void) {
     blit_text(tx, ty, "F4: Toggle dark mode", get_color(COLOR_BLACK)); ty += 20;
     blit_text(tx, ty, "F5: Next ink color", get_color(COLOR_BLACK)); ty += 20;
     blit_text(tx, ty, "F6: Change resolution", get_color(COLOR_BLACK)); ty += 20;
+    blit_text(tx, ty, "F7: New document", get_color(COLOR_BLACK)); ty += 20;
     blit_text(tx, ty, "Arrow keys: Move cursor", get_color(COLOR_BLACK)); ty += 20;
-    blit_text(tx, ty, "Backspace: Delete/strikethrough", get_color(COLOR_BLACK)); ty += 20;
+    blit_text(tx, ty, "Enter: Carriage return", get_color(COLOR_BLACK)); ty += 20;
+    blit_text(tx, ty, "Backspace: Strikethrough", get_color(COLOR_BLACK)); ty += 20;
     blit_text(tx, ty, "Ctrl+S: Save | Ctrl+Q: Quit", get_color(COLOR_BLACK)); ty += 20;
 }
 
@@ -630,17 +632,17 @@ static void draw_toast(void) {
 static void insert_char(char c) {
     if (doc.cursor_line >= MAX_LINES) return;
     Line *line = &doc.lines[doc.cursor_line];
-    if (line->char_count >= MAX_LINE_LEN - 1) return;
     
-    for (int i = line->char_count; i > doc.cursor_col; i--) {
-        line->text[i] = line->text[i - 1];
-        line->strikethrough[i] = line->strikethrough[i - 1];
-        line->ink_idx[i] = line->ink_idx[i - 1];
-    }
+    if (doc.cursor_col >= MAX_LINE_LEN - 1) return;
+    
     line->text[doc.cursor_col] = c;
     line->strikethrough[doc.cursor_col] = false;
     line->ink_idx[doc.cursor_col] = doc.ink_idx;
-    line->char_count++;
+    
+    if (doc.cursor_col >= line->char_count) {
+        line->char_count = doc.cursor_col + 1;
+    }
+    
     doc.cursor_col++;
     doc.dirty = true;
 }
@@ -650,45 +652,25 @@ static void handle_backspace(void) {
     
     if (doc.cursor_col > 0) {
         int pos = doc.cursor_col - 1;
-        if (line->strikethrough[pos]) {
-            for (int i = pos; i < line->char_count - 1; i++) {
-                line->text[i] = line->text[i + 1];
-                line->strikethrough[i] = line->strikethrough[i + 1];
-                line->ink_idx[i] = line->ink_idx[i + 1];
-            }
-            line->char_count--;
-        } else {
-            line->strikethrough[pos] = true;
-            doc.cursor_col = pos + 1;
-        }
+        line->strikethrough[pos] = true;
         doc.dirty = true;
     } else if (doc.cursor_line > 0) {
         doc.cursor_line--;
-        doc.cursor_col = doc.lines[doc.cursor_line].char_count;
-        handle_backspace();
+        Line *prev = &doc.lines[doc.cursor_line];
+        doc.cursor_col = prev->char_count > 0 ? prev->char_count : 0;
     }
 }
 
 static void handle_enter(void) {
     if (doc.cursor_line >= MAX_LINES - 1) return;
     
-    Line *current = &doc.lines[doc.cursor_line];
-    Line *next = &doc.lines[doc.cursor_line + 1];
-    
-    for (int i = doc.cursor_col; i < current->char_count; i++) {
-        next->text[i - doc.cursor_col] = current->text[i];
-        next->strikethrough[i - doc.cursor_col] = current->strikethrough[i];
-        next->ink_idx[i - doc.cursor_col] = current->ink_idx[i];
-    }
-    next->char_count = current->char_count - doc.cursor_col;
-    current->char_count = doc.cursor_col;
-    
-    memset(&current->text[current->char_count], 0, MAX_LINE_LEN - current->char_count);
-    memset(&current->strikethrough[current->char_count], 0, MAX_LINE_LEN - current->char_count);
-    
     doc.cursor_line++;
     doc.cursor_col = 0;
-    if (doc.cursor_line >= doc.total_lines) doc.total_lines = doc.cursor_line + 1;
+    
+    if (doc.cursor_line >= doc.total_lines) {
+        doc.total_lines = doc.cursor_line + 1;
+        memset(&doc.lines[doc.cursor_line], 0, sizeof(Line));
+    }
     doc.dirty = true;
 }
 
@@ -747,8 +729,10 @@ static void move_cursor(int dx, int dy) {
     if (doc.total_lines < doc.cursor_line + 1) doc.total_lines = doc.cursor_line + 1;
 }
 
+static char current_filename[256] = "/root/document.md";
+
 static void save_document(void) {
-    FILE *f = fopen("/root/document.md", "w");
+    FILE *f = fopen(current_filename, "w");
     if (!f) return;
     
     for (int i = 0; i < doc.total_lines; i++) {
@@ -766,11 +750,39 @@ static void save_document(void) {
     
     fclose(f);
     doc.dirty = false;
-    printf("Saved: /root/document.md\n");
+    printf("Saved: %s\n", current_filename);
+}
+
+static void new_document(void) {
+    if (doc.dirty) save_document();
+    
+    memset(&doc, 0, sizeof(doc));
+    doc.total_lines = 1;
+    doc.ink_idx = 0;
+    doc.zoom = 2;
+    doc.res_idx = MAX_RESOLUTIONS - 1;
+    doc.dirty = false;
+    
+    int num = 1;
+    char *dot = strrchr(current_filename, '.');
+    if (dot) {
+        *dot = '\0';
+        char *base = strrchr(current_filename, '/');
+        if (base) base++; else base = current_filename;
+        if (strncmp(base, "document", 8) == 0) {
+            num = atoi(base + 8);
+            if (num < 1) num = 1;
+            num++;
+        }
+        *dot = '.';
+    }
+    
+    snprintf(current_filename, sizeof(current_filename), "/root/document%d.md", num);
+    show_toast("New document");
 }
 
 static void load_document(void) {
-    FILE *f = fopen("/root/document.md", "r");
+    FILE *f = fopen(current_filename, "r");
     if (!f) return;
     
     char buf[MAX_LINE_LEN * 4];
@@ -902,6 +914,7 @@ int main(int argc, char *argv[]) {
                                     case 'D': doc.inverted = !doc.inverted; break;     // F4
                                     case 'E': cycle_ink_color(); break;                // F5
                                     case 'F': cycle_resolution(); break;               // F6
+                                    case 'G': new_document(); break;                   // F7
                                     default: show_toast("F key not assigned"); break;
                                 }
                             }
@@ -914,7 +927,7 @@ int main(int argc, char *argv[]) {
                                 case '1':
                                     if (i < n && buf[i] == '~') { i++; show_help = !show_help; }
                                     else if (i < n && buf[i] == '7' && i+1 < n && buf[i+1] == '~') { i += 2; cycle_resolution(); }
-                                    else if (i < n && buf[i] == '8' && i+1 < n && buf[i+1] == '~') { i += 2; show_toast("F7 not assigned"); }
+                                    else if (i < n && buf[i] == '8' && i+1 < n && buf[i+1] == '~') { i += 2; new_document(); }
                                     else if (i < n && buf[i] == '9' && i+1 < n && buf[i+1] == '~') { i += 2; show_toast("F8 not assigned"); }
                                     break;
                                 case '2':
