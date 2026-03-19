@@ -72,7 +72,7 @@ if [ "$SERIAL" -eq 1 ]; then
         -drive "file=$ROOTFS,if=virtio,format=raw" \
         -m 512 \
         -nographic \
-        -append "console=tty0 root=/dev/vda rw" \
+        -append "console=ttyS0 root=/dev/vda rw" \
         $KVM_OPTS \
         -netdev user,id=net0 -device virtio-net-pci,netdev=net0
 else
@@ -89,7 +89,7 @@ else
         -m 512 \
         -vga std \
         -display sdl \
-        -append "console=tty0 root=/dev/vda rw" \
+        -append "console=tty0 console=ttyS0 root=/dev/vda rw" \
         -serial "unix:$SERIAL_SOCK,server,nowait" \
         $KVM_OPTS \
         -netdev user,id=net0 -device virtio-net-pci,netdev=net0
