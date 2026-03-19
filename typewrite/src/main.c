@@ -23,6 +23,14 @@
 #define MAX_LINE_LEN 200
 #define DEFAULT_FONT_SIZE 14
 #define STATUS_BAR_HEIGHT 30
+#define MAX_RESOLUTIONS 4
+
+static const int resolutions[MAX_RESOLUTIONS][2] = {
+    {640, 480},
+    {800, 600},
+    {1024, 768},
+    {0, 0}
+};
 
 typedef struct {
     uint8_t r, g, b, a;
@@ -43,6 +51,7 @@ typedef struct {
     int top_line;
     int ink_idx;
     int zoom;
+    int res_idx;
     bool inverted;
     bool dirty;
 } Document;
@@ -329,8 +338,15 @@ static void draw_status_bar(void) {
     
     char buf[256];
     const char *mode = doc.inverted ? "Dark" : "Light";
-    snprintf(buf, sizeof(buf), "Zoom:%dx | %s | Ink:%s | Ln:%d/%d | F1:help F2:zoom- F3:zoom+ F4:dark | Ctrl+S:save Ctrl+Q:quit",
-             doc.zoom, mode, ink_names[doc.ink_idx], total_lines_used, get_lines_per_page());
+    const char *res_name = (doc.res_idx < MAX_RESOLUTIONS - 1) ? "" : "native";
+    char res_str[32];
+    if (doc.res_idx < MAX_RESOLUTIONS - 1) {
+        snprintf(res_str, sizeof(res_str), "%dx%d", resolutions[doc.res_idx][0], resolutions[doc.res_idx][1]);
+    } else {
+        snprintf(res_str, sizeof(res_str), "native");
+    }
+    snprintf(buf, sizeof(buf), "%s | Zoom:%dx | %s | Ink:%s | F1:help F6:res",
+             res_str, doc.zoom, mode, ink_names[doc.ink_idx]);
     
     blit_text(10, y + 8, buf, get_color(COLOR_BLACK));
 }
@@ -475,7 +491,76 @@ static void init_document(void) {
     doc.total_lines = 1;
     doc.ink_idx = 0;
     doc.zoom = 2;
+    doc.res_idx = MAX_RESOLUTIONS - 1;
     doc.dirty = false;
+}
+
+static int set_resolution(int w, int h) {
+    struct fb_var_screeninfo vinfo;
+    struct fb_fix_screeninfo finfo;
+    
+    if (ioctl(display.fb_fd, FBIOGET_VSCREENINFO, &vinfo) < 0) {
+        printf("Failed to get vinfo\n");
+        return -1;
+    }
+    
+    vinfo.xres = w;
+    vinfo.yres = h;
+    vinfo.xres_virtual = w;
+    vinfo.yres_virtual = h;
+    vinfo.bits_per_pixel = 32;
+    
+    if (ioctl(display.fb_fd, FBIOPUT_VSCREENINFO, &vinfo) < 0) {
+        printf("Failed to set resolution %dx%d\n", w, h);
+        return -1;
+    }
+    
+    if (ioctl(display.fb_fd, FBIOGET_FSCREENINFO, &finfo) < 0) {
+        return -1;
+    }
+    
+    if (display.backbuffer) free(display.backbuffer);
+    if (display.fb_map) munmap(display.fb_map, display.fb_size);
+    
+    display.width = vinfo.xres;
+    display.height = vinfo.yres;
+    display.stride = finfo.line_length;
+    display.fb_size = finfo.smem_len;
+    display.margin_x = 80;
+    display.margin_y = 50;
+    
+    display.fb_map = mmap(0, finfo.smem_len, PROT_READ | PROT_WRITE, MAP_SHARED, display.fb_fd, 0);
+    if (display.fb_map == MAP_FAILED) {
+        return -1;
+    }
+    
+    display.backbuffer = malloc(display.fb_size);
+    if (!display.backbuffer) {
+        munmap(display.fb_map, display.fb_size);
+        return -1;
+    }
+    
+    memset(display.fb_map, 0, display.fb_size);
+    memset(display.backbuffer, 0, display.fb_size);
+    
+    printf("Resolution: %dx%d\n", display.width, display.height);
+    return 0;
+}
+
+static void cycle_resolution(void) {
+    doc.res_idx = (doc.res_idx + 1) % MAX_RESOLUTIONS;
+    int w = resolutions[doc.res_idx][0];
+    int h = resolutions[doc.res_idx][1];
+    
+    if (w == 0 || h == 0) {
+        doc.res_idx = 0;
+        w = resolutions[0][0];
+        h = resolutions[0][1];
+    }
+    
+    if (set_resolution(w, h) == 0) {
+        doc.dirty = true;
+    }
 }
 
 static void cycle_ink_color(void) {
@@ -501,10 +586,11 @@ static void draw_help_overlay(void) {
     blit_text(tx, ty, "F2: Zoom out (smaller text)", get_color(COLOR_BLACK)); ty += 20;
     blit_text(tx, ty, "F3: Zoom in (larger text)", get_color(COLOR_BLACK)); ty += 20;
     blit_text(tx, ty, "F4: Toggle dark mode", get_color(COLOR_BLACK)); ty += 20;
-    blit_text(tx, ty, "F5: Next ink color (Black/Green/Red/Blue)", get_color(COLOR_BLACK)); ty += 20;
+    blit_text(tx, ty, "F5: Next ink color", get_color(COLOR_BLACK)); ty += 20;
+    blit_text(tx, ty, "F6: Change resolution", get_color(COLOR_BLACK)); ty += 20;
     blit_text(tx, ty, "Arrow keys: Move cursor", get_color(COLOR_BLACK)); ty += 20;
-    blit_text(tx, ty, "Backspace: Delete or strikethrough", get_color(COLOR_BLACK)); ty += 20;
-    blit_text(tx, ty, "Ctrl+S: Save document | Ctrl+Q: Quit", get_color(COLOR_BLACK)); ty += 20;
+    blit_text(tx, ty, "Backspace: Delete/strikethrough", get_color(COLOR_BLACK)); ty += 20;
+    blit_text(tx, ty, "Ctrl+S: Save | Ctrl+Q: Quit", get_color(COLOR_BLACK)); ty += 20;
 }
 
 static void insert_char(char c) {
@@ -802,6 +888,9 @@ int main(int argc, char *argv[]) {
                                     break;
                                 case '5':
                                     if (i < n && buf[i] == '~') { i++; cycle_ink_color(); }
+                                    break;
+                                case '6':
+                                    if (i < n && buf[i] == '~') { i++; cycle_resolution(); }
                                     break;
                             }
                         }
