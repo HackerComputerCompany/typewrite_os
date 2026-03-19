@@ -51,9 +51,11 @@ A minimalist Linux distribution for x86/ARM systems that simulates a typewriter 
 
 #### Ink Colors
 - Black ink (default): `#000000`
+- Green ink: `#1E8C1E`
 - Red ink: `#B41E1E`
 - Blue ink: `#1E3CB4`
-- Toggle with F1 key
+- Toggle with F5 key
+- Per-character ink (each character retains its color)
 
 #### Dark Mode
 - Invert all colors (white ↔ black, light gray ↔ dark gray)
@@ -64,30 +66,24 @@ A minimalist Linux distribution for x86/ARM systems that simulates a typewriter 
 #### Text Behavior
 - Strikethrough on backspace (characters marked but NOT deleted)
 - Strikethrough persists in saved document
-- F2/F3 keys to adjust scale (1-5x)
+- F2/F3 keys to adjust zoom (accessibility - 1-5x)
 - Arrow keys for cursor navigation
 
 #### Visual Elements
 - White page on gray background
-- Ruler at top with tick marks every 5/10 characters
 - Red margin lines
 - Status bar at bottom
-- Block cursor indicator
-
-### Document Format
-**Markdown with strikethrough extensions:**
-- Files saved as `.md` (UTF-8 plain text)
-- Strikethrough uses GitHub-style: `~~deleted text~~`
-- Human-readable, works with any text editor
-- Can be version-controlled, synced, etc.
+- Underline cursor indicator
+- Help overlay (press F1)
 
 ### Keyboard Controls
 | Key | Action |
 |-----|--------|
-| F1 | Cycle ink color (Black → Red → Blue) |
-| F2 | Decrease text scale |
-| F3 | Increase text scale |
+| F1 | Toggle help overlay |
+| F2 | Zoom out (smaller text) |
+| F3 | Zoom in (larger text) |
 | F4 | Toggle dark mode |
+| F5 | Cycle ink color (Black → Green → Red → Blue) |
 | Arrow Keys | Move cursor |
 | Backspace | Mark character for strikethrough |
 | Enter | New line + word wrap |
