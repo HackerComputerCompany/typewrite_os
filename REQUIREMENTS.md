@@ -1,27 +1,21 @@
 # Typewrite OS - Requirements Document
 
 ## Project Overview
-A minimalist Linux distribution for x86/ARM systems that simulates a typewriter experience, inspired by the Freewrite interface. Designed as a focused, distraction-free writing environment.
+A minimalist Linux distribution for x86_64 systems that simulates a typewriter experience. Designed as a focused, distraction-free writing environment.
 
 **Philosophy**: This is a writing *experience*, not just an app. No distractions, no notifications, just you and your thoughts.
 
 ## Build System
 - **Framework**: Buildroot 2024.02
-- **Target Architecture**: x86_64 (ARM support planned for SoC)
+- **Target Architecture**: x86_64
 - **Kernel**: Linux 6.1.44
 - **Filesystem**: ext2 (128MB image)
 
 ## Hardware Requirements
 - Standard x86_64 PC (UEFI/BIOS)
-- **Framebuffer** support (VESA BIOS Extensions for x86, DRM/KMS for SoC)
+- **Framebuffer** support (VESA BIOS Extensions)
 - Minimum 512MB RAM
 - VirtIO block device support for QEMU
-
-## Hardware (Planned - SoC/Laptop)
-- Custom ARM/ARM64 SoC
-- **Mesa + DRM/KMS** graphics stack
-- Mali/PowerVR/Vivante GPU (open-source drivers preferred)
-- No X11 or Wayland - direct DRM/KMS access
 
 ## Build Artifacts
 - `bzImage` - Linux kernel
@@ -32,22 +26,22 @@ A minimalist Linux distribution for x86/ARM systems that simulates a typewriter 
 
 ### Core Features
 
-#### Display Stack (Priority Order)
-1. **Primary**: Mesa + DRM/KMS + GBM - Direct GPU access, best performance
-2. **Fallback**: Linux framebuffer (`/dev/fb0`) - Legacy support, universal compatibility
-3. **Graphics**: OpenGL ES 2.0 via EGL for GPU-accelerated rendering
+#### Display Stack
+- **Linux framebuffer** (`/dev/fb0`) - Direct framebuffer access
+- Resolution cycling (F6): 640x480 → 800x600 → 1024x768 → native
+- 32-bit ARGB pixel format
 
 #### Text Rendering
 - **FreeType2** for TrueType font rendering
 - Anti-aliased glyph rendering with alpha blending
-- DejaVu Sans Mono as default font
-- Configurable font scale (1x-5x)
+- DejaVu Sans Mono (regular + bold variants)
+- Zoom levels: 1x and 2x
 
-#### Text Editing
-- Monospace font rendering
-- Word wrap (automatic at line end)
-- Line-based document structure (up to 500 lines)
-- Character limit per line (200 chars)
+#### Document Structure
+- Line-based document (up to 500 lines)
+- 200 characters per line maximum
+- Documents saved as plain text (`.md` files)
+- Ink colors and bold preserved in companion `.ink` file
 
 #### Ink Colors
 - Black ink (default): `#000000`
@@ -57,38 +51,56 @@ A minimalist Linux distribution for x86/ARM systems that simulates a typewriter 
 - Toggle with F5 key
 - Per-character ink (each character retains its color)
 
+#### Bold Text
+- Toggle bold mode with F9
+- Uses DejaVu Sans Mono Bold font
+- Per-character bold flag saved to `.ink` file
+
+#### Tab Support
+- F8 cycles tab width: 2, 4, 6, 8 spaces
+- Tab key inserts spaces to next tab stop
+
 #### Dark Mode
 - Invert all colors (white ↔ black, light gray ↔ dark gray)
 - Toggle with F4 key
-- Page background inverts
-- Ink colors adjust appropriately
 
 #### Text Behavior
-- Strikethrough on backspace (characters marked but NOT deleted)
-- Strikethrough persists in saved document
-- F2/F3 keys to adjust zoom (accessibility - 1-5x)
+- **Overwrite mode**: New characters replace existing ones
+- **Carriage return**: Enter advances paper, doesn't insert lines
+- Backspace marks strikethrough (characters visible but crossed out)
+- Cursor stays centered on screen (paper scrolls)
 - Arrow keys for cursor navigation
 
 #### Visual Elements
 - White page on gray background
 - Red margin lines
-- Status bar at bottom
-- Underline cursor indicator
-- Help overlay (press F1)
+- Status bar: resolution | zoom | mode | ink+bold | tab | help
+- Centered help overlay (F1)
+- Toast notifications for actions
 
 ### Keyboard Controls
 | Key | Action |
 |-----|--------|
 | F1 | Toggle help overlay |
-| F2 | Zoom out (smaller text) |
-| F3 | Zoom in (larger text) |
+| F2 | Zoom out (to 1x) |
+| F3 | Zoom in (to 2x) |
 | F4 | Toggle dark mode |
-| F5 | Cycle ink color (Black → Green → Red → Blue) |
+| F5 | Cycle ink color |
+| F6 | Cycle resolution |
+| F7 | New document |
+| F8 | Cycle tab width (2/4/6/8) |
+| F9 | Toggle bold mode |
 | Arrow Keys | Move cursor |
-| Backspace | Mark character for strikethrough |
-| Enter | New line + word wrap |
-| Ctrl+S | Save document to `/root/document.md` |
+| Tab | Insert spaces to next tab stop |
+| Enter | Carriage return (new line) |
+| Backspace | Strikethrough character |
+| Ctrl+S | Save document |
 | Ctrl+Q | Quit application |
+
+### File Format
+Documents saved as two files:
+- `document.md` - Plain text content
+- `document.ink` - Color/bold overlay (format: `ink,bold` pairs per character)
 
 ## Operating System Features
 
@@ -97,119 +109,67 @@ A minimalist Linux distribution for x86/ARM systems that simulates a typewriter 
 2. BusyBox init starts
 3. Typewrite application auto-launches on tty1
 
-### Services
-- syslogd - System logging (optional)
-- getty on serial console (ttyS0)
-
 ### Serial Console
-- Available on ttyS0 for debugging
-- Baud rate: 115200
-- Login prompt for system access
+- Unix socket at `/tmp/typewrite-serial.sock`
+- Connect with: `socat - UNIX-CONNECT:/tmp/typewrite-serial.sock`
 
 ## QEMU Testing Environment
+
+### Default Mode (Graphics)
+```bash
+./start-qemu.sh
+```
+- SDL2 display at 1024x768
+- Typewrite app auto-starts
+- Serial console via Unix socket
 
 ### Serial Mode
 ```bash
 ./start-qemu.sh --serial
 ```
 - Full serial console output
-- Login prompt for debugging
 - No display
-
-### Graphics Mode (Default)
-```bash
-./start-qemu.sh
-```
-- SDL2/framebuffer display window
-- Typewrite app auto-starts
 
 ## Directory Structure
 ```
 typewrite_os/
 ├── buildroot-2024.02/          # Buildroot source
 │   ├── .config                 # Build configuration
-│   ├── board/qemu/x86_64/     # Board-specific configs
-│   │   ├── linux.config       # Kernel config
-│   │   └── post-build.sh      # Rootfs customization
-│   └── package/typewrite/     # Typewrite package
+│   └── package/typewrite/      # Typewrite package
 │       ├── Config.in
 │       └── typewrite.mk
 ├── typewrite/                  # Typewrite source
 │   ├── Makefile
-│   └── src/
-│       ├── main.c             # Unified app (FB + DRM/KMS)
-│       ├── framebuffer.c      # Legacy FB version
-│       └── sdl_main.c         # SDL2 version (deprecated)
+│   └── src/main.c              # Main application
 ├── start-qemu.sh              # QEMU launcher
-├── mount_rootfs.sh            # Helper to mount rootfs.ext2
-└── REQUIREMENTS.md           # This file
+├── REQUIREMENTS.md            # This file
+├── FEATURES.md                # Feature documentation
+└── PATCHING.md                # How to patch rootfs
 ```
 
-## TODO / Future Enhancements
+## Development Notes
 
-### High Priority
-- [ ] Test FreeType rendering in QEMU
-- [ ] Add DRM/KMS + GBM backend (for real hardware)
-- [ ] Add EGL-based rendering pipeline
-- [ ] Sound effects (typewriter sounds)
-- [ ] Paper texture/feel to page
+### Key Implementation Details
+1. **FreeType font width**: Must divide advance by 64 to convert from 26.6 fixed-point
+2. **F-key escape sequences**: F1-F5 use `ESC[[A-E]`, F6-F12 use `ESC[17~` through `ESC[24~`
+3. **VT graphics mode**: `ioctl(tty_fd, KDSETMODE, KD_GRAPHICS)` disables console
+4. **Framebuffer resolution**: Changed via `FBIOPUT_VSCREENINFO`
+5. **Character alignment**: Center each glyph in fixed-size cell
+6. **Zoom**: Limited to 1x and 2x for clean rendering
 
-### Medium Priority
-- [ ] Undo/redo for strikethrough
-- [ ] Page numbers
-- [ ] Different font choices
-- [ ] Configurable margins
-
-### Low Priority
-- [ ] Network document sync
-- [ ] SSH access
-- [ ] Web interface
-- [ ] Touch screen support
-- [ ] Real hardware SoC testing
-
-## Known Issues
-- F-key detection may vary by terminal
-- QEMU may require `-vga std` for proper framebuffer
-
-## Testing Checklist
-- [ ] Boot to typewrite app in QEMU
-- [ ] Type text and see anti-aliased rendering
-- [ ] Test all ink colors (F1)
-- [ ] Test dark mode (F4)
-- [ ] Test scaling (F2/F3)
-- [ ] Test backspace creates strikethrough
-- [ ] Test word wrap on long lines
-- [ ] Test save (Ctrl+S) creates valid .md file
-- [ ] Test reload preserves strikethrough
-- [ ] Test quit (Ctrl+Q)
-- [ ] Test arrow key navigation
-- [ ] Test serial console login
-
-## Architecture Notes
-
-### Why No X11/Wayland?
-- **Complexity**: X11 and Wayland add significant complexity and attack surface
-- **Latency**: Direct DRM/KMS access has lower input-to-display latency
-- **Embedded**: Embedded systems often don't need full compositor
-- **Philosophy**: Minimal, focused, no distractions
-
-### DRM/KMS Stack
-```
-App (OpenGL ES / Software) → Mesa (libEGL, libGLESv2) → DRM/KMS (kernel) → GPU
-                                                          ↓
-                                                    GBM (buffer management)
-```
-
-### Framebuffer Fallback
-For systems without GPU or DRM support:
-```
-App → Linux fbdev → /dev/fb0 → Framebuffer console
+### Quick Build & Patch
+```bash
+cd buildroot-2024.02 && make typewrite-rebuild
+sudo mount -o loop output/images/rootfs.ext2 /tmp/rootfs
+sudo cp output/target/usr/bin/typewrite /tmp/rootfs/usr/bin/typewrite
+sudo umount /tmp/rootfs
 ```
 
 ## Version History
-- v0.3 (2024-03-18): Unified app with FreeType + DRM/GBM + framebuffer fallback
-- v0.2 (2024-03-18): SDL2 version with anti-aliased fonts
-- v0.1 (2024-03-18): Initial framebuffer implementation
+- **v0.4** (2024-03-19): Added bold support, ink persistence, page breaks
+- **v0.3** (2024-03-18): FreeType rendering, framebuffer graphics
+- **v0.2** (2024-03-18): SDL2 version
+- **v0.1** (2024-03-18): Initial framebuffer implementation
 
 ## License
 MIT License

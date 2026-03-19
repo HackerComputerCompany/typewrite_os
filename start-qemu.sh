@@ -83,13 +83,13 @@ else
     echo "Connect from another terminal with: socat - UNIX-CONNECT:$SERIAL_SOCK"
     echo "Or: minicom -D \"unix#$SERIAL_SOCK\""
     echo ""
-    exec env SDL_VIDEO_WINDOW_POS=0,0 SDL_VIDEO_WINDOW_SIZE=1920x1080 qemu-system-x86_64 \
+    exec env SDL_VIDEO_WINDOW_POS=0,0 SDL_VIDEO_WINDOW_SIZE=1024x768 qemu-system-x86_64 \
         -kernel "$KERNEL" \
         -drive "file=$ROOTFS,if=virtio,format=raw" \
         -m 512 \
         -vga std \
         -display sdl \
-        -append "console=tty0 console=ttyS0 root=/dev/vda rw" \
+        -append "console=tty0 console=ttyS0 root=/dev/vda rw video=1024x768" \
         -serial "unix:$SERIAL_SOCK,server,nowait" \
         $KVM_OPTS \
         -netdev user,id=net0 -device virtio-net-pci,netdev=net0

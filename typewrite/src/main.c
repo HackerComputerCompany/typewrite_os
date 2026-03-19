@@ -24,6 +24,7 @@
 #define DEFAULT_FONT_SIZE 14
 #define STATUS_BAR_HEIGHT 30
 #define MAX_RESOLUTIONS 4
+#define PAGE_GAP 10
 
 static const int resolutions[MAX_RESOLUTIONS][2] = {
     {640, 480},
@@ -40,6 +41,8 @@ typedef struct {
     char text[MAX_LINE_LEN];
     int char_count;
     uint8_t ink_idx[MAX_LINE_LEN];
+    uint8_t bold[MAX_LINE_LEN];
+    bool page_break;  // true if page break after this line
 } Line;
 
 typedef struct {
@@ -49,8 +52,10 @@ typedef struct {
     int cursor_col;
     int top_line;
     int ink_idx;
+    bool bold;
     int zoom;
     int res_idx;
+    int tab_width;
     bool inverted;
     bool dirty;
 } Document;
@@ -70,10 +75,10 @@ typedef struct {
 typedef struct {
     FT_Library ft;
     FT_Face face;
+    FT_Face face_bold;
     FT_GlyphSlot slot;
     int size;
     int height;
-    int max_advance;
     int char_width;
 } FontState;
 
@@ -159,11 +164,11 @@ static Color get_color(Color normal) {
 }
 
 static int get_char_width(void) {
-    return font.char_width * doc.zoom;
+    return font.char_width;
 }
 
 static int get_char_height(void) {
-    return (font.height * doc.zoom) / 64;
+    return font.height;
 }
 
 static int get_page_content_width(void) {
@@ -185,11 +190,11 @@ static int get_lines_per_page(void) {
 }
 
 static int get_page_start_x(void) {
-    return display.margin_x * doc.zoom;
+    return display.margin_x;
 }
 
 static int get_page_start_y(void) {
-    return display.margin_y * doc.zoom;
+    return display.margin_y;
 }
 
 static void blit_pixel(int x, int y, Color c) {
@@ -254,8 +259,9 @@ static void blit_glyph(int x, int y, FT_Bitmap *bitmap, Color fg) {
     }
 }
 
-static void blit_text(int x, int y, const char *text, Color c) {
-    FT_GlyphSlot slot = font.slot;
+static void blit_text(int x, int y, const char *text, Color c, bool use_bold) {
+    FT_Face face = (use_bold && font.face_bold) ? font.face_bold : font.face;
+    FT_GlyphSlot slot = face->glyph;
     const char *p = text;
     int pen_x = x;
     int cell_height = get_char_height();
@@ -263,7 +269,7 @@ static void blit_text(int x, int y, const char *text, Color c) {
     int baseline_y = y + cell_height;
     
     while (*p) {
-        FT_Load_Glyph(font.face, FT_Get_Char_Index(font.face, (unsigned char)*p), FT_LOAD_RENDER);
+        FT_Load_Glyph(face, FT_Get_Char_Index(face, (unsigned char)*p), FT_LOAD_RENDER);
         
         int glyph_height = slot->bitmap.rows;
         int glyph_width = slot->bitmap.width;
@@ -311,9 +317,10 @@ static void draw_char(int line_idx, int char_idx) {
     
     char buf[2] = {doc.lines[line_idx].text[char_idx], 0};
     uint8_t idx = doc.lines[line_idx].ink_idx[char_idx];
+    bool is_bold = doc.lines[line_idx].bold[char_idx];
     Color c = get_color(ink_colors[idx]);
     
-    blit_text(px, py, buf, c);
+    blit_text(px, py, buf, c, is_bold);
 }
 
 static void draw_cursor(void) {
@@ -343,28 +350,80 @@ static void draw_status_bar(void) {
     } else {
         snprintf(res_str, sizeof(res_str), "native");
     }
-    snprintf(buf, sizeof(buf), "%s | Zoom:%dx | %s | Ink:%s | F1:help F6:res F7:new",
-             res_str, doc.zoom, mode, ink_names[doc.ink_idx]);
+    const char *bold_str = doc.bold ? "B" : "";
+    snprintf(buf, sizeof(buf), "%s | Zoom:%dx | %s | Ink:%s%s | Tab:%d | F1:help",
+             res_str, doc.zoom, mode, ink_names[doc.ink_idx], bold_str, doc.tab_width);
     
-    blit_text(10, y + 8, buf, get_color(COLOR_BLACK));
+    blit_text(10, y + 8, buf, get_color(COLOR_BLACK), false);
 }
 
 static void render_to_backbuffer(void) {
     blit_clear(get_color(COLOR_BG));
-    draw_page_background();
-    draw_margins();
     
+    int ch = get_char_height();
     int lpp = get_lines_per_page();
+    
+    // Calculate which line should be at center of screen
     int cursor_screen_line = lpp / 2;
+    
+    // Calculate Y offset accumulated from page gaps above top_line
+    int page_y_offset = 0;
+    int line_y = get_page_start_y();
+    
+    // Draw pages starting from top_line
+    int i = 0;
+    while (i < doc.total_lines) {
+        // Check if we're starting a new page (explicit break or natural page end)
+        bool is_page_start = (i == 0) || doc.lines[i-1].page_break;
+        int page_start = i;
+        
+        // Find end of this page
+        int page_end = page_start + lpp;
+        for (int j = page_start; j < page_end && j < doc.total_lines; j++) {
+            if (doc.lines[j].page_break && j > page_start) {
+                page_end = j + 1;
+                break;
+            }
+        }
+        if (page_end > doc.total_lines) page_end = doc.total_lines;
+        
+        // Draw page background
+        int page_height = (page_end - page_start) * ch + 8;
+        
+        // Check if this page should be visible
+        if (i + lpp > doc.top_line && i < doc.top_line + lpp + 5) {
+            // Draw page background
+            int px = get_page_start_x();
+            int py = line_y;
+            int pw = get_page_content_width();
+            int ph = page_height;
+            
+            blit_rect(px, py, pw, ph, get_color(COLOR_GRAY));
+            blit_rect(px + 4, py + 4, pw - 8, ph - 8, get_color(COLOR_PAGE));
+            
+            // Draw text for this page
+            int screen_line = i - doc.top_line;
+            if (screen_line < 0) screen_line = 0;
+            
+            for (int j = page_start; j < page_end; j++) {
+                int draw_line = j - doc.top_line;
+                if (draw_line >= 0 && draw_line < lpp) {
+                    for (int k = 0; k < doc.lines[j].char_count; k++) {
+                        draw_char(j, k);
+                    }
+                }
+            }
+        }
+        
+        i = page_end;
+        line_y += page_height + PAGE_GAP;
+    }
+    
+    // Ensure top_line keeps cursor visible
     doc.top_line = doc.cursor_line - cursor_screen_line;
     if (doc.top_line < 0) doc.top_line = 0;
     
-    for (int i = doc.top_line; i < doc.total_lines && i - doc.top_line < lpp; i++) {
-        for (int j = 0; j < doc.lines[i].char_count; j++) {
-            draw_char(i, j);
-        }
-    }
-    
+    draw_margins();
     draw_cursor();
     draw_status_bar();
     
@@ -446,50 +505,62 @@ static void close_framebuffer(void) {
     if (display.fb_fd >= 0) close(display.fb_fd);
 }
 
-static int init_font(const char *path) {
+static int init_font(const char *path, const char *path_bold) {
     if (FT_Init_FreeType(&font.ft)) return -1;
     if (FT_New_Face(font.ft, path, 0, &font.face)) {
         FT_Done_FreeType(font.ft);
         return -1;
     }
     
-    font.size = DEFAULT_FONT_SIZE * doc.zoom;
-    if (FT_Set_Char_Size(font.face, 0, font.size * 64, 72, 72)) {
+    font.face_bold = NULL;
+    if (path_bold && FT_New_Face(font.ft, path_bold, 0, &font.face_bold)) {
+        font.face_bold = NULL;
+    }
+    
+    int size = DEFAULT_FONT_SIZE * doc.zoom;
+    if (FT_Set_Char_Size(font.face, 0, size * 64, 72, 72)) {
         FT_Done_Face(font.face);
+        if (font.face_bold) FT_Done_Face(font.face_bold);
         FT_Done_FreeType(font.ft);
         return -1;
     }
     
+    if (font.face_bold) {
+        FT_Set_Char_Size(font.face_bold, 0, size * 64, 72, 72);
+    }
+    
     font.slot = font.face->glyph;
-    font.height = font.face->height;
-    font.max_advance = font.face->max_advance_width;
+    font.height = font.face->size->metrics.height >> 6;
     
     FT_Load_Glyph(font.face, FT_Get_Char_Index(font.face, 'M'), FT_LOAD_RENDER);
     font.char_width = font.slot->advance.x >> 6;
     
     if (debug_log) {
-        fprintf(debug_log, "Font loaded: %s advance=%d char_width=%d height=%d\n", path, font.max_advance, font.char_width, font.height);
+        fprintf(debug_log, "Font loaded: %s size=%d height=%d char_width=%d bold=%s\n", 
+                path, size, font.height, font.char_width, font.face_bold ? "yes" : "no");
         fflush(debug_log);
     }
     
-    printf("Font: %s at %dpt adv=%d char=%d h=%d\n", path, DEFAULT_FONT_SIZE, font.max_advance, font.char_width, font.height);
+    printf("Font: %s at %dpt h=%d cw=%d bold=%s\n", path, size, font.height, font.char_width, 
+           font.face_bold ? "yes" : "no");
     return 0;
 }
 
 static void update_font_size(void) {
-    font.size = DEFAULT_FONT_SIZE * doc.zoom;
-    FT_Set_Char_Size(font.face, 0, font.size * 64, 72, 72);
-    font.height = font.face->height;
-    font.max_advance = font.face->max_advance_width;
+    int size = DEFAULT_FONT_SIZE * doc.zoom;
+    FT_Set_Char_Size(font.face, 0, size * 64, 72, 72);
+    if (font.face_bold) FT_Set_Char_Size(font.face_bold, 0, size * 64, 72, 72);
+    font.height = font.face->size->metrics.height >> 6;
     FT_Load_Glyph(font.face, FT_Get_Char_Index(font.face, 'M'), FT_LOAD_RENDER);
     font.char_width = font.slot->advance.x >> 6;
-    printf("Zoom %d: %dx%d chars (char_width=%d), %dx%d lines\n", 
-           doc.zoom, get_chars_per_line(), get_char_width(), font.char_width,
-           get_lines_per_page(), get_char_height());
+    printf("Zoom %d: size=%d h=%d cw=%d chars=%d lines=%d\n",
+           doc.zoom, size, font.height, font.char_width,
+           get_chars_per_line(), get_lines_per_page());
 }
 
 static void close_font(void) {
     if (font.face) FT_Done_Face(font.face);
+    if (font.face_bold) FT_Done_Face(font.face_bold);
     if (font.ft) FT_Done_FreeType(font.ft);
 }
 
@@ -499,7 +570,23 @@ static void init_document(void) {
     doc.ink_idx = 0;
     doc.zoom = 2;
     doc.res_idx = MAX_RESOLUTIONS - 1;
+    doc.tab_width = 4;
     doc.dirty = false;
+}
+
+static void cycle_tab_width(void) {
+    int widths[] = {2, 4, 6, 8};
+    int current = 0;
+    for (int i = 0; i < 4; i++) {
+        if (doc.tab_width == widths[i]) {
+            current = i;
+            break;
+        }
+    }
+    doc.tab_width = widths[(current + 1) % 4];
+    char msg[32];
+    snprintf(msg, sizeof(msg), "Tab: %d spaces", doc.tab_width);
+    show_toast(msg);
 }
 
 static int set_resolution(int w, int h) {
@@ -576,30 +663,39 @@ static void cycle_ink_color(void) {
     printf("Ink: %s\n", ink_names[doc.ink_idx]);
 }
 
+static void toggle_bold(void) {
+    doc.bold = !doc.bold;
+    show_toast(doc.bold ? "Bold: ON" : "Bold: OFF");
+}
+
 static void draw_help_overlay(void) {
-    int x = display.margin_x;
-    int y = display.margin_y;
-    int w = display.width - display.margin_x * 2;
-    int h = 200;
+    int cw = get_char_width();
+    int ch = get_char_height();
+    int max_text_width = 30 * cw;
+    int w = max_text_width + 60;
+    int h = 15 * ch + 40;
+    int x = (display.width - w) / 2;
+    int y = (display.height - h) / 2;
     
     blit_rect(x, y, w, h, get_color(COLOR_WHITE));
     blit_rect(x + 2, y + 2, w - 4, h - 4, get_color(COLOR_BLACK));
     blit_rect(x + 4, y + 4, w - 8, h - 8, get_color(COLOR_PAGE));
     
-    int ty = y + 15;
+    int ty = y + 12;
     int tx = x + 20;
-    blit_text(tx, ty, "Typewrite Help", get_color(COLOR_BLACK)); ty += 25;
-    blit_text(tx, ty, "F1: Show/hide this help", get_color(COLOR_BLACK)); ty += 20;
-    blit_text(tx, ty, "F2: Zoom out (smaller text)", get_color(COLOR_BLACK)); ty += 20;
-    blit_text(tx, ty, "F3: Zoom in (larger text)", get_color(COLOR_BLACK)); ty += 20;
-    blit_text(tx, ty, "F4: Toggle dark mode", get_color(COLOR_BLACK)); ty += 20;
-    blit_text(tx, ty, "F5: Next ink color", get_color(COLOR_BLACK)); ty += 20;
-    blit_text(tx, ty, "F6: Change resolution", get_color(COLOR_BLACK)); ty += 20;
-    blit_text(tx, ty, "F7: New document", get_color(COLOR_BLACK)); ty += 20;
-    blit_text(tx, ty, "Arrow keys: Move cursor", get_color(COLOR_BLACK)); ty += 20;
-    blit_text(tx, ty, "Enter: Carriage return", get_color(COLOR_BLACK)); ty += 20;
-    blit_text(tx, ty, "Backspace: Strikethrough", get_color(COLOR_BLACK)); ty += 20;
-    blit_text(tx, ty, "Ctrl+S: Save | Ctrl+Q: Quit", get_color(COLOR_BLACK)); ty += 20;
+    blit_text(tx, ty, "Typewrite Help", get_color(COLOR_BLACK), false); ty += ch + 5;
+    blit_text(tx, ty, "F1: Show/hide this help", get_color(COLOR_BLACK), false); ty += ch;
+    blit_text(tx, ty, "F2/F3: Zoom out/in (1x/2x)", get_color(COLOR_BLACK), false); ty += ch;
+    blit_text(tx, ty, "F4: Toggle dark mode", get_color(COLOR_BLACK), false); ty += ch;
+    blit_text(tx, ty, "F5: Next ink color", get_color(COLOR_BLACK), false); ty += ch;
+    blit_text(tx, ty, "F6: Change resolution", get_color(COLOR_BLACK), false); ty += ch;
+    blit_text(tx, ty, "F7: New document", get_color(COLOR_BLACK), false); ty += ch;
+    blit_text(tx, ty, "F8: Tab width (2/4/6/8)", get_color(COLOR_BLACK), false); ty += ch;
+    blit_text(tx, ty, "F9: Toggle bold", get_color(COLOR_BLACK), false); ty += ch;
+    blit_text(tx, ty, "Arrow keys: Move cursor", get_color(COLOR_BLACK), false); ty += ch;
+    blit_text(tx, ty, "Enter: Carriage return", get_color(COLOR_BLACK), false); ty += ch;
+    blit_text(tx, ty, "Backspace: Strikethrough", get_color(COLOR_BLACK), false); ty += ch;
+    blit_text(tx, ty, "Ctrl+S: Save | Ctrl+Q: Quit", get_color(COLOR_BLACK), false); ty += ch;
 }
 
 static void draw_toast(void) {
@@ -616,7 +712,24 @@ static void draw_toast(void) {
     blit_rect(x, y, tw + 40, th, get_color(COLOR_WHITE));
     blit_rect(x + 2, y + 2, tw + 36, th - 4, get_color(COLOR_BLACK));
     blit_rect(x + 4, y + 4, tw + 32, th - 8, get_color(COLOR_PAGE));
-    blit_text(x + 20, y + 10, toast_msg, get_color(COLOR_BLACK));
+    blit_text(x + 20, y + 10, toast_msg, get_color(COLOR_BLACK), false);
+}
+
+static void handle_tab(void) {
+    int next_tab = ((doc.cursor_col / doc.tab_width) + 1) * doc.tab_width;
+    int spaces = next_tab - doc.cursor_col;
+    
+    Line *line = &doc.lines[doc.cursor_line];
+    for (int i = 0; i < spaces && doc.cursor_col < MAX_LINE_LEN - 1; i++) {
+        line->text[doc.cursor_col] = ' ';
+        line->ink_idx[doc.cursor_col] = doc.ink_idx;
+        line->bold[doc.cursor_col] = doc.bold ? 1 : 0;
+        if (doc.cursor_col >= line->char_count) {
+            line->char_count = doc.cursor_col + 1;
+        }
+        doc.cursor_col++;
+    }
+    doc.dirty = true;
 }
 
 static void insert_char(char c) {
@@ -626,7 +739,8 @@ static void insert_char(char c) {
     if (doc.cursor_col >= MAX_LINE_LEN - 1) return;
     
     line->text[doc.cursor_col] = c;
-line->ink_idx[doc.cursor_col] = doc.ink_idx;
+    line->ink_idx[doc.cursor_col] = doc.ink_idx;
+    line->bold[doc.cursor_col] = doc.bold ? 1 : 0;
     
     if (doc.cursor_col >= line->char_count) {
         line->char_count = doc.cursor_col + 1;
@@ -688,6 +802,8 @@ static void move_cursor(int dx, int dy) {
 
 static char current_filename[256] = "/root/document.md";
 
+static char ink_filename[256];
+
 static void save_document(void) {
     FILE *f = fopen(current_filename, "w");
     if (!f) return;
@@ -698,10 +814,28 @@ static void save_document(void) {
         }
         if (i < doc.total_lines - 1) fputc('\n', f);
     }
-    
     fclose(f);
+    
+    snprintf(ink_filename, sizeof(ink_filename), "%s", current_filename);
+    char *dot = strrchr(ink_filename, '.');
+    if (dot) *dot = '\0';
+    strcat(ink_filename, ".ink");
+    
+    FILE *inkf = fopen(ink_filename, "w");
+    if (inkf) {
+        for (int i = 0; i < doc.total_lines; i++) {
+            for (int j = 0; j < doc.lines[i].char_count; j++) {
+                fprintf(inkf, "%d,%d", doc.lines[i].ink_idx[j], doc.lines[i].bold[j]);
+                if (j < doc.lines[i].char_count - 1) fputc(' ', inkf);
+            }
+            fputc('\n', inkf);
+        }
+        fclose(inkf);
+    }
+    
+    sync();
     doc.dirty = false;
-    printf("Saved: %s\n", current_filename);
+    show_toast("Saved");
 }
 
 static void new_document(void) {
@@ -759,6 +893,33 @@ static void load_document(void) {
     doc.top_line = 0;
     
     fclose(f);
+    
+    snprintf(ink_filename, sizeof(ink_filename), "%s", current_filename);
+    char *dot = strrchr(ink_filename, '.');
+    if (dot) *dot = '\0';
+    strcat(ink_filename, ".ink");
+    
+    FILE *inkf = fopen(ink_filename, "r");
+    if (inkf) {
+        int ink_line = 0;
+        while (fgets(buf, sizeof(buf), inkf) && ink_line < doc.total_lines) {
+            char *p = buf;
+            int col = 0;
+            while (*p && *p != '\n' && col < doc.lines[ink_line].char_count) {
+                int ink = 0, bold = 0;
+                if (sscanf(p, "%d,%d", &ink, &bold) >= 1) {
+                    doc.lines[ink_line].ink_idx[col] = ink & 3;
+                    doc.lines[ink_line].bold[col] = bold ? 1 : 0;
+                    col++;
+                }
+                while (*p && *p != ' ' && *p != '\n') p++;
+                if (*p == ' ') p++;
+            }
+            ink_line++;
+        }
+        fclose(inkf);
+    }
+    
     printf("Loaded: %s\n", current_filename);
 }
 
@@ -767,6 +928,13 @@ static const char *font_paths[] = {
     "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
     "/usr/share/fonts/truetype/freefont/FreeMono.ttf"
+};
+
+static const char *font_paths_bold[] = {
+    "/usr/share/fonts/dejavu/DejaVuSansMono-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
+    "/usr/share/fonts/truetype/freefont/FreeMonoBold.ttf"
 };
 
 int main(int argc, char *argv[]) {
@@ -792,7 +960,7 @@ int main(int argc, char *argv[]) {
     
     int font_loaded = 0;
     for (size_t i = 0; i < sizeof(font_paths) / sizeof(font_paths[0]); i++) {
-        if (init_font(font_paths[i]) == 0) {
+        if (init_font(font_paths[i], font_paths_bold[i]) == 0) {
             font_loaded = 1;
             break;
         }
@@ -849,7 +1017,7 @@ int main(int argc, char *argv[]) {
                                 switch (fcode) {
                                     case 'A': show_help = !show_help; break;           // F1
                                     case 'B': if (doc.zoom > 1) { doc.zoom--; update_font_size(); } break;  // F2
-                                    case 'C': if (doc.zoom < 5) { doc.zoom++; update_font_size(); } break;  // F3
+                                    case 'C': if (doc.zoom < 2) { doc.zoom++; update_font_size(); } break;  // F3
                                     case 'D': doc.inverted = !doc.inverted; break;     // F4
                                     case 'E': cycle_ink_color(); break;                // F5
                                     case 'F': cycle_resolution(); break;               // F6
@@ -867,15 +1035,15 @@ int main(int argc, char *argv[]) {
                                     if (i < n && buf[i] == '~') { i++; show_help = !show_help; }
                                     else if (i < n && buf[i] == '7' && i+1 < n && buf[i+1] == '~') { i += 2; cycle_resolution(); }
                                     else if (i < n && buf[i] == '8' && i+1 < n && buf[i+1] == '~') { i += 2; new_document(); }
-                                    else if (i < n && buf[i] == '9' && i+1 < n && buf[i+1] == '~') { i += 2; show_toast("F8 not assigned"); }
+                                    else if (i < n && buf[i] == '9' && i+1 < n && buf[i+1] == '~') { i += 2; cycle_tab_width(); }
                                     break;
                                 case '2':
                                     if (i < n && buf[i] == '~') { i++; if (doc.zoom > 1) { doc.zoom--; update_font_size(); } }
-                                    else if (i < n && buf[i] == '0' && i+1 < n && buf[i+1] == '~') { i += 2; show_toast("F9 not assigned"); }
+                                    else if (i < n && buf[i] == '0' && i+1 < n && buf[i+1] == '~') { i += 2; toggle_bold(); }
                                     else if (i < n && buf[i] == '1' && i+1 < n && buf[i+1] == '~') { i += 2; show_toast("F10 not assigned"); }
                                     break;
                                 case '3':
-                                    if (i < n && buf[i] == '~') { i++; if (doc.zoom < 5) { doc.zoom++; update_font_size(); } }
+                                    if (i < n && buf[i] == '~') { i++; if (doc.zoom < 2) { doc.zoom++; update_font_size(); } }
                                     else if (i < n && buf[i] == '3' && i+1 < n && buf[i+1] == '~') { i += 2; show_toast("F11 not assigned"); }
                                     else if (i < n && buf[i] == '4' && i+1 < n && buf[i+1] == '~') { i += 2; show_toast("F12 not assigned"); }
                                     break;
@@ -899,10 +1067,13 @@ int main(int argc, char *argv[]) {
                         switch (code) {
                             case 'P': show_help = !show_help; break;
                             case 'Q': if (doc.zoom > 1) { doc.zoom--; update_font_size(); } break;
-                            case 'R': if (doc.zoom < 5) { doc.zoom++; update_font_size(); } break;
+                            case 'R': if (doc.zoom < 2) { doc.zoom++; update_font_size(); } break;
                             case 'S': doc.inverted = !doc.inverted; break;
                             case 'T': cycle_ink_color(); break;
                             case 'U': cycle_resolution(); break;
+                            case 'V': new_document(); break;
+                            case 'W': cycle_tab_width(); break;
+                            case 'X': toggle_bold(); break;
                             default: show_toast("F key not assigned"); break;
                         }
                     }
@@ -911,12 +1082,16 @@ int main(int argc, char *argv[]) {
                 running = 0;
                 do_render = 0;
             } else if (c == 19) {
+                show_toast("Saving...");
+                render();
                 save_document();
-                do_render = 0;
+                do_render = 1;
             } else if (c == 127 || c == 8) {
                 handle_backspace();
             } else if (c == '\n' || c == '\r') {
                 handle_enter();
+            } else if (c == '\t') {
+                handle_tab();
             } else if (c >= 32 && c <= 126) {
                 if (debug_log) { fprintf(debug_log, "Inserting char '%c' at line %d col %d\n", c, doc.cursor_line, doc.cursor_col); fflush(debug_log); }
                 insert_char(c);
