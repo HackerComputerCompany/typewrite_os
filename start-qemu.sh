@@ -10,20 +10,20 @@ ROOTFS="$IMAGES_DIR/rootfs.ext2"
 INITRD="$IMAGES_DIR/rootfs.cpio.gz"
 
 SERIAL=0
-KVM=0
+KVM=1
 
 usage() {
     echo "Usage: $0 [OPTIONS]"
     echo ""
     echo "Options:"
     echo "  --serial    Run with serial console output"
-    echo "  --kvm       Enable KVM acceleration (requires hardware VT)"
+    echo "  --no-kvm    Disable KVM acceleration"
     echo "  --help      Show this help message"
     echo ""
     echo "Examples:"
-    echo "  $0              # Normal run with SDL/framebuffer display"
+    echo "  $0              # Normal run with KVM acceleration"
     echo "  $0 --serial     # Run with serial console only"
-    echo "  $0 --kvm        # Run with KVM acceleration"
+    echo "  $0 --no-kvm     # Run without KVM (slower)"
     exit 1
 }
 
@@ -33,8 +33,8 @@ while [[ $# -gt 0 ]]; do
             SERIAL=1
             shift
             ;;
-        --kvm)
-            KVM=1
+        --no-kvm)
+            KVM=0
             shift
             ;;
         --help)
