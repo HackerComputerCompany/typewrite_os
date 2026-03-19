@@ -66,6 +66,7 @@ typedef struct {
     int size;
     int height;
     int max_advance;
+    int char_width;
 } FontState;
 
 static Display display;
@@ -143,7 +144,7 @@ static Color get_color(Color normal) {
 }
 
 static int get_char_width(void) {
-    return (font.max_advance * doc.zoom) / 64;
+    return (font.char_width * doc.zoom) / 64;
 }
 
 static int get_char_height(void) {
@@ -440,12 +441,15 @@ static int init_font(const char *path) {
     font.height = font.face->height;
     font.max_advance = font.face->max_advance_width;
     
+    FT_Load_Glyph(font.face, FT_Get_Char_Index(font.face, 'M'), FT_LOAD_RENDER);
+    font.char_width = font.slot->advance.x >> 6;
+    
     if (debug_log) {
-        fprintf(debug_log, "Font loaded: %s advance=%d height=%d\n", path, font.max_advance, font.height);
+        fprintf(debug_log, "Font loaded: %s advance=%d char_width=%d height=%d\n", path, font.max_advance, font.char_width, font.height);
         fflush(debug_log);
     }
     
-    printf("Font: %s at %dpt %dx%d\n", path, DEFAULT_FONT_SIZE, font.max_advance, font.height);
+    printf("Font: %s at %dpt adv=%d char=%d h=%d\n", path, DEFAULT_FONT_SIZE, font.max_advance, font.char_width, font.height);
     return 0;
 }
 
@@ -454,7 +458,11 @@ static void update_font_size(void) {
     FT_Set_Char_Size(font.face, 0, font.size * 64, 72, 72);
     font.height = font.face->height;
     font.max_advance = font.face->max_advance_width;
-    printf("Scale %d: %dx%d chars, %dx%d lines\n", doc.zoom, get_chars_per_line(), get_char_width(), get_lines_per_page(), get_char_height());
+    FT_Load_Glyph(font.face, FT_Get_Char_Index(font.face, 'M'), FT_LOAD_RENDER);
+    font.char_width = font.slot->advance.x >> 6;
+    printf("Zoom %d: %dx%d chars (char_width=%d), %dx%d lines\n", 
+           doc.zoom, get_chars_per_line(), get_char_width(), font.char_width,
+           get_lines_per_page(), get_char_height());
 }
 
 static void close_font(void) {
@@ -583,6 +591,7 @@ static void word_wrap(void) {
                 if (dest < MAX_LINE_LEN - 1) {
                     doc.lines[next_line].text[dest] = doc.lines[line].text[i];
                     doc.lines[next_line].strikethrough[dest] = doc.lines[line].strikethrough[i];
+                    doc.lines[next_line].ink_idx[dest] = doc.lines[line].ink_idx[i];
                 }
             }
             
@@ -663,9 +672,11 @@ static void load_document(void) {
             }
             doc.lines[line].text[col] = buf[i];
             doc.lines[line].strikethrough[col] = in_strike;
+            doc.lines[line].ink_idx[col] = 0;
             col++;
             i++;
         }
+        doc.lines[line].ink_idx[col] = 0;
         
         doc.lines[line].char_count = col;
         line++;
