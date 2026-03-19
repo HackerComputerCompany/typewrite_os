@@ -7,6 +7,10 @@
 /buildroot-2024.02/docs/
 /buildroot-2024.02/.gitignore
 
+# Typewrite binaries
+/typewrite/typewrite
+/typewrite/tests/test_document
+
 # Build artifacts
 *.o
 *.so

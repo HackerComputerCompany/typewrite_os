@@ -10,7 +10,6 @@
 #include <fcntl.h>
 #include <termios.h>
 #include <sys/mman.h>
-#include <sys/select.h>
 #include <sys/ioctl.h>
 #include <errno.h>
 #include <linux/fb.h>
@@ -629,76 +628,77 @@ int main(int argc, char *argv[]) {
     render();
     printf("Ready! F1:ink F2:smaller F3:larger F4:dark | Ctrl+S:save Ctrl+Q:quit\n");
     
+    unsigned char buf[64];
     int running = 1;
+    
     while (running) {
-        fd_set readfds;
-        FD_ZERO(&readfds);
-        FD_SET(STDIN_FILENO, &readfds);
-        struct timeval tv = {0, 50000};
+        ssize_t n = read(STDIN_FILENO, buf, sizeof(buf));
+        if (n <= 0) continue;
         
-        if (select(STDIN_FILENO + 1, &readfds, NULL, NULL, &tv) > 0) {
-            unsigned char c;
-            if (read(STDIN_FILENO, &c, 1) == 1) {
-                int do_render = 1;
-                
-                if (c == 27) {
-                    usleep(10000);
-                    unsigned char seq[4] = {0};
-                    ssize_t n = read(STDIN_FILENO, &seq[0], 3);
-                    
-                    if (n >= 1) {
-                        if (seq[0] == '[' || seq[0] == 'O') {
-                            if (n >= 2) {
-                                if (seq[0] == '[') {
-                                    switch (seq[1]) {
-                                        case 'A': move_cursor(0, -1); break;
-                                        case 'B': move_cursor(0, 1); break;
-                                        case 'C': move_cursor(1, 0); break;
-                                        case 'D': move_cursor(-1, 0); break;
-                                        case '1':
-                                        case '2':
-                                        case '3':
-                                        case '4':
-                                        case '5':
-                                            if (n >= 3) {
-                                                if (seq[1] == '1' && seq[2] == '5') cycle_ink_color();
-                                                else if (seq[1] == '1' && seq[2] == '7') { if (doc.scale < 5) { doc.scale++; update_font_size(); } }
-                                                else if (seq[1] == '2' && seq[2] == '8') { if (doc.scale > 1) { doc.scale--; update_font_size(); } }
-                                                else if (seq[1] == '2' && seq[2] == '9') doc.inverted = !doc.inverted;
-                                            }
-                                            break;
-                                    }
-                                } else if (seq[0] == 'O') {
-                                    switch (seq[1]) {
-                                        case 'P': cycle_ink_color(); break;
-                                        case 'Q': if (doc.scale < 5) { doc.scale++; update_font_size(); } break;
-                                        case 'R': if (doc.scale > 1) { doc.scale--; update_font_size(); } break;
-                                        case 'S': doc.inverted = !doc.inverted; break;
-                                    }
-                                }
-                            }
+        int i = 0;
+        while (i < n) {
+            unsigned char c = buf[i];
+            int do_render = 1;
+            i++;
+            
+            if (c == 27 && i < n) {
+                unsigned char next = buf[i];
+                if (next == '[') {
+                    i++;
+                    if (i < n) {
+                        unsigned char code = buf[i];
+                        i++;
+                        switch (code) {
+                            case 'A': move_cursor(0, -1); break;
+                            case 'B': move_cursor(0, 1); break;
+                            case 'C': move_cursor(1, 0); break;
+                            case 'D': move_cursor(-1, 0); break;
+                            case '1':
+                                if (i < n && buf[i] == '~') { i++; cycle_ink_color(); }
+                                break;
+                            case '2':
+                                if (i < n && buf[i] == '~') { i++; if (doc.scale < 5) { doc.scale++; update_font_size(); } }
+                                break;
+                            case '3':
+                                if (i < n && buf[i] == '~') { i++; if (doc.scale > 1) { doc.scale--; update_font_size(); } }
+                                break;
+                            case '4':
+                                if (i < n && buf[i] == '~') { i++; doc.inverted = !doc.inverted; }
+                                break;
                         }
                     }
-                } else if (c == 17) {
-                    running = 0;
-                    do_render = 0;
-                } else if (c == 19) {
-                    save_document();
-                    do_render = 0;
-                } else if (c == 127 || c == 8) {
-                    handle_backspace();
-                } else if (c == '\n' || c == '\r') {
-                    handle_enter();
-                    word_wrap();
-                } else if (c >= 32 && c <= 126) {
-                    insert_char(c);
-                    word_wrap();
-                } else {
-                    do_render = 0;
+                } else if (next == 'O') {
+                    i++;
+                    if (i < n) {
+                        unsigned char code = buf[i];
+                        i++;
+                        switch (code) {
+                            case 'P': cycle_ink_color(); break;
+                            case 'Q': if (doc.scale < 5) { doc.scale++; update_font_size(); } break;
+                            case 'R': if (doc.scale > 1) { doc.scale--; update_font_size(); } break;
+                            case 'S': doc.inverted = !doc.inverted; break;
+                        }
+                    }
                 }
-                
-                if (do_render && running) render();
+            } else if (c == 17) {
+                running = 0;
+                do_render = 0;
+            } else if (c == 19) {
+                save_document();
+                do_render = 0;
+            } else if (c == 127 || c == 8) {
+                handle_backspace();
+            } else if (c == '\n' || c == '\r') {
+                handle_enter();
+                word_wrap();
+            } else if (c >= 32 && c <= 126) {
+                insert_char(c);
+                word_wrap();
+            } else {
+                do_render = 0;
             }
+            
+            if (do_render && running) render();
         }
     }
     
