@@ -90,7 +90,7 @@ static int toast_frames = 0;
 
 static void show_toast(const char *msg) {
     strncpy(toast_msg, msg, sizeof(toast_msg) - 1);
-    toast_frames = 60;
+    toast_frames = 1;
 }
 
 static Color COLOR_BLACK = {0, 0, 0, 255};
@@ -186,11 +186,11 @@ static int get_lines_per_page(void) {
 }
 
 static int get_page_start_x(void) {
-    return display.margin_x;
+    return display.margin_x * doc.zoom;
 }
 
 static int get_page_start_y(void) {
-    return display.margin_y;
+    return display.margin_y * doc.zoom;
 }
 
 static void blit_pixel(int x, int y, Color c) {
@@ -365,6 +365,10 @@ static void render_to_backbuffer(void) {
     draw_margins();
     
     int lpp = get_lines_per_page();
+    int cursor_screen_line = lpp / 2;
+    doc.top_line = doc.cursor_line - cursor_screen_line;
+    if (doc.top_line < 0) doc.top_line = 0;
+    
     for (int i = doc.top_line; i < doc.total_lines && i - doc.top_line < lpp; i++) {
         for (int j = 0; j < doc.lines[i].char_count; j++) {
             draw_char(i, j);
@@ -380,6 +384,7 @@ static void render_to_backbuffer(void) {
     
     if (toast_frames > 0 && toast_msg[0] != '\0') {
         draw_toast();
+        toast_frames--;
     }
 }
 
@@ -620,8 +625,6 @@ static void draw_toast(void) {
     blit_rect(x + 2, y + 2, tw + 36, th - 4, get_color(COLOR_BLACK));
     blit_rect(x + 4, y + 4, tw + 32, th - 8, get_color(COLOR_PAGE));
     blit_text(x + 20, y + 10, toast_msg, get_color(COLOR_BLACK));
-    
-    toast_frames--;
 }
 
 static void insert_char(char c) {
