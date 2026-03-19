@@ -59,35 +59,33 @@ if [ ! -f "$ROOTFS" ]; then
     exit 1
 fi
 
-QEMU_CMD="qemu-system-x86_64"
-
-QEMU_CMD="$QEMU_CMD -kernel $KERNEL"
-QEMU_CMD="$QEMU_CMD -drive file=$ROOTFS,if=virtio,format=raw"
-QEMU_CMD="$QEMU_CMD -m 512"
-
-QEMU_CMD="$QEMU_CMD -vga std"
-QEMU_CMD="$QEMU_CMD -display sdl"
-
-QEMU_CMD="$QEMU_CMD -append \"console=tty0 root=/dev/vda rw\""
-
-if [ "$SERIAL" -eq 1 ]; then
-    QEMU_CMD="$QEMU_CMD -nographic"
-else
-    QEMU_CMD="$QEMU_CMD -serial file:$SCRIPT_DIR/serial.log"
-fi
-
-if [ "$KVM" -eq 1 ]; then
-    if grep -q "vmx\|svm" /proc/cpuinfo 2>/dev/null; then
-        QEMU_CMD="$QEMU_CMD -enable-kvm -cpu host"
-    else
-        echo "Warning: KVM not available, running without acceleration"
-    fi
-fi
-
-QEMU_CMD="$QEMU_CMD -netdev user,id=net0 -device virtio-net-pci,netdev=net0"
-
 echo "Starting Typewrite OS..."
-echo "Command: $QEMU_CMD"
 echo ""
 
-exec $QEMU_CMD
+if [ "$KVM" -eq 1 ]; then
+    KVM_OPTS="-enable-kvm -cpu host"
+else
+    KVM_OPTS=""
+fi
+
+if [ "$SERIAL" -eq 1 ]; then
+    exec qemu-system-x86_64 \
+        -kernel "$KERNEL" \
+        -drive "file=$ROOTFS,if=virtio,format=raw" \
+        -m 512 \
+        -nographic \
+        -append "console=tty0 root=/dev/vda rw" \
+        $KVM_OPTS \
+        -netdev user,id=net0 -device virtio-net-pci,netdev=net0
+else
+    exec qemu-system-x86_64 \
+        -kernel "$KERNEL" \
+        -drive "file=$ROOTFS,if=virtio,format=raw" \
+        -m 512 \
+        -vga std \
+        -display sdl \
+        -append "console=tty0 root=/dev/vda rw" \
+        -serial "file:$SCRIPT_DIR/serial.log" \
+        $KVM_OPTS \
+        -netdev user,id=net0 -device virtio-net-pci,netdev=net0
+fi
