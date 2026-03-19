@@ -725,23 +725,36 @@ int main(int argc, char *argv[]) {
                     if (i < n) {
                         unsigned char code = buf[i];
                         i++;
-                        switch (code) {
-                            case 'A': move_cursor(0, -1); break;
-                            case 'B': move_cursor(0, 1); break;
-                            case 'C': move_cursor(1, 0); break;
-                            case 'D': move_cursor(-1, 0); break;
-                            case '1':
-                                if (i < n && buf[i] == '~') { i++; cycle_ink_color(); }
-                                break;
-                            case '2':
-                                if (i < n && buf[i] == '~') { i++; if (doc.scale < 5) { doc.scale++; update_font_size(); } }
-                                break;
-                            case '3':
-                                if (i < n && buf[i] == '~') { i++; if (doc.scale > 1) { doc.scale--; update_font_size(); } }
-                                break;
-                            case '4':
-                                if (i < n && buf[i] == '~') { i++; doc.inverted = !doc.inverted; }
-                                break;
+                        if (code == '[') {
+                            if (i < n) {
+                                unsigned char fcode = buf[i];
+                                i++;
+                                switch (fcode) {
+                                    case 'A': cycle_ink_color(); break;
+                                    case 'B': if (doc.scale < 5) { doc.scale++; update_font_size(); } break;
+                                    case 'C': if (doc.scale > 1) { doc.scale--; update_font_size(); } break;
+                                    case 'D': doc.inverted = !doc.inverted; break;
+                                }
+                            }
+                        } else {
+                            switch (code) {
+                                case 'A': move_cursor(0, -1); break;
+                                case 'B': move_cursor(0, 1); break;
+                                case 'C': move_cursor(1, 0); break;
+                                case 'D': move_cursor(-1, 0); break;
+                                case '1':
+                                    if (i < n && buf[i] == '~') { i++; cycle_ink_color(); }
+                                    break;
+                                case '2':
+                                    if (i < n && buf[i] == '~') { i++; if (doc.scale < 5) { doc.scale++; update_font_size(); } }
+                                    break;
+                                case '3':
+                                    if (i < n && buf[i] == '~') { i++; if (doc.scale > 1) { doc.scale--; update_font_size(); } }
+                                    break;
+                                case '4':
+                                    if (i < n && buf[i] == '~') { i++; doc.inverted = !doc.inverted; }
+                                    break;
+                            }
                         }
                     }
                 } else if (next == 'O') {
