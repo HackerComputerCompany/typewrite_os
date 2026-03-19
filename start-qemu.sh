@@ -62,17 +62,16 @@ fi
 QEMU_CMD="qemu-system-x86_64"
 
 QEMU_CMD="$QEMU_CMD -kernel $KERNEL"
-QEMU_CMD="$QEMU_CMD -hda $ROOTFS"
+QEMU_CMD="$QEMU_CMD -drive file=$ROOTFS,if=virtio,format=raw"
 QEMU_CMD="$QEMU_CMD -m 512"
 
 QEMU_CMD="$QEMU_CMD -vga std"
 QEMU_CMD="$QEMU_CMD -display sdl"
 
-QEMU_CMD="$QEMU_CMD -append \"console=tty0 root=/dev/sda rw\""
+QEMU_CMD="$QEMU_CMD -append \"console=tty0 root=/dev/vda rw\""
 
 if [ "$SERIAL" -eq 1 ]; then
-    QEMU_CMD="$QEMU_CMD -serial stdio"
-    QEMU_CMD="${QEMU_CMD//-display sdl/}"
+    QEMU_CMD="$QEMU_CMD -nographic"
 else
     QEMU_CMD="$QEMU_CMD -serial file:$SCRIPT_DIR/serial.log"
 fi
