@@ -78,7 +78,7 @@ if [ "$SERIAL" -eq 1 ]; then
         $KVM_OPTS \
         -netdev user,id=net0 -device virtio-net-pci,netdev=net0
 else
-    exec qemu-system-x86_64 \
+    exec env SDL_VIDEO_WINDOW_POS=0,0 SDL_VIDEO_WINDOW_SIZE=1920x1080 qemu-system-x86_64 \
         -kernel "$KERNEL" \
         -drive "file=$ROOTFS,if=virtio,format=raw" \
         -m 512 \
