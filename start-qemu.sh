@@ -9,6 +9,7 @@ KERNEL="$IMAGES_DIR/bzImage"
 ROOTFS="$IMAGES_DIR/rootfs.ext2"
 INITRD="$IMAGES_DIR/rootfs.cpio.gz"
 
+SERIAL_SOCK="/tmp/typewrite-serial.sock"
 SERIAL=0
 KVM=1
 
@@ -59,9 +60,6 @@ if [ ! -f "$ROOTFS" ]; then
     exit 1
 fi
 
-echo "Starting Typewrite OS..."
-echo ""
-
 if [ "$KVM" -eq 1 ]; then
     KVM_OPTS="-enable-kvm -cpu host"
 else
@@ -78,6 +76,13 @@ if [ "$SERIAL" -eq 1 ]; then
         $KVM_OPTS \
         -netdev user,id=net0 -device virtio-net-pci,netdev=net0
 else
+    rm -f "$SERIAL_SOCK"
+    echo "Starting Typewrite OS..."
+    echo ""
+    echo "Serial console available at: $SERIAL_SOCK"
+    echo "Connect from another terminal with: socat - UNIX-CONNECT:$SERIAL_SOCK"
+    echo "Or: minicom -D \"unix#$SERIAL_SOCK\""
+    echo ""
     exec env SDL_VIDEO_WINDOW_POS=0,0 SDL_VIDEO_WINDOW_SIZE=1920x1080 qemu-system-x86_64 \
         -kernel "$KERNEL" \
         -drive "file=$ROOTFS,if=virtio,format=raw" \
@@ -85,7 +90,7 @@ else
         -vga std \
         -display sdl \
         -append "console=tty0 root=/dev/vda rw" \
-        -serial "file:$SCRIPT_DIR/serial.log" \
+        -serial "unix:$SERIAL_SOCK,server,nowait" \
         $KVM_OPTS \
         -netdev user,id=net0 -device virtio-net-pci,netdev=net0
 fi
