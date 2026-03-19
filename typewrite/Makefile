@@ -1,6 +1,6 @@
 CC ?= gcc
-CFLAGS ?= -Wall -O2
-LDFLAGS ?= -lfreetype -lm
+CFLAGS ?= -Wall -O2 $(shell pkg-config --cflags freetype2)
+LDFLAGS ?= $(shell pkg-config --libs freetype2) -lm
 
 TYPEWRITE_SRCS := src/main.c
 
