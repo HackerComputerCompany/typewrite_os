@@ -24,7 +24,6 @@
 #define DEFAULT_FONT_SIZE 14
 #define STATUS_BAR_HEIGHT 30
 #define MAX_RESOLUTIONS 4
-#define PAGE_GAP 10
 
 static const int resolutions[MAX_RESOLUTIONS][2] = {
     {640, 480},
@@ -359,71 +358,20 @@ static void draw_status_bar(void) {
 
 static void render_to_backbuffer(void) {
     blit_clear(get_color(COLOR_BG));
+    draw_page_background();
+    draw_margins();
     
-    int ch = get_char_height();
     int lpp = get_lines_per_page();
-    
-    // Calculate which line should be at center of screen
     int cursor_screen_line = lpp / 2;
-    
-    // Calculate Y offset accumulated from page gaps above top_line
-    int page_y_offset = 0;
-    int line_y = get_page_start_y();
-    
-    // Draw pages starting from top_line
-    int i = 0;
-    while (i < doc.total_lines) {
-        // Check if we're starting a new page (explicit break or natural page end)
-        bool is_page_start = (i == 0) || doc.lines[i-1].page_break;
-        int page_start = i;
-        
-        // Find end of this page
-        int page_end = page_start + lpp;
-        for (int j = page_start; j < page_end && j < doc.total_lines; j++) {
-            if (doc.lines[j].page_break && j > page_start) {
-                page_end = j + 1;
-                break;
-            }
-        }
-        if (page_end > doc.total_lines) page_end = doc.total_lines;
-        
-        // Draw page background
-        int page_height = (page_end - page_start) * ch + 8;
-        
-        // Check if this page should be visible
-        if (i + lpp > doc.top_line && i < doc.top_line + lpp + 5) {
-            // Draw page background
-            int px = get_page_start_x();
-            int py = line_y;
-            int pw = get_page_content_width();
-            int ph = page_height;
-            
-            blit_rect(px, py, pw, ph, get_color(COLOR_GRAY));
-            blit_rect(px + 4, py + 4, pw - 8, ph - 8, get_color(COLOR_PAGE));
-            
-            // Draw text for this page
-            int screen_line = i - doc.top_line;
-            if (screen_line < 0) screen_line = 0;
-            
-            for (int j = page_start; j < page_end; j++) {
-                int draw_line = j - doc.top_line;
-                if (draw_line >= 0 && draw_line < lpp) {
-                    for (int k = 0; k < doc.lines[j].char_count; k++) {
-                        draw_char(j, k);
-                    }
-                }
-            }
-        }
-        
-        i = page_end;
-        line_y += page_height + PAGE_GAP;
-    }
-    
-    // Ensure top_line keeps cursor visible
     doc.top_line = doc.cursor_line - cursor_screen_line;
     if (doc.top_line < 0) doc.top_line = 0;
     
-    draw_margins();
+    for (int i = doc.top_line; i < doc.total_lines && i - doc.top_line < lpp; i++) {
+        for (int j = 0; j < doc.lines[i].char_count; j++) {
+            draw_char(i, j);
+        }
+    }
+    
     draw_cursor();
     draw_status_bar();
     
