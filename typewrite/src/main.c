@@ -39,7 +39,6 @@ typedef struct {
 typedef struct {
     char text[MAX_LINE_LEN];
     int char_count;
-    bool strikethrough[MAX_LINE_LEN];
     uint8_t ink_idx[MAX_LINE_LEN];
 } Line;
 
@@ -310,10 +309,6 @@ static void draw_char(int line_idx, int char_idx) {
     Color c = get_color(ink_colors[idx]);
     
     blit_text(px, py, buf, c);
-    
-    if (doc.lines[line_idx].strikethrough[char_idx]) {
-        blit_line_h(px, py + ch / 2, px + cw - 2, c);
-    }
 }
 
 static void draw_cursor(void) {
@@ -335,25 +330,15 @@ static void draw_status_bar(void) {
     blit_rect(0, y, display.width, STATUS_BAR_HEIGHT, get_color(COLOR_WHITE));
     blit_line_h(0, y, display.width, get_color(COLOR_BLACK));
     
-    int visible_chars = 0;
-    int total_lines_used = 0;
-    for (int i = 0; i < doc.total_lines; i++) {
-        if (doc.lines[i].char_count > 0) total_lines_used = i + 1;
-        for (int j = 0; j < doc.lines[i].char_count; j++) {
-            if (!doc.lines[i].strikethrough[j]) visible_chars++;
-        }
-    }
-    
     char buf[256];
     const char *mode = doc.inverted ? "Dark" : "Light";
-    const char *res_name = (doc.res_idx < MAX_RESOLUTIONS - 1) ? "" : "native";
     char res_str[32];
     if (doc.res_idx < MAX_RESOLUTIONS - 1) {
         snprintf(res_str, sizeof(res_str), "%dx%d", resolutions[doc.res_idx][0], resolutions[doc.res_idx][1]);
     } else {
         snprintf(res_str, sizeof(res_str), "native");
     }
-    snprintf(buf, sizeof(buf), "%s | Zoom:%dx | %s | Ink:%s | F1:help F6:res",
+    snprintf(buf, sizeof(buf), "%s | Zoom:%dx | %s | Ink:%s | F1:help F6:res F7:new",
              res_str, doc.zoom, mode, ink_names[doc.ink_idx]);
     
     blit_text(10, y + 8, buf, get_color(COLOR_BLACK));
@@ -636,8 +621,7 @@ static void insert_char(char c) {
     if (doc.cursor_col >= MAX_LINE_LEN - 1) return;
     
     line->text[doc.cursor_col] = c;
-    line->strikethrough[doc.cursor_col] = false;
-    line->ink_idx[doc.cursor_col] = doc.ink_idx;
+line->ink_idx[doc.cursor_col] = doc.ink_idx;
     
     if (doc.cursor_col >= line->char_count) {
         line->char_count = doc.cursor_col + 1;
@@ -648,11 +632,8 @@ static void insert_char(char c) {
 }
 
 static void handle_backspace(void) {
-    Line *line = &doc.lines[doc.cursor_line];
-    
     if (doc.cursor_col > 0) {
-        int pos = doc.cursor_col - 1;
-        line->strikethrough[pos] = true;
+        doc.cursor_col--;
         doc.dirty = true;
     } else if (doc.cursor_line > 0) {
         doc.cursor_line--;
@@ -672,35 +653,6 @@ static void handle_enter(void) {
         memset(&doc.lines[doc.cursor_line], 0, sizeof(Line));
     }
     doc.dirty = true;
-}
-
-static void word_wrap(void) {
-    int cpl = get_chars_per_line();
-    if (cpl <= 0) return;
-    
-    for (int line = 0; line < doc.total_lines; line++) {
-        while (doc.lines[line].char_count > cpl) {
-            int bp = cpl;
-            while (bp > 0 && doc.lines[line].text[bp] != ' ') bp--;
-            if (bp == 0) bp = cpl;
-            
-            int next_line = line + 1;
-            if (next_line >= MAX_LINES) break;
-            if (next_line >= doc.total_lines) doc.total_lines = next_line + 1;
-            
-            for (int i = bp + 1; i < doc.lines[line].char_count; i++) {
-                int dest = doc.lines[next_line].char_count++;
-                if (dest < MAX_LINE_LEN - 1) {
-                    doc.lines[next_line].text[dest] = doc.lines[line].text[i];
-                    doc.lines[next_line].strikethrough[dest] = doc.lines[line].strikethrough[i];
-                    doc.lines[next_line].ink_idx[dest] = doc.lines[line].ink_idx[i];
-                }
-            }
-            
-            doc.lines[line].char_count = bp;
-            if (doc.lines[line].text[bp] == ' ') doc.lines[line].char_count = bp;
-        }
-    }
 }
 
 static void move_cursor(int dx, int dy) {
@@ -737,13 +689,7 @@ static void save_document(void) {
     
     for (int i = 0; i < doc.total_lines; i++) {
         for (int j = 0; j < doc.lines[i].char_count; j++) {
-            if (j > 0 && !doc.lines[i].strikethrough[j - 1] && doc.lines[i].strikethrough[j]) {
-                fputs("~~", f);
-            }
             fputc(doc.lines[i].text[j], f);
-            if (doc.lines[i].strikethrough[j] && (j == doc.lines[i].char_count - 1 || !doc.lines[i].strikethrough[j + 1])) {
-                fputs("~~", f);
-            }
         }
         if (i < doc.total_lines - 1) fputc('\n', f);
     }
@@ -793,23 +739,11 @@ static void load_document(void) {
         if (len > 0 && buf[len - 1] == '\n') buf[--len] = 0;
         
         int col = 0;
-        int i = 0;
-        bool in_strike = false;
-        
-        while (i < len && col < MAX_LINE_LEN - 1) {
-            if (i < len - 1 && buf[i] == '~' && buf[i + 1] == '~') {
-                in_strike = !in_strike;
-                i += 2;
-                continue;
-            }
+        for (int i = 0; i < len && col < MAX_LINE_LEN - 1; i++) {
             doc.lines[line].text[col] = buf[i];
-            doc.lines[line].strikethrough[col] = in_strike;
             doc.lines[line].ink_idx[col] = 0;
             col++;
-            i++;
         }
-        doc.lines[line].ink_idx[col] = 0;
-        
         doc.lines[line].char_count = col;
         line++;
     }
@@ -820,7 +754,7 @@ static void load_document(void) {
     doc.top_line = 0;
     
     fclose(f);
-    printf("Loaded: /root/document.md\n");
+    printf("Loaded: %s\n", current_filename);
 }
 
 static const char *font_paths[] = {
@@ -978,11 +912,9 @@ int main(int argc, char *argv[]) {
                 handle_backspace();
             } else if (c == '\n' || c == '\r') {
                 handle_enter();
-                word_wrap();
             } else if (c >= 32 && c <= 126) {
                 if (debug_log) { fprintf(debug_log, "Inserting char '%c' at line %d col %d\n", c, doc.cursor_line, doc.cursor_col); fflush(debug_log); }
                 insert_char(c);
-                word_wrap();
             } else {
                 do_render = 0;
             }
