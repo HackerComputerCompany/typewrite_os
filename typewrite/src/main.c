@@ -73,6 +73,7 @@ static FontState font;
 static Document doc;
 static int tty_fd = -1;
 static int original_kb_mode = KD_TEXT;
+static FILE *debug_log = NULL;
 
 static Color COLOR_BLACK = {0, 0, 0, 255};
 static Color COLOR_WHITE = {255, 255, 255, 255};
@@ -644,6 +645,12 @@ static const char *font_paths[] = {
 int main(int argc, char *argv[]) {
     printf("=== Typewrite ===\n");
     
+    debug_log = fopen("/tmp/typewrite_debug.log", "w");
+    if (debug_log) {
+        fprintf(debug_log, "=== Typewrite Debug Log ===\n");
+        fflush(debug_log);
+    }
+    
     init_ink_colors();
     init_document();
     
@@ -687,6 +694,13 @@ int main(int argc, char *argv[]) {
     while (running) {
         ssize_t n = read(STDIN_FILENO, buf, sizeof(buf));
         if (n <= 0) continue;
+        
+        if (debug_log) {
+            fprintf(debug_log, "Read %zd bytes: ", n);
+            for (ssize_t j = 0; j < n && j < 10; j++) fprintf(debug_log, "%02x ", buf[j]);
+            fprintf(debug_log, "\n");
+            fflush(debug_log);
+        }
         
         int i = 0;
         while (i < n) {
@@ -745,6 +759,7 @@ int main(int argc, char *argv[]) {
                 handle_enter();
                 word_wrap();
             } else if (c >= 32 && c <= 126) {
+                if (debug_log) { fprintf(debug_log, "Inserting char '%c' at line %d col %d\n", c, doc.cursor_line, doc.cursor_col); fflush(debug_log); }
                 insert_char(c);
                 word_wrap();
             } else {
@@ -756,6 +771,11 @@ int main(int argc, char *argv[]) {
     }
     
     if (doc.dirty) save_document();
+    
+    if (debug_log) {
+        fprintf(debug_log, "Exiting\n");
+        fclose(debug_log);
+    }
     
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &old_tty);
     restore_console();
