@@ -140,7 +140,7 @@ static Color get_color(Color normal) {
 }
 
 static int get_char_width(void) {
-    return (font.max_advance * doc.scale);
+    return (font.max_advance * doc.scale) / 64;
 }
 
 static int get_char_height(void) {
@@ -349,6 +349,11 @@ static void flip_buffers(void) {
 }
 
 static void render(void) {
+    if (debug_log) {
+        fprintf(debug_log, "Render: line=%d col=%d total_lines=%d top_line=%d\n", 
+                doc.cursor_line, doc.cursor_col, doc.total_lines, doc.top_line);
+        fflush(debug_log);
+    }
     render_to_backbuffer();
     flip_buffers();
 }
@@ -424,6 +429,11 @@ static int init_font(const char *path) {
     font.slot = font.face->glyph;
     font.height = font.face->height;
     font.max_advance = font.face->max_advance_width;
+    
+    if (debug_log) {
+        fprintf(debug_log, "Font loaded: %s advance=%d height=%d\n", path, font.max_advance, font.height);
+        fflush(debug_log);
+    }
     
     printf("Font: %s at %dpt %dx%d\n", path, DEFAULT_FONT_SIZE, font.max_advance, font.height);
     return 0;
