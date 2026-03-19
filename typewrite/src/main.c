@@ -866,6 +866,8 @@ int main(int argc, char *argv[]) {
                                     case 'B': if (doc.zoom > 1) { doc.zoom--; update_font_size(); } break;
                                     case 'C': if (doc.zoom < 5) { doc.zoom++; update_font_size(); } break;
                                     case 'D': doc.inverted = !doc.inverted; break;
+                                    case 'E': cycle_ink_color(); break;
+                                    case 'F': cycle_resolution(); break;
                                 }
                             }
                         } else {
@@ -876,6 +878,7 @@ int main(int argc, char *argv[]) {
                                 case 'D': move_cursor(-1, 0); break;
                                 case '1':
                                     if (i < n && buf[i] == '~') { i++; show_help = !show_help; }
+                                    else if (i < n && buf[i] == '7' && i+1 < n && buf[i+1] == '~') { i += 2; cycle_resolution(); }
                                     break;
                                 case '2':
                                     if (i < n && buf[i] == '~') { i++; if (doc.zoom > 1) { doc.zoom--; update_font_size(); } }
