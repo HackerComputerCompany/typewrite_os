@@ -144,7 +144,7 @@ static Color get_color(Color normal) {
 }
 
 static int get_char_width(void) {
-    return (font.char_width * doc.zoom) / 64;
+    return font.char_width * doc.zoom;
 }
 
 static int get_char_height(void) {
