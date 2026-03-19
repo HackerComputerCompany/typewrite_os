@@ -85,6 +85,13 @@ static int tty_fd = -1;
 static int original_kb_mode = KD_TEXT;
 static FILE *debug_log = NULL;
 static int show_help = 0;
+static char toast_msg[128] = "";
+static int toast_frames = 0;
+
+static void show_toast(const char *msg) {
+    strncpy(toast_msg, msg, sizeof(toast_msg) - 1);
+    toast_frames = 60;
+}
 
 static Color COLOR_BLACK = {0, 0, 0, 255};
 static Color COLOR_WHITE = {255, 255, 255, 255};
@@ -320,6 +327,7 @@ static void draw_cursor(void) {
 }
 
 static void draw_help_overlay(void);
+static void draw_toast(void);
 
 static void draw_status_bar(void) {
     int y = display.height - STATUS_BAR_HEIGHT;
@@ -368,6 +376,10 @@ static void render_to_backbuffer(void) {
     
     if (show_help) {
         draw_help_overlay();
+    }
+    
+    if (toast_frames > 0 && toast_msg[0] != '\0') {
+        draw_toast();
     }
 }
 
@@ -591,6 +603,25 @@ static void draw_help_overlay(void) {
     blit_text(tx, ty, "Arrow keys: Move cursor", get_color(COLOR_BLACK)); ty += 20;
     blit_text(tx, ty, "Backspace: Delete/strikethrough", get_color(COLOR_BLACK)); ty += 20;
     blit_text(tx, ty, "Ctrl+S: Save | Ctrl+Q: Quit", get_color(COLOR_BLACK)); ty += 20;
+}
+
+static void draw_toast(void) {
+    if (toast_frames <= 0 || toast_msg[0] == '\0') return;
+    
+    int len = strlen(toast_msg);
+    int tw = len * get_char_width();
+    int th = get_char_height() + 16;
+    int x = (display.width - tw) / 2 - 20;
+    int y = display.height / 2;
+    
+    if (x < 10) x = 10;
+    
+    blit_rect(x, y, tw + 40, th, get_color(COLOR_WHITE));
+    blit_rect(x + 2, y + 2, tw + 36, th - 4, get_color(COLOR_BLACK));
+    blit_rect(x + 4, y + 4, tw + 32, th - 8, get_color(COLOR_PAGE));
+    blit_text(x + 20, y + 10, toast_msg, get_color(COLOR_BLACK));
+    
+    toast_frames--;
 }
 
 static void insert_char(char c) {
@@ -862,12 +893,13 @@ int main(int argc, char *argv[]) {
                                 unsigned char fcode = buf[i];
                                 i++;
                                 switch (fcode) {
-                                    case 'A': show_help = !show_help; break;
-                                    case 'B': if (doc.zoom > 1) { doc.zoom--; update_font_size(); } break;
-                                    case 'C': if (doc.zoom < 5) { doc.zoom++; update_font_size(); } break;
-                                    case 'D': doc.inverted = !doc.inverted; break;
-                                    case 'E': cycle_ink_color(); break;
-                                    case 'F': cycle_resolution(); break;
+                                    case 'A': show_help = !show_help; break;           // F1
+                                    case 'B': if (doc.zoom > 1) { doc.zoom--; update_font_size(); } break;  // F2
+                                    case 'C': if (doc.zoom < 5) { doc.zoom++; update_font_size(); } break;  // F3
+                                    case 'D': doc.inverted = !doc.inverted; break;     // F4
+                                    case 'E': cycle_ink_color(); break;                // F5
+                                    case 'F': cycle_resolution(); break;               // F6
+                                    default: show_toast("F key not assigned"); break;
                                 }
                             }
                         } else {
@@ -879,12 +911,18 @@ int main(int argc, char *argv[]) {
                                 case '1':
                                     if (i < n && buf[i] == '~') { i++; show_help = !show_help; }
                                     else if (i < n && buf[i] == '7' && i+1 < n && buf[i+1] == '~') { i += 2; cycle_resolution(); }
+                                    else if (i < n && buf[i] == '8' && i+1 < n && buf[i+1] == '~') { i += 2; show_toast("F7 not assigned"); }
+                                    else if (i < n && buf[i] == '9' && i+1 < n && buf[i+1] == '~') { i += 2; show_toast("F8 not assigned"); }
                                     break;
                                 case '2':
                                     if (i < n && buf[i] == '~') { i++; if (doc.zoom > 1) { doc.zoom--; update_font_size(); } }
+                                    else if (i < n && buf[i] == '0' && i+1 < n && buf[i+1] == '~') { i += 2; show_toast("F9 not assigned"); }
+                                    else if (i < n && buf[i] == '1' && i+1 < n && buf[i+1] == '~') { i += 2; show_toast("F10 not assigned"); }
                                     break;
                                 case '3':
                                     if (i < n && buf[i] == '~') { i++; if (doc.zoom < 5) { doc.zoom++; update_font_size(); } }
+                                    else if (i < n && buf[i] == '3' && i+1 < n && buf[i+1] == '~') { i += 2; show_toast("F11 not assigned"); }
+                                    else if (i < n && buf[i] == '4' && i+1 < n && buf[i+1] == '~') { i += 2; show_toast("F12 not assigned"); }
                                     break;
                                 case '4':
                                     if (i < n && buf[i] == '~') { i++; doc.inverted = !doc.inverted; }
@@ -893,7 +931,7 @@ int main(int argc, char *argv[]) {
                                     if (i < n && buf[i] == '~') { i++; cycle_ink_color(); }
                                     break;
                                 case '6':
-                                    if (i < n && buf[i] == '~') { i++; cycle_resolution(); }
+                                    if (i < n && buf[i] == '~') { i++; show_toast("F6: Use F6 for resolution"); }
                                     break;
                             }
                         }
@@ -908,6 +946,9 @@ int main(int argc, char *argv[]) {
                             case 'Q': if (doc.zoom > 1) { doc.zoom--; update_font_size(); } break;
                             case 'R': if (doc.zoom < 5) { doc.zoom++; update_font_size(); } break;
                             case 'S': doc.inverted = !doc.inverted; break;
+                            case 'T': cycle_ink_color(); break;
+                            case 'U': cycle_resolution(); break;
+                            default: show_toast("F key not assigned"); break;
                         }
                     }
                 }
