@@ -258,19 +258,24 @@ static void blit_text(int x, int y, const char *text, Color c) {
     FT_GlyphSlot slot = font.slot;
     const char *p = text;
     int pen_x = x;
-    int baseline_y = y + (font.height * doc.zoom) / 64;
+    int cell_height = get_char_height();
+    int cell_width = get_char_width();
+    int baseline_y = y + cell_height;
     
     while (*p) {
         FT_Load_Glyph(font.face, FT_Get_Char_Index(font.face, (unsigned char)*p), FT_LOAD_RENDER);
         
-        int sx = pen_x + slot->bitmap_left * doc.zoom;
-        int sy = baseline_y - slot->bitmap_top * doc.zoom;
+        int glyph_height = slot->bitmap.rows;
+        int glyph_width = slot->bitmap.width;
+        
+        int sx = pen_x + (cell_width - glyph_width) / 2;
+        int sy = baseline_y - cell_height + (cell_height - glyph_height) / 2;
         
         if (slot->bitmap.pixel_mode == FT_PIXEL_MODE_GRAY) {
             blit_glyph(sx, sy, &slot->bitmap, c);
         }
         
-        pen_x += (slot->advance.x >> 6) * doc.zoom;
+        pen_x += cell_width;
         p++;
     }
 }
