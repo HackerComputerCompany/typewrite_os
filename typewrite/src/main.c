@@ -19,16 +19,20 @@
 #include <ft2build.h>
 #include FT_FREETYPE_H
 
+#define VERSION "0.5"
+#define BUILD_DATE __DATE__
+
 #define MAX_LINES 500
 #define MAX_LINE_LEN 200
 #define DEFAULT_FONT_SIZE 14
 #define STATUS_BAR_HEIGHT 30
-#define MAX_RESOLUTIONS 4
+#define MAX_RESOLUTIONS 5
 
 static const int resolutions[MAX_RESOLUTIONS][2] = {
     {640, 480},
     {800, 600},
     {1024, 768},
+    {1280, 1024},
     {0, 0}
 };
 
@@ -41,7 +45,6 @@ typedef struct {
     int char_count;
     uint8_t ink_idx[MAX_LINE_LEN];
     uint8_t bold[MAX_LINE_LEN];
-    bool page_break;  // true if page break after this line
 } Line;
 
 typedef struct {
@@ -170,12 +173,16 @@ static int get_char_height(void) {
     return font.height;
 }
 
+static int get_status_bar_height(void) {
+    return STATUS_BAR_HEIGHT * doc.zoom * (doc.zoom > 1 ? 2 : 1);
+}
+
 static int get_page_content_width(void) {
     return display.width - display.margin_x * 2;
 }
 
 static int get_page_content_height(void) {
-    return display.height - display.margin_y * 2 - STATUS_BAR_HEIGHT;
+    return display.height - display.margin_y * 2 - get_status_bar_height();
 }
 
 static int get_chars_per_line(void) {
@@ -236,7 +243,7 @@ static void blit_clear(Color c) {
 static void blit_glyph(int x, int y, FT_Bitmap *bitmap, Color fg) {
     int px, py, a;
     unsigned char *s = bitmap->buffer;
-    Color bg = get_color(COLOR_WHITE);
+    Color bg = get_color(COLOR_PAGE);
     
     for (py = 0; py < bitmap->rows; py++) {
         for (px = 0; px < bitmap->width; px++) {
@@ -298,81 +305,77 @@ static void draw_page_background(void) {
 static void draw_margins(void) {
     Color mc = get_color(COLOR_RED);
     int top_y = get_page_start_y();
-    int bottom_y = display.height - STATUS_BAR_HEIGHT;
+    int bottom_y = display.height - get_status_bar_height();
     blit_line_v(display.margin_x - 2, top_y, bottom_y, mc);
     blit_line_v(display.width - display.margin_x + 1, top_y, bottom_y, mc);
-}
-
-static void draw_char(int line_idx, int char_idx) {
-    if (line_idx < 0 || line_idx >= doc.total_lines) return;
-    if (char_idx < 0 || char_idx >= doc.lines[line_idx].char_count) return;
-    
-    int cw = get_char_width();
-    int ch = get_char_height();
-    int px = get_page_start_x() + 4 + char_idx * cw;
-    int py = get_page_start_y() + 4 + (line_idx - doc.top_line) * ch;
-    
-    if (py + ch < get_page_start_y() || py >= display.height - STATUS_BAR_HEIGHT) return;
-    
-    char buf[2] = {doc.lines[line_idx].text[char_idx], 0};
-    uint8_t idx = doc.lines[line_idx].ink_idx[char_idx];
-    bool is_bold = doc.lines[line_idx].bold[char_idx];
-    Color c = get_color(ink_colors[idx]);
-    
-    blit_text(px, py, buf, c, is_bold);
-}
-
-static void draw_cursor(void) {
-    int x = get_page_start_x() + 4 + doc.cursor_col * get_char_width();
-    int y = get_page_start_y() + 4 + (doc.cursor_line - doc.top_line) * get_char_height();
-    int cw = get_char_width();
-    int ch = get_char_height();
-    
-    Color c = get_color(COLOR_BLACK);
-    blit_rect(x, y + ch - 3, cw, 3, c);
 }
 
 static void draw_help_overlay(void);
 static void draw_toast(void);
 
 static void draw_status_bar(void) {
-    int y = display.height - STATUS_BAR_HEIGHT;
+    int ch = get_char_height();
+    int sb_height = get_status_bar_height();
+    bool two_rows = (doc.zoom > 1);
     
-    blit_rect(0, y, display.width, STATUS_BAR_HEIGHT, get_color(COLOR_WHITE));
+    char buf1[256];
+    char buf2[256];
+    const char *bold_str = doc.bold ? "B" : "";
+    
+    snprintf(buf1, sizeof(buf1), "F1:Help | F2:Zoom | F4:Dark | F5:Ink:%s%s", ink_names[doc.ink_idx], bold_str);
+    snprintf(buf2, sizeof(buf2), "F6:Res | F7:New | F8:Tab | F9:Bold | ^S:Save | ^Q:Quit");
+    
+    int y = display.height - sb_height;
+    
+    blit_rect(0, y, display.width, sb_height, get_color(COLOR_WHITE));
     blit_line_h(0, y, display.width, get_color(COLOR_BLACK));
     
-    char buf[256];
-    const char *mode = doc.inverted ? "Dark" : "Light";
-    char res_str[32];
-    if (doc.res_idx < MAX_RESOLUTIONS - 1) {
-        snprintf(res_str, sizeof(res_str), "%dx%d", resolutions[doc.res_idx][0], resolutions[doc.res_idx][1]);
+    if (two_rows) {
+        blit_text(10, y + 8, buf1, get_color(COLOR_BLACK), false);
+        blit_text(10, y + 8 + ch + 4, buf2, get_color(COLOR_BLACK), false);
     } else {
-        snprintf(res_str, sizeof(res_str), "native");
+        blit_text(10, y + (sb_height - ch) / 2, buf1, get_color(COLOR_BLACK), false);
     }
-    const char *bold_str = doc.bold ? "B" : "";
-    snprintf(buf, sizeof(buf), "%s | Zoom:%dx | %s | Ink:%s%s | Tab:%d | F1:help",
-             res_str, doc.zoom, mode, ink_names[doc.ink_idx], bold_str, doc.tab_width);
-    
-    blit_text(10, y + 8, buf, get_color(COLOR_BLACK), false);
 }
 
 static void render_to_backbuffer(void) {
     blit_clear(get_color(COLOR_BG));
-    draw_page_background();
-    draw_margins();
     
     int lpp = get_lines_per_page();
+    int ch = get_char_height();
     int cursor_screen_line = lpp / 2;
     doc.top_line = doc.cursor_line - cursor_screen_line;
     if (doc.top_line < 0) doc.top_line = 0;
     
-    for (int i = doc.top_line; i < doc.total_lines && i - doc.top_line < lpp; i++) {
-        for (int j = 0; j < doc.lines[i].char_count; j++) {
-            draw_char(i, j);
+    int start_y = get_page_start_y() + 4;
+    int start_x = get_page_start_x() + 4;
+    int page_bottom = display.height - get_status_bar_height() - ch;
+    
+    draw_page_background();
+    draw_margins();
+    
+    int screen_y = start_y;
+    
+    for (int line = doc.top_line; line < doc.total_lines; line++) {
+        if (screen_y >= page_bottom) break;
+        
+        for (int j = 0; j < doc.lines[line].char_count; j++) {
+            int px = start_x + j * get_char_width();
+            if (px < display.width - display.margin_x) {
+                char buf[2] = {doc.lines[line].text[j], 0};
+                uint8_t ink = doc.lines[line].ink_idx[j];
+                bool bold = doc.lines[line].bold[j];
+                blit_text(px, screen_y, buf, get_color(ink_colors[ink]), bold);
+            }
         }
+        
+        screen_y += ch;
     }
     
-    draw_cursor();
+    int cursor_y = start_y + (doc.cursor_line - doc.top_line) * ch;
+    int cursor_x = start_x + doc.cursor_col * get_char_width();
+    blit_rect(cursor_x, cursor_y + ch - 3, get_char_width(), 3, get_color(COLOR_BLACK));
+    
     draw_status_bar();
     
     if (show_help) {
@@ -621,7 +624,7 @@ static void draw_help_overlay(void) {
     int ch = get_char_height();
     int max_text_width = 30 * cw;
     int w = max_text_width + 60;
-    int h = 15 * ch + 40;
+    int h = 17 * ch + 40;
     int x = (display.width - w) / 2;
     int y = (display.height - h) / 2;
     
@@ -632,8 +635,11 @@ static void draw_help_overlay(void) {
     int ty = y + 12;
     int tx = x + 20;
     blit_text(tx, ty, "Typewrite Help", get_color(COLOR_BLACK), false); ty += ch + 5;
+    char ver[64];
+    snprintf(ver, sizeof(ver), "v%s - %s", VERSION, BUILD_DATE);
+    blit_text(tx, ty, ver, get_color(COLOR_GRAY), false); ty += ch + 5;
     blit_text(tx, ty, "F1: Show/hide this help", get_color(COLOR_BLACK), false); ty += ch;
-    blit_text(tx, ty, "F2/F3: Zoom out/in (1x/2x)", get_color(COLOR_BLACK), false); ty += ch;
+    blit_text(tx, ty, "F2: Toggle zoom (1x/2x)", get_color(COLOR_BLACK), false); ty += ch;
     blit_text(tx, ty, "F4: Toggle dark mode", get_color(COLOR_BLACK), false); ty += ch;
     blit_text(tx, ty, "F5: Next ink color", get_color(COLOR_BLACK), false); ty += ch;
     blit_text(tx, ty, "F6: Change resolution", get_color(COLOR_BLACK), false); ty += ch;
@@ -929,7 +935,7 @@ int main(int argc, char *argv[]) {
     tcsetattr(STDIN_FILENO, TCSANOW, &new_tty);
     
     render();
-    printf("Ready! F1:help F2:zoom- F3:zoom+ F4:dark F5:ink | Ctrl+S:save Ctrl+Q:quit\n");
+    printf("Ready! F1:help F2:zoom F4:dark F5:ink F8:tab F9:bold | Ctrl+S:save Ctrl+Q:quit\n");
     
     unsigned char buf[64];
     int running = 1;
@@ -964,8 +970,7 @@ int main(int argc, char *argv[]) {
                                 i++;
                                 switch (fcode) {
                                     case 'A': show_help = !show_help; break;           // F1
-                                    case 'B': if (doc.zoom > 1) { doc.zoom--; update_font_size(); } break;  // F2
-                                    case 'C': if (doc.zoom < 2) { doc.zoom++; update_font_size(); } break;  // F3
+                                    case 'B': doc.zoom = (doc.zoom == 1) ? 2 : 1; update_font_size(); break;  // F2 toggle zoom
                                     case 'D': doc.inverted = !doc.inverted; break;     // F4
                                     case 'E': cycle_ink_color(); break;                // F5
                                     case 'F': cycle_resolution(); break;               // F6
@@ -986,12 +991,12 @@ int main(int argc, char *argv[]) {
                                     else if (i < n && buf[i] == '9' && i+1 < n && buf[i+1] == '~') { i += 2; cycle_tab_width(); }
                                     break;
                                 case '2':
-                                    if (i < n && buf[i] == '~') { i++; if (doc.zoom > 1) { doc.zoom--; update_font_size(); } }
+                                    if (i < n && buf[i] == '~') { i++; doc.zoom = (doc.zoom == 1) ? 2 : 1; update_font_size(); }
                                     else if (i < n && buf[i] == '0' && i+1 < n && buf[i+1] == '~') { i += 2; toggle_bold(); }
                                     else if (i < n && buf[i] == '1' && i+1 < n && buf[i+1] == '~') { i += 2; show_toast("F10 not assigned"); }
                                     break;
                                 case '3':
-                                    if (i < n && buf[i] == '~') { i++; if (doc.zoom < 2) { doc.zoom++; update_font_size(); } }
+                                    if (i < n && buf[i] == '~') { i++; show_toast("F3 not assigned"); }
                                     else if (i < n && buf[i] == '3' && i+1 < n && buf[i+1] == '~') { i += 2; show_toast("F11 not assigned"); }
                                     else if (i < n && buf[i] == '4' && i+1 < n && buf[i+1] == '~') { i += 2; show_toast("F12 not assigned"); }
                                     break;
@@ -1014,8 +1019,8 @@ int main(int argc, char *argv[]) {
                         i++;
                         switch (code) {
                             case 'P': show_help = !show_help; break;
-                            case 'Q': if (doc.zoom > 1) { doc.zoom--; update_font_size(); } break;
-                            case 'R': if (doc.zoom < 2) { doc.zoom++; update_font_size(); } break;
+                            case 'Q': doc.zoom = (doc.zoom == 1) ? 2 : 1; update_font_size(); break;
+                            case 'R': show_toast("F3 not assigned"); break;
                             case 'S': doc.inverted = !doc.inverted; break;
                             case 'T': cycle_ink_color(); break;
                             case 'U': cycle_resolution(); break;

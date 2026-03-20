@@ -12,19 +12,22 @@ INITRD="$IMAGES_DIR/rootfs.cpio.gz"
 SERIAL_SOCK="/tmp/typewrite-serial.sock"
 SERIAL=0
 KVM=1
+RESOLUTION="1280x1024"
 
 usage() {
     echo "Usage: $0 [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  --serial    Run with serial console output"
-    echo "  --no-kvm    Disable KVM acceleration"
-    echo "  --help      Show this help message"
+    echo "  --serial        Run with serial console output"
+    echo "  --no-kvm        Disable KVM acceleration"
+    echo "  --res WxH       Set native resolution (default: 1280x1024)"
+    echo "  --help          Show this help message"
     echo ""
     echo "Examples:"
-    echo "  $0              # Normal run with KVM acceleration"
-    echo "  $0 --serial     # Run with serial console only"
-    echo "  $0 --no-kvm     # Run without KVM (slower)"
+    echo "  $0                              # Normal run at 1280x1024"
+    echo "  $0 --res 2560x1600              # Run at 2560x1600"
+    echo "  $0 --serial                     # Run with serial console only"
+    echo "  $0 --no-kvm                     # Run without KVM (slower)"
     exit 1
 }
 
@@ -37,6 +40,10 @@ while [[ $# -gt 0 ]]; do
         --no-kvm)
             KVM=0
             shift
+            ;;
+        --res)
+            RESOLUTION="$2"
+            shift 2
             ;;
         --help)
             usage
@@ -78,18 +85,18 @@ if [ "$SERIAL" -eq 1 ]; then
 else
     rm -f "$SERIAL_SOCK"
     echo "Starting Typewrite OS..."
+    echo "Resolution: $RESOLUTION"
     echo ""
     echo "Serial console available at: $SERIAL_SOCK"
     echo "Connect from another terminal with: socat - UNIX-CONNECT:$SERIAL_SOCK"
     echo "Or: minicom -D \"unix#$SERIAL_SOCK\""
     echo ""
-    exec env SDL_VIDEO_WINDOW_POS=0,0 SDL_VIDEO_WINDOW_SIZE=1024x768 qemu-system-x86_64 \
-        -kernel "$KERNEL" \
-        -drive "file=$ROOTFS,if=virtio,format=raw" \
-        -m 512 \
-        -vga std \
-        -display sdl \
-        -append "console=tty0 console=ttyS0 root=/dev/vda rw video=1024x768" \
+exec env SDL_VIDEO_WINDOW_POS=0,0 SDL_VIDEO_WINDOW_SIZE=$RESOLUTION qemu-system-x86_64 \
+    -enable-kvm \
+    -m 512 \
+    -kernel buildroot-2024.02/output/images/bzImage \
+    -drive file=buildroot-2024.02/output/images/rootfs.ext2,format=raw,if=virtio \
+    -append "console=tty0 console=ttyS0 root=/dev/vda rw video=$RESOLUTION" \
         -serial "unix:$SERIAL_SOCK,server,nowait" \
         $KVM_OPTS \
         -netdev user,id=net0 -device virtio-net-pci,netdev=net0
