@@ -320,12 +320,12 @@ if [ "$HYBRID_MODE" = true ] || [ "$UEFI_ONLY" = true ]; then
 set timeout=10
 set default=0
 
-menuentry "Typewrite OS (1024x768)" {
-    linux /boot/bzImage root=/dev/sda3 rw console=tty0 rootdelay=5 vga=791
-}
-
 menuentry "Typewrite OS (1280x800)" {
     linux /boot/bzImage root=/dev/sda3 rw console=tty0 rootdelay=5 vga=817
+}
+
+menuentry "Typewrite OS (1024x768)" {
+    linux /boot/bzImage root=/dev/sda3 rw console=tty0 rootdelay=5 vga=791
 }
 
 menuentry "Typewrite OS (1440x900)" {
@@ -346,6 +346,10 @@ menuentry "Troubleshooting (Text Mode)" {
 
 menuentry "Troubleshooting (Shell)" {
     linux /boot/bzImage root=/dev/sda3 rw console=tty0 rootdelay=5 shell=1
+}
+
+menuentry "Troubleshooting (Graphics Debug)" {
+    linux /boot/bzImage root=/dev/sda3 rw console=tty0 rootdelay=5 gfxdebug=1
 }
 
 menuentry "Troubleshooting (Safe Mode)" {
@@ -438,6 +442,11 @@ LABEL typewrite_nofb
     LINUX /boot/bzImage
     APPEND root=/dev/sda3 rw console=tty0 rootdelay=5
 
+LABEL typewrite_gfxdebug
+    MENU LABEL Troubleshooting (Graphics Debug)
+    LINUX /boot/bzImage
+    APPEND root=/dev/sda3 rw console=tty0 rootdelay=5 gfxdebug=1
+
 LABEL typewrite_shell
     MENU LABEL Troubleshooting (Shell)
     LINUX /boot/bzImage
@@ -446,6 +455,7 @@ LABEL typewrite_shell
 MENU SEPARATOR
 TEXT HELP
 Select display mode. Try Safe Mode if graphics look wrong.
+Use Graphics Debug to detect hardware issues.
 ENDTEXT
 
 MENU END

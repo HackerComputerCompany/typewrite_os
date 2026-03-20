@@ -136,15 +136,57 @@ Common parameters for troubleshooting:
 ```
 root=/dev/sda3         # Root partition (sda3 for hybrid)
 console=tty0           # Output to primary display
-rootdelay=5            # Wait for USB to initialize
+rootdelay=5           # Wait for USB to initialize
 vga=XXX               # VESA mode number
-video=XXX             # Alternative video mode (KMS)
+video=XXX              # Alternative video mode (KMS)
 nomodeset              # Disable kernel mode setting
 shell=1               # Drop to shell instead of app
-nofs=1                # Skip framebuffer, text mode
+nofb=1                # Skip framebuffer, text mode
+gfxdebug=1            # Run graphics detection at boot
 ```
 
 ## Troubleshooting
+
+### Graphics Detection
+
+If you have display issues, use **Graphics Debug Mode**:
+
+1. Boot and select: `Troubleshooting → Graphics Debug`
+2. The system will run `graphics-detect` and show:
+   - PCI graphics devices detected
+   - DRM/KMS status
+   - Framebuffer devices
+   - Current VESA mode
+   - Kernel mode setting status
+   - Intel GPU details (generation, outputs)
+   - Firmware/EDID info
+   - Any kernel errors
+   - Recommendations for fixes
+
+3. View the log later with: `cat /tmp/graphics-detect.log`
+
+### Common Issues and Fixes
+
+| Issue | Fix |
+|-------|-----|
+| No display | Try `vga=791` (1024x768) or `vga=771` (800x600) |
+| Stretch/glitch | Try different VESA mode, or `nomodeset` |
+| No /dev/fb0 | Add `vga=XXX` parameter |
+| Intel GPU not detected | Check i915 module: `lsmod \| grep i915` |
+| Try Intel KMS | Add `i915.modeset=1` |
+| Force VESA | Add `nomodeset vga=XXX` |
+
+### Shell Mode Commands
+
+When in shell mode:
+
+```bash
+typewrite          # Start typewriter app
+graphics-detect    # Detect graphics hardware
+cat /tmp/graphics-detect.log  # View last detection
+reboot             # Reboot
+poweroff           # Power off
+```
 
 ### "No bootable device"
 
