@@ -381,9 +381,45 @@ GRUBEOF
             2>/dev/null || true
     fi
     
-    # Create fallback boot.stub for direct EFI boot (no bootloader needed)
-    # Some systems can boot directly from the kernel with an EFI stub
-    echo "  Note: GRUB installed to $MOUNT_DIR/boot/EFI/BOOT/"
+    # Create robust EFI structure (some UEFIs are case-sensitive!)
+    echo "  Creating robust EFI boot structure..."
+    
+    # Standard EFI boot files (uppercase - some UEFIs require this)
+    if [ -f "$MOUNT_DIR/boot/EFI/BOOT/bootx64.efi" ]; then
+        sudo cp "$MOUNT_DIR/boot/EFI/BOOT/bootx64.efi" "$MOUNT_DIR/EFI/BOOT/BOOTX64.EFI"
+    fi
+    if [ -f "$MOUNT_DIR/boot/EFI/BOOT/bootia32.efi" ]; then
+        sudo cp "$MOUNT_DIR/boot/EFI/BOOT/bootia32.efi" "$MOUNT_DIR/EFI/BOOT/BOOTIA32.EFI"
+    fi
+    
+    # Microsoft fallback (some UEFIs look for this)
+    sudo mkdir -p "$MOUNT_DIR/EFI/Microsoft/Boot"
+    if [ -f "$MOUNT_DIR/boot/EFI/BOOT/bootx64.efi" ]; then
+        sudo cp "$MOUNT_DIR/boot/EFI/BOOT/bootx64.efi" "$MOUNT_DIR/EFI/Microsoft/Boot/bootmgfw.efi"
+    fi
+    
+    # Create fallback grub.cfg in root of EFI partition
+    sudo tee "$MOUNT_DIR/EFI/BOOT/grub.cfg" > /dev/null << 'EOF'
+set timeout=5
+set default=0
+
+menuentry "Typewrite OS" {
+    search --label --set=root TYPEWRITE
+    linux /boot/bzImage root=/dev/sda3 rw console=tty0 rootdelay=5 vga=817
+}
+
+menuentry "Typewrite OS (Safe 800x600)" {
+    search --label --set=root TYPEWRITE
+    linux /boot/bzImage root=/dev/sda3 rw console=tty0 rootdelay=5 vga=771
+}
+
+menuentry "Typewrite OS (Text)" {
+    search --label --set=root TYPEWRITE
+    linux /boot/bzImage root=/dev/sda3 rw console=tty0 rootdelay=5 vga=text
+}
+EOF
+
+    echo "  EFI boot files installed"
 fi
 
 # Create extlinux config (for BIOS boot)
