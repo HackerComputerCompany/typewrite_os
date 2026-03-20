@@ -1,0 +1,14 @@
+#!/bin/sh
+# Typewrite OS startup script
+# Displays boot logo, then starts typewriter application
+
+# Run boot logo if available
+if [ -x /usr/bin/bootlogo ]; then
+    /usr/bin/bootlogo 2>/dev/null
+fi
+
+# Clear any leftover framebuffer content
+echo "" > /dev/tty1 2>/dev/null
+
+# Start typewrite
+exec /usr/bin/typewrite

@@ -146,10 +146,14 @@ sudo mkdir -p "$MOUNT_DIR/boot/extlinux"
 # Copy kernel
 sudo cp "$KERNEL" "$MOUNT_DIR/boot/bzImage"
 
-# Copy and extract rootfs
+# Extract rootfs by mounting it and copying contents
 echo "Extracting root filesystem..."
-sudo tar -xf "$ROOTFS" -C "$MOUNT_DIR" 2>/dev/null || \
-    (echo "Using direct copy instead..."; sudo cp "$ROOTFS" "$MOUNT_DIR/boot/rootfs.ext2")
+ROOTFS_MNT="/tmp/rootfs-extract-$$"
+sudo mkdir -p "$ROOTFS_MNT"
+sudo mount -o loop,ro "$ROOTFS" "$ROOTFS_MNT"
+sudo cp -a "$ROOTFS_MNT/"* "$MOUNT_DIR/"
+sudo umount "$ROOTFS_MNT"
+sudo rmdir "$ROOTFS_MNT"
 
 # Copy extlinux modules
 for mod in ldlinux.c32 libcom32.c32 libutil.c32 menu.c32; do
@@ -164,18 +168,69 @@ done
 # Create extlinux config
 echo "Creating boot configuration..."
 sudo tee "$MOUNT_DIR/boot/extlinux/extlinux.conf" > /dev/null << 'EOF'
-DEFAULT typewrite
-PROMPT 0
-TIMEOUT 10
+DEFAULT typewrite_normal
+
+MENU TITLE Typewrite OS Boot Menu
+TIMEOUT 30
+PROMPT 1
 
 UI menu.c32
 
-MENU TITLE Typewrite OS
+MENU SEPARATOR
+MENU BEGIN Typewrite OS
 
-LABEL typewrite
-    MENU LABEL Typewrite OS
+LABEL typewrite_normal
+    MENU LABEL Typewrite OS (1024x768)
     LINUX /boot/bzImage
-    APPEND root=/dev/sda1 rw console=tty0
+    APPEND root=/dev/sda1 rw console=tty0 rootdelay=5 vga=791
+
+LABEL typewrite_1280
+    MENU LABEL Typewrite OS (1280x800 - Laptop WXGA)
+    LINUX /boot/bzImage
+    APPEND root=/dev/sda1 rw console=tty0 rootdelay=5 vga=817
+
+LABEL typewrite_1440
+    MENU LABEL Typewrite OS (1440x900)
+    LINUX /boot/bzImage
+    APPEND root=/dev/sda1 rw console=tty0 rootdelay=5 vga=855
+
+LABEL typewrite_1920
+    MENU LABEL Typewrite OS (1920x1080 - Full HD)
+    LINUX /boot/bzImage
+    APPEND root=/dev/sda1 rw console=tty0 rootdelay=5 vga=0x1B8
+
+LABEL typewrite_safe
+    MENU LABEL Typewrite OS (Safe Mode - 800x600)
+    LINUX /boot/bzImage
+    APPEND root=/dev/sda1 rw console=tty0 rootdelay=5 vga=771
+
+LABEL typewrite_vga
+    MENU LABEL Typewrite OS (VGA Mode - 640x480)
+    LINUX /boot/bzImage
+    APPEND root=/dev/sda1 rw console=tty0 rootdelay=5 vga=785
+
+LABEL typewrite_text
+    MENU LABEL Troubleshooting (Text Mode Only)
+    LINUX /boot/bzImage
+    APPEND root=/dev/sda1 rw console=tty0 rootdelay=5 vga=text
+
+LABEL typewrite_nofb
+    MENU LABEL Troubleshooting (No Framebuffer)
+    LINUX /boot/bzImage
+    APPEND root=/dev/sda1 rw console=tty0 rootdelay=5
+
+LABEL typewrite_shell
+    MENU LABEL Troubleshooting (Shell Only)
+    LINUX /boot/bzImage
+    APPEND root=/dev/sda1 rw console=tty0 rootdelay=5 shell=1
+
+MENU SEPARATOR
+TEXT HELP
+Select display mode. Try Safe Mode if graphics look wrong.
+Use Troubleshooting options if system won't boot.
+ENDTEXT
+
+MENU END
 EOF
 
 # Create mount point for documents partition

@@ -1,0 +1,15 @@
+# Enable SATA/AHCI support for real hardware
+CONFIG_SATA_AHCI=y
+CONFIG_ATA_GENERIC=y
+
+# Add PATA/SATA drivers for common hardware
+CONFIG_PATA_AMD=y
+CONFIG_PATA_VIA=y
+CONFIG_PATA_JMICRON=y
+CONFIG_SATA_NV=y
+CONFIG_SATA_SIL=y
+CONFIG_SATA_VIA=y
+
+# Enable initramfs for better hardware support
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_RD_GZIP=y

@@ -29,13 +29,14 @@
 #define DEFAULT_FONT_SIZE 14
 #define STATUS_BAR_HEIGHT 30
 #define MAX_RESOLUTIONS 5
+#define RES_NATIVE MAX_RESOLUTIONS
 
 static const int resolutions[MAX_RESOLUTIONS][2] = {
     {640, 480},
     {800, 600},
     {1024, 768},
     {1280, 1024},
-    {0, 0}
+    {1920, 1080}
 };
 
 typedef struct {
@@ -99,6 +100,11 @@ static int show_file_browser = 0;
 static char file_list[100][256];
 static int file_count = 0;
 static int selected_file = 0;
+static volatile sig_atomic_t exit_requested = 0;
+
+static void save_document(void);
+static void close_font(void);
+static void close_framebuffer(void);
 
 static void show_toast(const char *msg) {
     strncpy(toast_msg, msg, sizeof(toast_msg) - 1);
@@ -131,10 +137,22 @@ static void restore_console(void) {
     }
 }
 
+static void cleanup(void) {
+    if (doc.dirty) {
+        save_document();
+    }
+    restore_console();
+    close_font();
+    close_framebuffer();
+    if (debug_log) {
+        fclose(debug_log);
+        debug_log = NULL;
+    }
+}
+
 static void signal_handler(int sig) {
     (void)sig;
-    restore_console();
-    _exit(1);
+    exit_requested = 1;
 }
 
 static int set_graphics_mode(void) {
@@ -181,6 +199,26 @@ static int get_char_height(void) {
 
 static int get_status_bar_height(void) {
     return STATUS_BAR_HEIGHT * doc.zoom * (doc.zoom > 1 ? 2 : 1);
+}
+
+static int count_words(void) {
+    int count = 0;
+    bool in_word = false;
+    
+    for (int line = 0; line < doc.total_lines; line++) {
+        for (int i = 0; i < doc.lines[line].char_count; i++) {
+            char c = doc.lines[line].text[i];
+            bool is_space = (c == ' ' || c == '\t' || c == '\n' || c == '\r');
+            if (is_space) {
+                in_word = false;
+            } else if (!in_word) {
+                in_word = true;
+                count++;
+            }
+        }
+        in_word = false;
+    }
+    return count;
 }
 
 static int get_page_content_width(void) {
@@ -322,15 +360,19 @@ static void draw_file_browser(void);
 
 static void draw_status_bar(void) {
     int ch = get_char_height();
+    int cw = get_char_width();
     int sb_height = get_status_bar_height();
     bool two_rows = (doc.zoom > 1);
     
     char buf1[256];
     char buf2[256];
+    char buf3[64];
     const char *bold_str = doc.bold ? "B" : "";
     
+    int words = count_words();
     snprintf(buf1, sizeof(buf1), "F1:Help | F2:Zoom | F4:Dark | F5:Ink:%s%s", ink_names[doc.ink_idx], bold_str);
     snprintf(buf2, sizeof(buf2), "F6:Res | F7:New | F9:Bold | F11:Open | ^S:Save");
+    snprintf(buf3, sizeof(buf3), "%d words", words);
     
     int y = display.height - sb_height;
     
@@ -343,6 +385,10 @@ static void draw_status_bar(void) {
     } else {
         blit_text(10, y + (sb_height - ch) / 2, buf1, get_color(COLOR_BLACK), false);
     }
+    
+    int len3 = strlen(buf3);
+    int right_x = display.width - 10 - len3 * cw;
+    blit_text(right_x, y + (sb_height - ch) / 2, buf3, get_color(COLOR_BLACK), false);
 }
 
 static void render_to_backbuffer(void) {
@@ -604,19 +650,22 @@ static int set_resolution(int w, int h) {
 }
 
 static void cycle_resolution(void) {
+    int orig_idx = doc.res_idx;
     doc.res_idx = (doc.res_idx + 1) % MAX_RESOLUTIONS;
+    
     int w = resolutions[doc.res_idx][0];
     int h = resolutions[doc.res_idx][1];
     
-    if (w == 0 || h == 0) {
-        doc.res_idx = 0;
-        w = resolutions[0][0];
-        h = resolutions[0][1];
+    if (set_resolution(w, h) != 0) {
+        doc.res_idx = orig_idx;
+        show_toast("Resolution not supported");
+        return;
     }
+    doc.dirty = true;
     
-    if (set_resolution(w, h) == 0) {
-        doc.dirty = true;
-    }
+    char msg[32];
+    snprintf(msg, sizeof(msg), "Resolution: %dx%d", w, h);
+    show_toast(msg);
 }
 
 static void cycle_ink_color(void) {
@@ -772,7 +821,11 @@ static char ink_filename[256];
 
 static void save_document(void) {
     FILE *f = fopen(current_filename, "w");
-    if (!f) return;
+    if (!f) {
+        show_toast("Error: Cannot save");
+        fprintf(stderr, "Cannot open %s for writing: %s\n", current_filename, strerror(errno));
+        return;
+    }
     
     for (int i = 0; i < doc.total_lines; i++) {
         for (int j = 0; j < doc.lines[i].char_count; j++) {
@@ -984,7 +1037,9 @@ int main(int argc, char *argv[]) {
     }
     
     // Ensure Documents directory exists
-    mkdir("/root/Documents", 0755);
+    if (mkdir("/root/Documents", 0755) != 0 && errno != EEXIST) {
+        fprintf(stderr, "Warning: Could not create /root/Documents: %s\n", strerror(errno));
+    }
     
     init_ink_colors();
     init_document();

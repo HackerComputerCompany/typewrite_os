@@ -298,3 +298,16 @@ sudo umount /mnt/usb
 - The `rootfs.ext2` file can be quite large. For smaller installations, consider using a compressed initramfs.
 - For persistence across reboots, the root filesystem on the USB partition must be writable.
 - Test with QEMU before writing to USB: `./start-qemu.sh`
+- Documents are stored in `/root/Documents/` on the FAT32 partition (portable to other systems)
+- Resolution changes (F6) may not work on all hardware; the app will show a toast if the resolution isn't supported
+- The signal handler gracefully saves any unsaved documents on SIGINT/SIGTERM
+- Press Ctrl+Q to exit to shell (documents will auto-save if dirty)
+- Ink colors and bold formatting are stored in companion `.ink` files (format: `ink_idx,bold_flag` per character)
+
+## Hardware Considerations
+
+- **Display**: Works with standard Linux framebuffer (`/dev/fb0`)
+- **Keyboard**: Requires direct keyboard access (raw mode)
+- **Video modes**: Not all resolutions may be supported by your hardware's LCD panel
+- **Persistence**: Documents on the FAT32 partition are readable on Windows/macOS/Linux
+- **Boot**: Uses EXTLINUX for BIOS boot (not UEFI); for UEFI systems, see the UEFI section above

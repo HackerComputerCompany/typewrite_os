@@ -2,25 +2,27 @@
 
 ## Overview
 
-A minimalist Linux distribution for x86 that simulates a typewriter experience. Boots directly into a writing environment with no distractions.
+A minimalist Linux distribution for x86_64 that simulates a typewriter experience. Boots directly into a writing environment with no distractions.
 
 ## Keyboard Shortcuts
 
 | Key | Action |
 |-----|--------|
 | F1 | Toggle help overlay |
-| F2 | Zoom out (smaller text) |
-| F3 | Zoom in (larger text) |
+| F2 | Toggle zoom (1x/2x) |
 | F4 | Toggle dark/light mode |
 | F5 | Cycle ink color (Black, Green, Red, Blue) |
-| F6 | Cycle resolution (640x480, 800x600, 1024x768, native) |
-| F7 | New document (auto-numbered: document1.md, document2.md, etc.) |
-| F8-F12 | Unassigned (shows toast notification) |
+| F6 | Cycle resolution (640x480, 800x600, 1024x768, 1280x1024, 1920x1080) |
+| F7 | New document (auto-numbered: document.md, document1.md, etc.) |
+| F8 | Cycle tab width (2, 4, 6, 8 spaces) |
+| F9 | Toggle bold text |
+| F11 | Open document browser |
 | Arrow Keys | Move cursor |
 | Enter | Carriage return (move to next line) |
 | Backspace/Delete | Move cursor left (no deletion) |
+| Tab | Insert spaces to next tab stop |
 | Ctrl+S | Save document |
-| Ctrl+Q | Quit |
+| Ctrl+Q | Quit to shell |
 
 ## Typewriter Behavior
 
@@ -46,50 +48,72 @@ A minimalist Linux distribution for x86 that simulates a typewriter experience. 
 
 ## Document Storage
 
-- Saved as plain text files in `/root/`
+- Saved as plain text files in `/root/Documents/`
 - Auto-numbered filenames: `document.md`, `document1.md`, `document2.md`, etc.
-- F7 creates new document, saves current first
+- F7 creates new document, saves current first if dirty
 - Ctrl+S explicitly saves current document
+- Companion `.ink` files store color/bold metadata per character
 
 ## Display Features
 
 ### Zoom
-- F2/F3 control zoom level (1x-5x)
+- F2 toggles between 1x and 2x zoom
 - Margins scale with zoom
-- Cursor stays centered on screen
+- At 2x zoom, status bar shows two rows of information
 
 ### Ink Colors
 - F5 cycles through: Black, Green, Red, Blue
-- Each character retains its ink color
+- Each character retains its ink color when saved
+
+### Bold Text
+- F9 toggles bold mode
+- Uses DejaVu Sans Mono Bold font variant
+- Bold setting preserved per character
 
 ### Dark Mode
 - F4 toggles between light and dark themes
 - Inverts colors for night writing
 
 ### Resolution
-- F6 cycles through: 640x480, 800x600, 1024x768, native
-- Dynamically changes framebuffer resolution
+- F6 cycles through preset resolutions
+- Shows toast notification with new resolution
+- Falls back if resolution not supported by hardware
 
 ### Fonts
 - DejaVu Sans Mono (FreeType2)
 - Anti-aliased rendering
 - Monospace for typewriter feel
+- Bold variant for bold text
 
 ## Status Bar
 
 Bottom of screen shows:
-- Current resolution (or "native")
-- Zoom level
-- Mode (Light/Dark)
-- Current ink color
-- F-key quick reference
+- Left side: F-key quick reference (varies by zoom level)
+- Right side: Word count
+
+At 2x zoom, two rows display:
+- Row 1: Help | Zoom | Dark | Ink:[color][B]
+- Row 2: Res | New | Bold | Open | Save
+
+## File Browser
+
+Press F11 to open the document browser:
+- Lists all `.md` files in `/root/Documents/`
+- Up/Down arrows to select
+- Enter to open selected document
+- Escape to cancel
 
 ## File Format
 
 Documents saved as plain text:
-- One line per line on screen
-- No markdown or special formatting
-- Ink colors stored in separate metadata (not yet implemented)
+- `.md` file: One line per line on screen
+- `.ink` file: Companion metadata (format: `ink_index,bold_flag` per character)
+
+Example `.ink` file line:
+```
+0,0 0,0 1,1 0,0
+```
+This means: black normal, black normal, green bold, black normal
 
 ## Architecture
 
@@ -109,11 +133,16 @@ make
 ## Running in QEMU
 
 ```bash
-./start-qemu.sh           # Normal run with KVM
-./start-qemu.sh --no-kvm  # Run without KVM
-./start-qemu.sh --serial  # Serial console only
+./start-qemu.sh              # Default 1024x768
+./start-qemu.sh --res 1920x1080  # Custom resolution
+./start-qemu.sh --no-kvm     # Without KVM (slower)
+./start-qemu.sh --serial     # Serial console debug
 ```
 
-## Patching Rootfs
+## Version History
 
-See `PATCHING.md` for manual rootfs patching instructions.
+- **v0.5**: Document browser (F11), FAT32 documents partition, word count, shell exit (Ctrl+Q)
+- **v0.4**: Bold text, ink persistence, tab support
+- **v0.3**: FreeType rendering, framebuffer graphics
+- **v0.2**: SDL2 prototype
+- **v0.1**: Initial framebuffer implementation
