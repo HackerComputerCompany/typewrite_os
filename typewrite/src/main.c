@@ -11,6 +11,8 @@
 #include <termios.h>
 #include <sys/mman.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
+#include <dirent.h>
 #include <errno.h>
 #include <signal.h>
 #include <linux/fb.h>
@@ -93,6 +95,10 @@ static FILE *debug_log = NULL;
 static int show_help = 0;
 static char toast_msg[128] = "";
 static int toast_frames = 0;
+static int show_file_browser = 0;
+static char file_list[100][256];
+static int file_count = 0;
+static int selected_file = 0;
 
 static void show_toast(const char *msg) {
     strncpy(toast_msg, msg, sizeof(toast_msg) - 1);
@@ -312,6 +318,7 @@ static void draw_margins(void) {
 
 static void draw_help_overlay(void);
 static void draw_toast(void);
+static void draw_file_browser(void);
 
 static void draw_status_bar(void) {
     int ch = get_char_height();
@@ -323,7 +330,7 @@ static void draw_status_bar(void) {
     const char *bold_str = doc.bold ? "B" : "";
     
     snprintf(buf1, sizeof(buf1), "F1:Help | F2:Zoom | F4:Dark | F5:Ink:%s%s", ink_names[doc.ink_idx], bold_str);
-    snprintf(buf2, sizeof(buf2), "F6:Res | F7:New | F8:Tab | F9:Bold | ^S:Save | ^Q:Quit");
+    snprintf(buf2, sizeof(buf2), "F6:Res | F7:New | F9:Bold | F11:Open | ^S:Save");
     
     int y = display.height - sb_height;
     
@@ -385,6 +392,10 @@ static void render_to_backbuffer(void) {
     if (toast_frames > 0 && toast_msg[0] != '\0') {
         draw_toast();
         toast_frames--;
+    }
+    
+    if (show_file_browser) {
+        draw_file_browser();
     }
 }
 
@@ -624,7 +635,7 @@ static void draw_help_overlay(void) {
     int ch = get_char_height();
     int max_text_width = 30 * cw;
     int w = max_text_width + 60;
-    int h = 17 * ch + 40;
+    int h = 18 * ch + 40;
     int x = (display.width - w) / 2;
     int y = (display.height - h) / 2;
     
@@ -646,10 +657,11 @@ static void draw_help_overlay(void) {
     blit_text(tx, ty, "F7: New document", get_color(COLOR_BLACK), false); ty += ch;
     blit_text(tx, ty, "F8: Tab width (2/4/6/8)", get_color(COLOR_BLACK), false); ty += ch;
     blit_text(tx, ty, "F9: Toggle bold", get_color(COLOR_BLACK), false); ty += ch;
+    blit_text(tx, ty, "F11: Open document", get_color(COLOR_BLACK), false); ty += ch;
     blit_text(tx, ty, "Arrow keys: Move cursor", get_color(COLOR_BLACK), false); ty += ch;
     blit_text(tx, ty, "Enter: Carriage return", get_color(COLOR_BLACK), false); ty += ch;
     blit_text(tx, ty, "Backspace: Strikethrough", get_color(COLOR_BLACK), false); ty += ch;
-    blit_text(tx, ty, "Ctrl+S: Save | Ctrl+Q: Quit", get_color(COLOR_BLACK), false); ty += ch;
+    blit_text(tx, ty, "Ctrl+S: Save | Ctrl+Q: Quit to shell", get_color(COLOR_BLACK), false); ty += ch;
 }
 
 static void draw_toast(void) {
@@ -754,7 +766,7 @@ static void move_cursor(int dx, int dy) {
     if (doc.total_lines < doc.cursor_line + 1) doc.total_lines = doc.cursor_line + 1;
 }
 
-static char current_filename[256] = "/root/document.md";
+static char current_filename[256] = "/root/Documents/document.md";
 
 static char ink_filename[256];
 
@@ -816,7 +828,7 @@ static void new_document(void) {
         *dot = '.';
     }
     
-    snprintf(current_filename, sizeof(current_filename), "/root/document%d.md", num);
+    snprintf(current_filename, sizeof(current_filename), "/root/Documents/document%d.md", num);
     show_toast("New document");
 }
 
@@ -877,6 +889,77 @@ static void load_document(void) {
     printf("Loaded: %s\n", current_filename);
 }
 
+static void list_documents(void) {
+    file_count = 0;
+    selected_file = 0;
+    
+    DIR *dir = opendir("/root/Documents");
+    if (!dir) return;
+    
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL && file_count < 100) {
+        if (entry->d_type == DT_REG) {
+            const char *ext = strrchr(entry->d_name, '.');
+            if (ext && strcmp(ext, ".md") == 0) {
+                strncpy(file_list[file_count], entry->d_name, 255);
+                file_count++;
+            }
+        }
+    }
+    
+    closedir(dir);
+}
+
+static void draw_file_browser(void) {
+    int cw = get_char_width();
+    int ch = get_char_height();
+    int max_width = 40 * cw;
+    int w = max_width + 40;
+    int h = (file_count > 20 ? 20 : file_count + 2) * ch + 40;
+    int x = (display.width - w) / 2;
+    int y = (display.height - h) / 2;
+    
+    blit_rect(x, y, w, h, get_color(COLOR_WHITE));
+    blit_rect(x + 2, y + 2, w - 4, h - 4, get_color(COLOR_BLACK));
+    blit_rect(x + 4, y + 4, w - 8, h - 8, get_color(COLOR_PAGE));
+    
+    int ty = y + 12;
+    int tx = x + 20;
+    blit_text(tx, ty, "Open Document (F11 to close)", get_color(COLOR_BLACK), false); ty += ch + 10;
+    
+    if (file_count == 0) {
+        blit_text(tx, ty, "No documents found", get_color(COLOR_GRAY), false);
+    } else {
+        int start = 0;
+        int visible = (h - 60) / ch;
+        if (visible > file_count) visible = file_count;
+        if (selected_file >= visible) start = selected_file - visible + 1;
+        
+        for (int i = 0; i < visible && start + i < file_count; i++) {
+            int idx = start + i;
+            if (idx == selected_file) {
+                blit_rect(tx - 5, ty - 2, w - 50, ch, get_color(COLOR_GRAY));
+            }
+            blit_text(tx, ty, file_list[idx], get_color(COLOR_BLACK), false);
+            ty += ch;
+        }
+    }
+    
+    ty = y + h - ch - 10;
+    blit_text(tx, ty, "Up/Down: Select  Enter: Open  Esc: Cancel", get_color(COLOR_GRAY), false);
+}
+
+static void open_selected_document(void) {
+    if (selected_file < 0 || selected_file >= file_count) return;
+    
+    char path[512];
+    snprintf(path, sizeof(path), "/root/Documents/%s", file_list[selected_file]);
+    strncpy(current_filename, path, sizeof(current_filename) - 1);
+    load_document();
+    show_file_browser = 0;
+    show_toast("Opened");
+}
+
 static const char *font_paths[] = {
     "/usr/share/fonts/dejavu/DejaVuSansMono.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
@@ -899,6 +982,9 @@ int main(int argc, char *argv[]) {
         fprintf(debug_log, "=== Typewrite Debug Log ===\n");
         fflush(debug_log);
     }
+    
+    // Ensure Documents directory exists
+    mkdir("/root/Documents", 0755);
     
     init_ink_colors();
     init_document();
@@ -935,7 +1021,7 @@ int main(int argc, char *argv[]) {
     tcsetattr(STDIN_FILENO, TCSANOW, &new_tty);
     
     render();
-    printf("Ready! F1:help F2:zoom F4:dark F5:ink F8:tab F9:bold | Ctrl+S:save Ctrl+Q:quit\n");
+    printf("Ready! F1:help F2:zoom F4:dark F5:ink F8:tab F9:bold F11:open | Ctrl+S:save Ctrl+Q:shell\n");
     
     unsigned char buf[64];
     int running = 1;
@@ -956,6 +1042,27 @@ int main(int argc, char *argv[]) {
             unsigned char c = buf[i];
             int do_render = 1;
             i++;
+            
+            // Handle file browser mode
+            if (show_file_browser) {
+                if (c == 27 && i < n && buf[i] == '[') {
+                    i++;
+                    if (i < n) {
+                        unsigned char code = buf[i];
+                        i++;
+                        if (code == 'A' && selected_file > 0) selected_file--;        // Up
+                        else if (code == 'B' && selected_file < file_count - 1) selected_file++;  // Down
+                        else if (code == 'C') { }  // Right - unused
+                        else if (code == 'D') { }  // Left - unused
+                    }
+                } else if (c == 27) {
+                    show_file_browser = 0;  // ESC to close
+                } else if (c == '\n' || c == '\r') {
+                    open_selected_document();
+                }
+                render();
+                continue;
+            }
             
             if (c == 27 && i < n) {
                 unsigned char next = buf[i];
@@ -997,7 +1104,7 @@ int main(int argc, char *argv[]) {
                                     break;
                                 case '3':
                                     if (i < n && buf[i] == '~') { i++; show_toast("F3 not assigned"); }
-                                    else if (i < n && buf[i] == '3' && i+1 < n && buf[i+1] == '~') { i += 2; show_toast("F11 not assigned"); }
+                                    else if (i < n && buf[i] == '3' && i+1 < n && buf[i+1] == '~') { i += 2; list_documents(); show_file_browser = 1; }
                                     else if (i < n && buf[i] == '4' && i+1 < n && buf[i+1] == '~') { i += 2; show_toast("F12 not assigned"); }
                                     break;
                                 case '4':
