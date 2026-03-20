@@ -42,11 +42,11 @@ if [ ! -f "$ROOTFS" ]; then
     exit 1
 fi
 
-# Check for syslinux
-if ! command -v syslinux &> /dev/null; then
-    echo "Error: syslinux not found. Install it first:"
-    echo "  Ubuntu/Debian: sudo apt install syslinux syslinux-common"
-    echo "  Fedora: sudo dnf install syslinux"
+# Check for extlinux (for ext4)
+if ! command -v extlinux &> /dev/null; then
+    echo "Error: extlinux not found. Install it first:"
+    echo "  Ubuntu/Debian: sudo apt install extlinux syslinux-common"
+    echo "  Fedora: sudo dnf install syslinux-extlinux"
     exit 1
 fi
 
@@ -61,6 +61,7 @@ done
 
 if [ -z "$MBR_BIN" ]; then
     echo "Error: syslinux MBR not found"
+    echo "Install: sudo apt install syslinux-common"
     exit 1
 fi
 
@@ -79,7 +80,7 @@ read -p "Press Ctrl+C to cancel, or Enter to continue..." -r
 # Unmount if mounted
 echo "Unmounting any existing partitions..."
 sudo umount "$PARTITION" 2>/dev/null || true
-sudo umount "$DEVICE" 2>/dev/null || true
+sudo umount "$DEVICE"* 2>/dev/null || true
 
 # Create partition table
 echo "Creating partition table..."
@@ -97,8 +98,8 @@ FDISK
 # Wait for partition to be recognized
 sleep 2
 
-# Format partition
-echo "Formatting partition..."
+# Format partition as ext4 (for extlinux)
+echo "Formatting partition as ext4..."
 sudo mkfs.ext4 -F "$PARTITION"
 
 # Install MBR
@@ -118,39 +119,40 @@ sudo cp "$KERNEL" "$MOUNT_DIR/boot/bzImage"
 echo "Copying root filesystem..."
 sudo cp "$ROOTFS" "$MOUNT_DIR/boot/rootfs.ext2"
 
-echo "Installing SYSLINUX..."
-sudo mkdir -p "$MOUNT_DIR/boot/syslinux"
+echo "Installing extlinux..."
+sudo mkdir -p "$MOUNT_DIR/boot/extlinux"
 
-# Copy syslinux modules
-SYSLINUX_MODULES="ldlinux.c32 libutil.c32 menu.c32"
-for mod in $SYSLINUX_MODULES; do
-    for path in "/usr/lib/syslinux/modules/bios/$mod" "/usr/share/syslinux/$mod" "/usr/lib/syslinux/$mod"; do
+# Copy extlinux modules
+# extlinux needs ldlinux.c32 at minimum
+for mod in ldlinux.c32 libcom32.c32 libutil.c32 menu.c32; do
+    for path in "/usr/lib/syslinux/modules/bios/$mod" "/usr/share/syslinux/$mod" "/usr/lib/syslinux/$mod" "/usr/lib/EXTLINUX/$mod"; do
         if [ -f "$path" ]; then
-            sudo cp "$path" "$MOUNT_DIR/boot/syslinux/"
+            sudo cp "$path" "$MOUNT_DIR/boot/extlinux/" 2>/dev/null || true
             break
         fi
     done
 done
 
-# Create syslinux config
+# Create extlinux config
 echo "Creating boot configuration..."
-sudo tee "$MOUNT_DIR/boot/syslinux/syslinux.cfg" > /dev/null << 'EOF'
+sudo tee "$MOUNT_DIR/boot/extlinux/extlinux.conf" > /dev/null << 'EOF'
 DEFAULT typewrite
 PROMPT 0
 TIMEOUT 10
+
 UI menu.c32
 
 MENU TITLE Typewrite OS
 
 LABEL typewrite
     MENU LABEL Typewrite OS
-    KERNEL /boot/bzImage
+    LINUX /boot/bzImage
     APPEND root=/dev/sda1 rw console=tty0
 EOF
 
-# Install syslinux to partition
-echo "Installing SYSLINUX to partition..."
-sudo syslinux --install "$PARTITION"
+# Install extlinux to the partition
+echo "Installing extlinux bootloader..."
+sudo extlinux --install "$MOUNT_DIR/boot/extlinux"
 
 # Unmount
 echo "Unmounting..."
