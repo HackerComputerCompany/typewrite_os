@@ -44,11 +44,12 @@ Original BIOS-only installer using MBR partition table.
 
 ### Tested Hardware
 
-| Machine | Year | Boot Mode | Notes |
-|---------|------|-----------|-------|
-| Dell Latitude E6400 | 2009 | Legacy BIOS | Works with vga=817 (1280x800) |
-| MacBook Air 2010 | 2010 | EFI (IA32) | Use `--hybrid`; hold Option at boot |
-| ThinkPad T60 | 2006 | Legacy BIOS | May need `vga=771` (800x600) safe mode |
+| Machine | Year | Boot Mode | Graphics | Notes |
+|---------|------|-----------|----------|-------|
+| Dell Latitude E6400 | 2009 | Legacy BIOS | Intel GMA 4500 | Works with vga=817 (1280x800) |
+| MacBook Air 2010 | 2010 | EFI (IA32) | NVIDIA GeForce 320M | Use `--hybrid`; hold Option at boot |
+| ThinkPad T60 | 2006 | Legacy BIOS | Intel GMA 950 | May need `vga=771` (800x600) safe mode |
+| Jasper Lake PC | 2020+ | UEFI | Intel UHD Graphics | VAAPI enabled, no networking |
 
 ### Boot Methods by Machine
 
