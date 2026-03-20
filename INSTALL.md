@@ -1,12 +1,6 @@
 # Installing Typewrite OS on a USB Thumb Drive
 
-This guide explains how to create a bootable USB thumb drive with Typewrite OS.
-
-## Prerequisites
-
-- USB thumb drive (1GB or larger)
-- Linux system with root/sudo access
-- Built Typewrite OS images (see BUILDING.md)
+This guide explains how to create a bootable USB thumb drive with Typewrite OS supporting both legacy BIOS and UEFI boot.
 
 ## Quick Start
 
@@ -15,299 +9,231 @@ This guide explains how to create a bootable USB thumb drive with Typewrite OS.
 cd buildroot-2024.02
 make
 
-# Install to USB drive (replace /dev/sdX with your device)
+# Install to USB drive (hybrid BIOS+UEFI)
+sudo ./install-to-usb-hybrid.sh /dev/sdX
+
+# Or use the legacy BIOS-only installer
 sudo ./install-to-usb.sh /dev/sdX
 ```
 
-## Manual Installation
+## Install Scripts
 
-### 1. Identify Your USB Drive
+### install-to-usb-hybrid.sh (Recommended)
 
+Creates a USB drive with **hybrid BIOS/UEFI boot support**:
+- GPT partition table
+- BIOS boot partition (for legacy BIOS)
+- EFI System Partition (FAT32) with GRUB
+- Boot/Root partition (ext4)
+- Documents partition (FAT32)
+
+**Options:**
 ```bash
-lsblk
-# or
-fdisk -l
+./install-to-usb-hybrid.sh /dev/sdX           # Hybrid (default)
+./install-to-usb-hybrid.sh /dev/sdX --hybrid   # Same as default
+./install-to-usb-hybrid.sh /dev/sdX --bios-only   # BIOS only
+./install-to-usb-hybrid.sh /dev/sdX --uefi-only   # UEFI only
+./install-to-usb-hybrid.sh /dev/sdX --no-docs     # Skip documents partition
 ```
 
-Note the device path (e.g., `/dev/sdb`, `/dev/sdc`). **Make sure you have the correct device** - all data on it will be erased.
+### install-to-usb.sh (Legacy)
 
-### 2. Create Partitions
+Original BIOS-only installer using MBR partition table.
 
-```bash
-# Replace /dev/sdX with your USB device
-sudo fdisk /dev/sdX
+## Hardware Compatibility
+
+### Tested Hardware
+
+| Machine | Year | Boot Mode | Notes |
+|---------|------|-----------|-------|
+| Dell Latitude E6400 | 2009 | Legacy BIOS | Works with vga=817 (1280x800) |
+| MacBook Air 2010 | 2010 | EFI (IA32) | Use `--hybrid`; hold Option at boot |
+| ThinkPad T60 | 2006 | Legacy BIOS | May need `vga=771` (800x600) safe mode |
+
+### Boot Methods by Machine
+
+#### MacBook Air 2010
+1. Insert USB drive
+2. **Hold Option (Alt) key** while powering on
+3. Select "EFI Boot" or the USB drive icon
+4. GRUB menu should appear
+
+If no boot option appears:
+- The Mac may have disabled external boot - check System Preferences > Startup Disk
+- Try holding Command+Option+P+R to reset NVRAM
+
+#### ThinkPad T60
+1. Insert USB drive
+2. Press **F12** during boot to enter boot menu
+3. Select USB from list
+4. Use extlinux menu to select resolution
+
+If no USB option in F12 menu:
+- Enable USB boot in BIOS (F1 to enter Setup)
+
+#### Dell Latitude E6400
+1. Press **F12** during boot for boot menu
+2. Select "USB Storage" or similar
+3. Use extlinux menu - try 1280x800 first
+
+### Graphics/Display Issues
+
+If display looks wrong (stretched, glitchy, wrong colors):
+
+1. **Try different VESA modes:**
+   - 800x600 (Safe Mode): `vga=771`
+   - 1024x768 (Normal): `vga=791`
+   - 1280x800 (WXGA): `vga=817`
+   - 1440x900: `vga=855`
+
+2. **Try troubleshooting modes:**
+   - Text Mode: `vga=text`
+   - No Framebuffer: Boot → Troubleshooting → No Framebuffer
+
+3. **Native resolution:**
+   Most laptop LCDs have fixed native resolutions. Common ones:
+   - 1024x768 - older laptops
+   - 1280x800 - 13-14" laptops
+   - 1440x900 - 14-15" laptops  
+   - 1920x1080 - modern displays
+
+### VESA Mode Reference
+
+| Resolution | VESA Mode | Linux Number | Common Use |
+|------------|-----------|-------------|------------|
+| 640x480 | 0x311 | 785 | VGA fallback |
+| 800x600 | 0x303 | 771 | Safe mode |
+| 1024x768 | 0x317 | 791 | Standard |
+| 1280x800 | 0x331 | 817 | WXGA laptop |
+| 1440x900 | 0x357 | 855 | WXGA+ laptop |
+| 1920x1080 | 0x1B8 | 440 | Full HD |
+
+Formula: `Linux Number = VESA Mode + 512` (or `+ 0x200` in hex)
+
+## Partition Layout
+
+### Hybrid (GPT)
+
+```
+/dev/sda1  - BIOS Boot (1MB, unformatted, bios_grub flag)
+/dev/sda2  - EFI System Partition (100MB, FAT32)
+/dev/sda3  - Boot/Root (ext4)
+/dev/sda4  - Documents (FAT32)
 ```
 
-In fdisk:
-1. Press `o` to create a new DOS partition table
-2. Press `n` to create a new partition
-3. Press `p` for primary
-4. Press `1` for partition number
-5. Press `Enter` for default first sector
-6. Press `Enter` for default last sector (use full drive)
-7. Press `a` to make it bootable
-8. Press `w` to write and exit
+### BIOS Only (MBR)
 
-### 3. Format the Partition
-
-```bash
-sudo mkfs.ext4 /dev/sdX1
-# or for FAT32 (smaller footprint):
-sudo mkfs.vfat -F 32 /dev/sdX1
+```
+/dev/sda1  - Boot/Root (ext4)
+/dev/sda2  - Documents (FAT32)
 ```
 
-### 4. Install the Bootloader (SYSLINUX)
+## Kernel Boot Parameters
 
-```bash
-# Install SYSLINUX MBR
-sudo dd if=/usr/lib/syslinux/mbr/mbr.bin of=/dev/sdX bs=440 count=1
+Common parameters for troubleshooting:
 
-# Or for newer systems:
-sudo dd if=/usr/lib/syslinux/mbr/gptmbr.bin of=/dev/sdX bs=440 count=1
-
-# Mount the partition
-sudo mount /dev/sdX1 /mnt/usb
-
-# Install SYSLINUX files
-sudo mkdir -p /mnt/usb/boot/syslinux
-sudo cp /usr/lib/syslinux/modules/bios/ldlinux.c32 /mnt/usb/boot/syslinux/
-sudo extlinux --install /mnt/usb/boot/syslinux
 ```
-
-### 5. Copy the Kernel and Root Filesystem
-
-```bash
-# Copy kernel
-sudo cp buildroot-2024.02/output/images/bzImage /mnt/usb/boot/
-
-# Copy root filesystem (ext2 image)
-sudo cp buildroot-2024.02/output/images/rootfs.ext2 /mnt/usb/boot/
+root=/dev/sda3         # Root partition (sda3 for hybrid)
+console=tty0           # Output to primary display
+rootdelay=5            # Wait for USB to initialize
+vga=XXX               # VESA mode number
+video=XXX             # Alternative video mode (KMS)
+nomodeset              # Disable kernel mode setting
+shell=1               # Drop to shell instead of app
+nofs=1                # Skip framebuffer, text mode
 ```
-
-### 6. Create SYSLINUX Configuration
-
-```bash
-sudo cat > /mnt/usb/boot/syslinux/syslinux.cfg << 'EOF'
-DEFAULT typewrite
-PROMPT 0
-TIMEOUT 10
-
-LABEL typewrite
-    KERNEL /boot/bzImage
-    APPEND root=/dev/sda1 rw console=tty0 video=1024x768
-EOF
-```
-
-### 7. Unmount
-
-```bash
-sudo umount /mnt/usb
-```
-
-### 8. Make Bootable
-
-```bash
-sudo syslinux /dev/sdX1
-```
-
-## Alternative: Direct Disk Image
-
-### Create a Disk Image First
-
-```bash
-# Create a 128MB image
-dd if=/dev/zero of=typewrite.img bs=1M count=128
-
-# Partition it
-fdisk typewrite.img
-# (same partition steps as above)
-
-# Set up loop device
-sudo losetup -fP typewrite.img
-sudo losetup -a  # note the loop device, e.g., /dev/loop0
-
-# Format
-sudo mkfs.ext4 /dev/loop0p1
-
-# Mount and install
-sudo mount /dev/loop0p1 /mnt/usb
-# ... follow steps 4-7 above
-
-# Detach
-sudo losetup -d /dev/loop0
-```
-
-### Write Image to USB
-
-```bash
-sudo dd if=typewrite.img of=/dev/sdX bs=4M status=progress && sync
-```
-
-## Booting
-
-1. Insert the USB drive
-2. Boot your computer and enter BIOS/UEFI setup (usually F2, F12, or Del)
-3. Set USB as first boot device
-4. Save and exit
-5. Typewrite OS should boot directly into the typewriter application
 
 ## Troubleshooting
 
-### "No bootable device" error
+### "No bootable device"
 
-- Verify the partition is marked bootable (`fdisk -l /dev/sdX`)
-- Reinstall the MBR bootloader
-- Try a different USB drive (some have compatibility issues)
+**BIOS:**
+- Verify partition is bootable
+- Reinstall MBR: `sudo dd if=/usr/lib/syslinux/mbr/mbr.bin of=/dev/sdX bs=440 count=1`
+- Check USB is first in boot order
 
-### Kernel panics
+**UEFI:**
+- Verify EFI System Partition is marked as ESP (boot flag)
+- Check Secure Boot settings (may need to disable)
+- Try `--uefi-only` mode
 
-- Check the root device parameter matches your USB partition
-- Try different video modes: `video=800x600` or `video=640x480`
+### Kernel Panic: "VFS: Unable to mount root fs"
 
-### Framebuffer issues
+- Verify `root=` parameter matches partition
+- Try `rootdelay=10` for slow USB drives
+- Check if SATA/AHCI drivers are needed
 
-- Add `nomodeset` to kernel parameters for basic VESA mode
-- Some systems need `vga=792` for 1024x768
+### Display Issues
 
-### Serial console debugging
+- Try safe mode (800x600)
+- Try text mode to verify system boots
+- Check if LCD native resolution is supported
+- Some displays need specific VESA timings
 
-Connect a serial cable or use QEMU:
+### Serial Console Debugging
+
 ```bash
-# Boot with serial console
+# Boot with serial
 ./start-qemu.sh --serial
 
-# Connect from another terminal
+# Connect
 socat - UNIX-CONNECT:/tmp/typewrite-serial.sock
 ```
 
-## Creating an Installation Script
+## Building the Kernel for Your Hardware
 
-Create `install-to-usb.sh`:
+If you need to add hardware support:
 
+1. Edit kernel config:
 ```bash
-#!/bin/bash
-set -e
-
-if [ $# -lt 1 ]; then
-    echo "Usage: $0 /dev/sdX"
-    echo "Example: $0 /dev/sdb"
-    exit 1
-fi
-
-DEVICE=$1
-PARTITION="${DEVICE}1"
-
-echo "WARNING: This will erase all data on $DEVICE"
-echo "Press Ctrl+C to cancel, Enter to continue..."
-read
-
-# Unmount if mounted
-sudo umount "$PARTITION" 2>/dev/null || true
-sudo umount "$DEVICE" 2>/dev/null || true
-
-# Create partition table
-sudo fdisk "$DEVICE" << 'FDISK'
-o
-n
-p
-1
-
-
-a
-w
-FDISK
-
-# Format
-sudo mkfs.ext4 "$PARTITION"
-
-# Mount
-sudo mkdir -p /mnt/typewrite-install
-sudo mount "$PARTITION" /mnt/typewrite-install
-
-# Install bootloader
-sudo dd if=/usr/lib/syslinux/mbr/mbr.bin of="$DEVICE" bs=440 count=1
-
-# Copy files
-sudo mkdir -p /mnt/typewrite-install/boot/syslinux
-sudo cp buildroot-2024.02/output/images/bzImage /mnt/typewrite-install/boot/
-sudo cp buildroot-2024.02/output/images/rootfs.ext2 /mnt/typewrite-install/boot/
-sudo cp /usr/lib/syslinux/modules/bios/ldlinux.c32 /mnt/typewrite-install/boot/syslinux/
-
-# Create config
-sudo tee /mnt/typewrite-install/boot/syslinux/syslinux.cfg > /dev/null << 'EOF'
-DEFAULT typewrite
-PROMPT 0
-TIMEOUT 10
-
-LABEL typewrite
-    KERNEL /boot/bzImage
-    APPEND root=/dev/sda1 rw console=tty0
-EOF
-
-# Install SYSLINUX
-sudo syslinux --install "$PARTITION"
-
-# Unmount
-sudo umount /mnt/typewrite-install
-
-echo "Installation complete!"
-echo "You can now boot from $DEVICE"
+nano buildroot-2024.02/board/qemu/x86_64/linux.config
 ```
 
-Make it executable:
+2. Add drivers:
 ```bash
-chmod +x install-to-usb.sh
+# Intel graphics
+CONFIG_DRM_I915=y
+
+# NVIDIA (if needed)
+CONFIG_DRM_NOUVEAU=m
+
+# AMD (if needed)
+CONFIG_DRM_RADEON=m
+CONFIG_DRM_AMDGPU=m
+
+# More USB controllers
+CONFIG_USB_XHCI_HCD=y
+CONFIG_USB_EHCI_HCD=y
+CONFIG_USB_OHCI_HCD=y
 ```
 
-## UEFI Systems
-
-For UEFI boot (most modern computers), use GRUB instead:
-
+3. Rebuild:
 ```bash
-# Format as FAT32 (required for UEFI)
-sudo mkfs.vfat -F 32 /dev/sdX1
-
-# Mount
-sudo mount /dev/sdX1 /mnt/usb
-
-# Create EFI directory structure
-sudo mkdir -p /mnt/usb/EFI/BOOT
-
-# Copy kernel
-sudo cp buildroot-2024.02/output/images/bzImage /mnt/usb/
-
-# Create GRUB config
-sudo mkdir -p /mnt/usb/boot/grub
-sudo tee /mnt/usb/boot/grub/grub.cfg > /dev/null << 'EOF'
-set timeout=0
-set default=0
-
-menuentry "Typewrite OS" {
-    linux /bzImage root=/dev/sda1 rw console=tty0
-}
-EOF
-
-# Install GRUB (from host system with grub-efi)
-sudo grub-install --target=x86_64-efi --efi-directory=/mnt/usb --boot-directory=/mnt/usb/boot --removable
-
-sudo umount /mnt/usb
+cd buildroot-2024.02
+make linux-rebuild
+make
 ```
 
 ## Notes
 
-- The `rootfs.ext2` file can be quite large. For smaller installations, consider using a compressed initramfs.
-- For persistence across reboots, the root filesystem on the USB partition must be writable.
-- Test with QEMU before writing to USB: `./start-qemu.sh`
-- Documents are stored in `/root/Documents/` on the FAT32 partition (portable to other systems)
-- Resolution changes (F6) may not work on all hardware; the app will show a toast if the resolution isn't supported
-- The signal handler gracefully saves any unsaved documents on SIGINT/SIGTERM
-- Press Ctrl+Q to exit to shell (documents will auto-save if dirty)
-- Ink colors and bold formatting are stored in companion `.ink` files (format: `ink_idx,bold_flag` per character)
+- The `rootfs.ext2` is ~60MB. Increase if needed in `.config`
+- Documents partition is FAT32 for cross-platform compatibility
+- Press **Ctrl+Q** to exit to shell
+- Press **F1** in typewriter app for help
+- Unsaved documents auto-save on exit
 
-## Hardware Considerations
+## Security Notes
 
-- **Display**: Works with standard Linux framebuffer (`/dev/fb0`)
-- **Keyboard**: Requires direct keyboard access (raw mode)
-- **Video modes**: Not all resolutions may be supported by your hardware's LCD panel
-- **Persistence**: Documents on the FAT32 partition are readable on Windows/macOS/Linux
-- **Boot**: Uses EXTLINUX for BIOS boot (not UEFI); for UEFI systems, see the UEFI section above
+- Secure Boot may block unsigned bootloaders
+- Disable Secure Boot in BIOS/UEFI settings to boot Typewrite OS
+- The GRUB images are self-signed but not Microsoft-signed
+
+## File Locations
+
+After installation:
+- `/boot/bzImage` - Linux kernel
+- `/boot/extlinux/extlinux.conf` - BIOS boot menu
+- `/boot/grub/grub.cfg` - UEFI GRUB config
+- `/EFI/BOOT/bootx64.efi` - UEFI bootloader (64-bit)
+- `/EFI/BOOT/bootia32.efi` - UEFI bootloader (32-bit, for older Macs)
+- `/root/Documents/` - Your documents (on FAT32 partition)
