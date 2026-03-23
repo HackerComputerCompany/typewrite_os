@@ -385,6 +385,8 @@ GRUBEOF
     echo "  Creating robust EFI boot structure..."
     
     # Standard EFI boot files (uppercase - some UEFIs require this)
+    # These go in root of EFI partition (sda2)
+    sudo mkdir -p "$MOUNT_DIR/EFI/BOOT"
     if [ -f "$MOUNT_DIR/boot/EFI/BOOT/bootx64.efi" ]; then
         sudo cp "$MOUNT_DIR/boot/EFI/BOOT/bootx64.efi" "$MOUNT_DIR/EFI/BOOT/BOOTX64.EFI"
     fi
