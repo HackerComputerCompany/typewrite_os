@@ -192,8 +192,9 @@ if [ "$HYBRID_MODE" = true ]; then
     # BIOS boot partition (unformatted, for BIOS boot)
     sudo parted -s "$DEVICE" mkpart primary 2048s 4095s
     sudo parted -s "$DEVICE" set 1 bios_grub on
-    # EFI System Partition
+    # EFI System Partition - MUST have esp flag for Mac boot
     sudo parted -s "$DEVICE" mkpart primary fat32 4096s "${EFI_SIZE}MB"
+    sudo parted -s "$DEVICE" set 2 esp on
     # Boot/Root partition
     BOOT_END=$((${EFI_SIZE} + ${ROOT_SIZE}))
     sudo parted -s "$DEVICE" mkpart primary ext4 "${EFI_SIZE}MB" "${BOOT_END}MB"
