@@ -83,21 +83,28 @@ if [ "$SERIAL" -eq 1 ]; then
         $KVM_OPTS \
         -netdev user,id=net0 -device virtio-net-pci,netdev=net0
 else
-    rm -f "$SERIAL_SOCK"
+    # Try to set up serial, but don't fail if it doesn't work
+    SERIAL_OPTS=""
+    if touch "$SERIAL_SOCK" 2>/dev/null; then
+        rm -f "$SERIAL_SOCK" 2>/dev/null || true
+        SERIAL_OPTS="-serial unix:$SERIAL_SOCK,server,nowait"
+        echo "Serial console available at: $SERIAL_SOCK"
+    else
+        echo "Note: Serial not available (using file fallback)"
+        SERIAL_OPTS="-serial file:/tmp/typewrite-serial.log"
+    fi
+    
     echo "Starting Typewrite OS..."
     echo "Resolution: $RESOLUTION"
     echo ""
-    echo "Serial console available at: $SERIAL_SOCK"
-    echo "Connect from another terminal with: socat - UNIX-CONNECT:$SERIAL_SOCK"
-    echo "Or: minicom -D \"unix#$SERIAL_SOCK\""
-    echo ""
+    
 exec env SDL_VIDEO_WINDOW_POS=0,0 SDL_VIDEO_WINDOW_SIZE=$RESOLUTION qemu-system-x86_64 \
     -enable-kvm \
     -m 512 \
     -kernel buildroot-2024.02/output/images/bzImage \
     -drive file=buildroot-2024.02/output/images/rootfs.ext2,format=raw,if=virtio \
     -append "console=tty0 console=ttyS0 root=/dev/vda rw video=$RESOLUTION" \
-        -serial "unix:$SERIAL_SOCK,server,nowait" \
+        $SERIAL_OPTS \
         $KVM_OPTS \
         -netdev user,id=net0 -device virtio-net-pci,netdev=net0
 fi
