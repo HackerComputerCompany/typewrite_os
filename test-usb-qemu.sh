@@ -24,20 +24,24 @@ OPTIONS:
     --snapshot           Don't write to USB (use with /dev/sdX)
     --verbose            Show QEMU command
     --serial             Output to serial console
+    --res WxH            Resolution for built-in kernel (default: 1024x768)
     --help               Show this help
 
 EXAMPLES:
-    # Test USB image file
+    # Test USB image file - boots from USB with menu
     $0 usb-drive.img
 
     # Test real USB drive (read-only via snapshot)
     $0 /dev/sdb --snapshot
 
-    # Test with UEFI
+    # Test with UEFI - boots from USB with GRUB menu
     $0 usb-drive.img --uefi
 
     # Test without KVM (for testing kernel/init issues)
     $0 usb-drive.img --no-kvm
+
+    # Test built-in rootfs at specific resolution
+    $0 --res 1280x800
 
 EOF
 }
@@ -52,6 +56,7 @@ VERBOSE=0
 SERIAL=0
 DEVICE=""
 UEFI_OVMF=""
+RESOLUTION="1024x768"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -90,6 +95,10 @@ while [[ $# -gt 0 ]]; do
         --serial)
             SERIAL=1
             shift
+            ;;
+        --res)
+            RESOLUTION="$2"
+            shift 2
             ;;
         --help|-h)
             usage
@@ -198,10 +207,10 @@ else
     
     if [ "$BOOT_MODE" = "uefi" ]; then
         QEMU_CMD="$QEMU_CMD -drive file=$ROOTFS,format=raw,if=virtio"
-        QEMU_CMD="$QEMU_CMD -append \"console=tty0 console=ttyS0 root=/dev/vda rw\""
+        QEMU_CMD="$QEMU_CMD -append \"console=tty0 console=ttyS0 root=/dev/vda rw video=$RESOLUTION\""
     else
         QEMU_CMD="$QEMU_CMD -drive file=$ROOTFS,format=raw,if=ide"
-        QEMU_CMD="$QEMU_CMD -append \"console=tty0 root=/dev/sda rw\""
+        QEMU_CMD="$QEMU_CMD -append \"console=tty0 root=/dev/sda rw video=$RESOLUTION\""
     fi
     
     if [ "$KVM" = "1" ]; then
@@ -215,6 +224,9 @@ fi
 if [ "$SERIAL" = "1" ]; then
     QEMU_CMD="$QEMU_CMD -nographic"
 else
+    # Set SDL window size for the resolution
+    export SDL_VIDEO_WINDOW_POS=0,0
+    export SDL_VIDEO_WINDOW_SIZE=$RESOLUTION
     QEMU_CMD="$QEMU_CMD -display gtk"
 fi
 
@@ -232,9 +244,16 @@ echo ""
 echo "Boot mode: $BOOT_MODE"
 echo "KVM: $([ "$KVM" = "1" ] && echo enabled || echo disabled)"
 echo "RAM: $RAM"
+echo "Resolution: $RESOLUTION"
 echo ""
 if [ -n "$DEVICE" ]; then
     echo "Device: $DEVICE"
+    echo ""
+    echo "Booting from USB - use boot menu to select resolution:"
+    echo "  - Select 'Display Options' → choose resolution"
+    echo "  - Or select 'Troubleshooting' for debug options"
+else
+    echo "Booting built-in kernel"
 fi
 echo ""
 
