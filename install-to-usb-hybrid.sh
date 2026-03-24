@@ -184,6 +184,13 @@ echo "Unmounting any existing partitions..."
 sudo umount "${DEVICE}"* 2>/dev/null || true
 sleep 1
 
+# Delete all existing partitions
+echo "Deleting all existing partitions..."
+sudo wipefs --all "$DEVICE" 2>/dev/null || true
+sleep 1
+sudo partprobe "$DEVICE" 2>/dev/null || true
+sudo udevadm settle 2>/dev/null || true
+
 # Create partition table
 echo "Creating partition table..."
 if [ "$HYBRID_MODE" = true ]; then
@@ -245,6 +252,7 @@ fi
 # Wait for kernel to update partition table
 sleep 2
 sudo partprobe "$DEVICE" 2>/dev/null || true
+sudo udevadm settle 2>/dev/null || true
 
 # Format partitions
 echo "Formatting partitions..."

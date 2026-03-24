@@ -63,6 +63,12 @@ echo "Unmounting partitions..."
 sudo umount "${DEVICE}"* 2>/dev/null || true
 sleep 1
 
+# Delete all existing partitions
+echo "Deleting all existing partitions..."
+sudo wipefs --all "$DEVICE" 2>/dev/null || true
+sleep 1
+sudo partprobe "$DEVICE" 2>/dev/null || true
+
 # Create MBR partition table with single FAT32 partition
 echo "Creating partition table (MBR)..."
 sudo parted -s "$DEVICE" mklabel msdos
@@ -71,6 +77,7 @@ sudo parted -s "$DEVICE" set 1 boot on
 
 sleep 2
 sudo partprobe "$DEVICE" 2>/dev/null || true
+sudo udevadm settle 2>/dev/null || true
 
 # Format as FAT32
 echo "Formatting as FAT32..."

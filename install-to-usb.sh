@@ -97,6 +97,13 @@ sudo umount "$BOOT_PART" 2>/dev/null || true
 sudo umount "$DOCS_PART" 2>/dev/null || true
 sudo umount "$DEVICE"* 2>/dev/null || true
 
+# Delete all existing partitions
+echo "Deleting all existing partitions..."
+sudo wipefs --all "$DEVICE" 2>/dev/null || true
+sleep 1
+sudo partprobe "$DEVICE" 2>/dev/null || true
+sudo udevadm settle 2>/dev/null || true
+
 # Create partition table with two partitions
 echo "Creating partition table..."
 sudo fdisk "$DEVICE" << FDISK

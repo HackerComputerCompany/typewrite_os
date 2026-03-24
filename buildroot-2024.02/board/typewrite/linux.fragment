@@ -10,6 +10,12 @@ CONFIG_SATA_NV=y
 CONFIG_SATA_SIL=y
 CONFIG_SATA_VIA=y
 
+# EFI Support
+CONFIG_EFI=y
+CONFIG_EFI_STUB=y
+CONFIG_EFI_MIXED=y
+CONFIG_FB_EFI=y
+
 # Enable initramfs for better hardware support
 CONFIG_BLK_DEV_INITRD=y
 CONFIG_RD_GZIP=y
