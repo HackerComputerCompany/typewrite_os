@@ -243,8 +243,19 @@ fi
 
 # Verify structure
 echo ""
-echo "EFI partition contents:"
+echo "=== EFI partition contents ==="
+echo "Root:"
 ls -la "$MOUNT_DIR/"
+echo ""
+echo "efi/boot/:"
+ls -la "$MOUNT_DIR/efi/boot/ 2>/dev/null || echo "  (not found)"
+echo ""
+echo "Files that will be looked for:"
+[ -f "$MOUNT_DIR/vmlinuz.efi" ] && echo "  /vmlinuz.efi: EXISTS" || echo "  /vmlinuz.efi: MISSING"
+[ -f "$MOUNT_DIR/bzImage" ] && echo "  /bzImage: EXISTS" || echo "  /bzImage: MISSING"
+[ -f "$MOUNT_DIR/efi/boot/vmlinuz.efi" ] && echo "  /efi/boot/vmlinuz.efi: EXISTS" || echo "  /efi/boot/vmlinuz.efi: MISSING"
+[ -f "$MOUNT_DIR/efi/boot/grubia32.efi" ] && echo "  /efi/boot/grubia32.efi: EXISTS" || echo "  /efi/boot/grubia32.efi: MISSING"
+[ -f "$MOUNT_DIR/efi/boot/grub.cfg" ] && echo "  /efi/boot/grub.cfg: EXISTS" || echo "  /efi/boot/grub.cfg: MISSING"
 
 sudo umount "$MOUNT_DIR"
 
