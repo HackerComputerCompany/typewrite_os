@@ -8,9 +8,23 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILDROOT_DIR="$SCRIPT_DIR/buildroot-2024.02"
 IMAGES_DIR="$BUILDROOT_DIR/output/images"
+TOOLS_DIR="$SCRIPT_DIR/bootloader/tools"
+REFIND_LOCAL="$SCRIPT_DIR/bootloader/refind/refind-bin-0.14.2"
 
-KERNEL="$IMAGES_DIR/bzImage"
-ROOTFS="$IMAGES_DIR/rootfs.ext2"
+# Try 32-bit i686 build first (for MacBook Air 2010), fall back to x86_64
+if [ -f "$BUILDROOT_DIR/output-i686/images/bzImage" ]; then
+    KERNEL="$BUILDROOT_DIR/output-i686/images/bzImage"
+    ROOTFS="$BUILDROOT_DIR/output-i686/images/rootfs.ext2"
+    echo "Using 32-bit (i686) kernel for MacBook Air 2010 compatibility"
+elif [ -f "$IMAGES_DIR/bzImage" ]; then
+    KERNEL="$IMAGES_DIR/bzImage"
+    ROOTFS="$IMAGES_DIR/rootfs.ext2"
+    echo "Using 64-bit (x86_64) kernel"
+else
+    echo "Error: No kernel found. Build with:"
+    echo "  cd buildroot-2024.02 && make typewrite_i686_defconfig && make"
+    exit 1
+fi
 
 REFIND_LOCAL="$SCRIPT_DIR/bootloader/refind/refind-bin-0.14.2"
 
@@ -97,6 +111,16 @@ if [ -d "$REFIND_LOCAL/refind/icons" ]; then
     sudo cp -r "$REFIND_LOCAL/refind/icons/"* "$MOUNT_DIR/efi/boot/icons/" 2>/dev/null || true
 fi
 
+# Install diagnostic tools
+echo "Installing diagnostic tools..."
+if [ -f "$TOOLS_DIR/shellx64.efi" ]; then
+    sudo cp "$TOOLS_DIR/shellx64.efi" "$MOUNT_DIR/efi/boot/shell.efi"
+    echo "  Added EFI Shell"
+fi
+
+# Create tools directory with utilities
+sudo mkdir -p "$MOUNT_DIR/efi/tools"
+
 # Build GRUB IA32 that can load 64-bit kernel
 echo "Building GRUB IA32 chainloader..."
 GRUB_MKIMAGE=""
@@ -171,28 +195,67 @@ sudo tee "$MOUNT_DIR/etc/fstab" > /dev/null << EOF
 /dev/sda1  /root/Documents  vfat  defaults,noatime  0  0
 EOF
 
-# Create rEFInd config
+# Create rEFInd config with diagnostic options
 echo "Creating rEFInd config..."
 sudo tee "$MOUNT_DIR/efi/boot/refind.conf" > /dev/null << 'EOF'
 timeout 20
 default 0
-scanfor Manual
+scanfor Manual,External
+scan_delay 1
 
-menuentry "Typewrite OS (GRUB)" {
+# === DIAGNOSTIC TOOLS ===
+menuentry ">>> EFI Shell (Debug)" {
+    icon /efi/boot/icons/tool_shell.icns
+    loader /efi/boot/shell.efi
+}
+
+menuentry ">>> GRUB (Manual Boot)" {
     icon /efi/boot/icons/os_ubuntu.icns
     loader /efi/boot/grubia32.efi
 }
 
+# === TYPEWRITE OS ===
 menuentry "Typewrite OS (1280x800)" {
     icon /efi/boot/icons/os_ubuntu.icns
     loader /boot/bzImage
     options "root=/dev/sda1 rw console=tty0 vga=817"
 }
 
-menuentry "Typewrite OS (Text)" {
+menuentry "Typewrite OS (1024x768)" {
+    icon /efi/boot/icons/os_ubuntu.icns
+    loader /boot/bzImage
+    options "root=/dev/sda1 rw console=tty0 vga=791"
+}
+
+menuentry "Typewrite OS (800x600)" {
+    icon /efi/boot/icons/os_ubuntu.icns
+    loader /boot/bzImage
+    options "root=/dev/sda1 rw console=tty0 vga=771"
+}
+
+menuentry "Typewrite OS (Text Only)" {
     icon /efi/boot/icons/tar.icns
     loader /boot/bzImage
     options "root=/dev/sda1 rw console=tty0 vga=text"
+}
+
+# === TROUBLESHOOTING ===
+menuentry "Troubleshoot: Verbose Boot" {
+    icon /efi/boot/icons/tar.icns
+    loader /boot/bzImage
+    options "root=/dev/sda1 rw console=tty0 vga=817 debug"
+}
+
+menuentry "Troubleshoot: Shell Instead of App" {
+    icon /efi/boot/icons/tool_shell.icns
+    loader /boot/bzImage
+    options "root=/dev/sda1 rw console=tty0 vga=817 shell=1"
+}
+
+menuentry "Troubleshoot: No Framebuffer" {
+    icon /efi/boot/icons/tar.icns
+    loader /boot/bzImage
+    options "root=/dev/sda1 rw console=tty0 vga=text nofb"
 }
 EOF
 
