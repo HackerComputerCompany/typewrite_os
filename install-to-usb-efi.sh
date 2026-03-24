@@ -145,9 +145,7 @@ else
     echo "Creating minimal EFI structure without rEFInd..."
 fi
 
-# Create rEFInd config for direct kernel boot
-# NOTE: For MacBook Air 2010, we need the kernel on the EFI partition
-# and use the full volume-relative path
+# Create rEFInd config - use GRUB as chainloader since 32-bit EFI can't load 64-bit kernel directly
 echo "Creating boot configuration..."
 sudo tee "$MOUNT_DIR/efi/boot/refind.conf" > /dev/null << 'EOF'
 timeout 20
@@ -155,35 +153,17 @@ default 0
 scanfor Manual,External
 scan_delay 1
 
-# Explicitly set the volume to scan
-also_scan_dirs 
-
-menuentry "Typewrite OS (1280x800)" {
+# Chainload to GRUB EFI which can load 64-bit kernel from 32-bit EFI
+menuentry "Typewrite OS (Boot)" {
     icon /efi/boot/icons/os_ubuntu.icns
-    volume "EFI"
+    loader /efi/boot/grubia32.efi
+}
+
+# Direct boot option (may not work on 32-bit EFI)
+menuentry "Typewrite OS (Direct)" {
+    icon /efi/boot/icons/os_ubuntu.icns
     loader /efi/boot/vmlinuz.efi
     options "root=/dev/sda2 rw console=tty0 vga=817"
-}
-
-menuentry "Typewrite OS (1024x768)" {
-    icon /efi/boot/icons/os_ubuntu.icns
-    volume "EFI"
-    loader /efi/boot/vmlinuz.efi
-    options "root=/dev/sda2 rw console=tty0 vga=791"
-}
-
-menuentry "Typewrite OS (Safe 800x600)" {
-    icon /efi/boot/icons/os_ubuntu.icns
-    volume "EFI"
-    loader /efi/boot/vmlinuz.efi
-    options "root=/dev/sda2 rw console=tty0 vga=771"
-}
-
-menuentry "Typewrite OS (Text Mode)" {
-    icon /efi/boot/icons/tar.icns
-    volume "EFI"
-    loader /efi/boot/vmlinuz.efi
-    options "root=/dev/sda2 rw console=tty0 vga=text"
 }
 EOF
 
@@ -192,6 +172,65 @@ EOF
 echo "Copying kernel..."
 sudo cp "$KERNEL" "$MOUNT_DIR/bzImage"
 sudo cp "$KERNEL" "$MOUNT_DIR/vmlinuz.efi"
+sudo cp "$KERNEL" "$MOUNT_DIR/efi/boot/bzImage"
+sudo cp "$KERNEL" "$MOUNT_DIR/efi/boot/vmlinuz.efi"
+
+# Create GRUB IA32 image that can load 64-bit kernel
+# This is needed because 32-bit EFI can't directly load 64-bit kernel
+echo "Creating GRUB IA32 EFI image..."
+GRUB_I32_DIR=""
+for dir in "$BUILDROOT_DIR/output/host/lib/grub/i386-efi" "/usr/lib/grub/i386-efi"; do
+    if [ -d "$dir" ] && [ -f "$dir/normal.mod" ]; then
+        GRUB_I32_DIR="$dir"
+        break
+    fi
+done
+
+GRUB_MKIMAGE=""
+for bin in "$BUILDROOT_DIR/output/host/bin/grub-mkimage" "/usr/bin/grub-mkimage"; do
+    if [ -f "$bin" ]; then
+        GRUB_MKIMAGE="$bin"
+        break
+    fi
+done
+
+if [ -n "$GRUB_I32_DIR" ] && [ -n "$GRUB_MKIMAGE" ]; then
+    # Create grub.cfg for the embedded image
+    sudo tee "$MOUNT_DIR/efi/boot/grub.cfg" > /dev/null << 'GRUBEOF'
+set timeout=10
+set default=0
+
+menuentry "Typewrite OS (1280x800)" {
+    linux /bzImage root=/dev/sda2 rw console=tty0 vga=817
+}
+
+menuentry "Typewrite OS (1024x768)" {
+    linux /bzImage root=/dev/sda2 rw console=tty0 vga=791
+}
+
+menuentry "Typewrite OS (1440x900)" {
+    linux /bzImage root=/dev/sda2 rw console=tty0 vga=855
+}
+
+menuentry "Typewrite OS (Safe 800x600)" {
+    linux /bzImage root=/dev/sda2 rw console=tty0 vga=771
+}
+
+menuentry "Typewrite OS (Text Mode)" {
+    linux /bzImage root=/dev/sda2 rw console=tty0 vga=text
+}
+GRUBEOF
+
+    # Build GRUB IA32 with embedded config
+    "$GRUB_MKIMAGE" -O i386-efi \
+        -p /efi/boot \
+        -c "$MOUNT_DIR/efi/boot/grub.cfg" \
+        -o "$MOUNT_DIR/efi/boot/grubia32.efi" \
+        part_gpt fat normal linux boot cat echo ls \
+        2>/dev/null && echo "GRUB IA32 built successfully" || echo "GRUB IA32 build failed"
+else
+    echo "Warning: Could not find GRUB tools for IA32"
+fi
 
 # Verify structure
 echo ""
