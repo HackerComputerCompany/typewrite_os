@@ -18,7 +18,22 @@ sudo ./install-to-usb.sh /dev/sdX
 
 ## Install Scripts
 
-### install-to-usb-hybrid.sh (Recommended)
+### install-to-usb-refind.sh (Recommended for MacBook Air 2010)
+
+Creates a USB drive optimized for **MacBook Air 2010 and older Macs**:
+- Downloads rEFInd 0.14.2 bootloader (Mac-compatible)
+- Uses lowercase `/efi/boot/` directory (Mac EFI is case-sensitive!)
+- Installs 32-bit `boot.efi` (refind_ia32.efi) for MacBook Air 2010
+- Includes 64-bit `bootx64.efi` as fallback
+- GPT partition table with ESP flag
+- Boot/Root partition (ext4)
+- Documents partition (FAT32)
+
+```bash
+sudo ./install-to-usb-refind.sh /dev/sdX
+```
+
+### install-to-usb-hybrid.sh (Recommended for most PCs)
 
 Creates a USB drive with **hybrid BIOS/UEFI boot support**:
 - GPT partition table
@@ -44,24 +59,32 @@ Original BIOS-only installer using MBR partition table.
 
 ### Tested Hardware
 
-| Machine | Year | Boot Mode | Graphics | Notes |
-|---------|------|-----------|----------|-------|
-| Dell Latitude E6400 | 2009 | Legacy BIOS | Intel GMA 4500 | Works with vga=817 (1280x800) |
-| MacBook Air 2010 | 2010 | EFI (IA32) | NVIDIA GeForce 320M | Use `--hybrid`; hold Option at boot |
-| ThinkPad T60 | 2006 | Legacy BIOS | Intel GMA 950 | May need `vga=771` (800x600) safe mode |
-| Jasper Lake PC | 2020+ | UEFI | Intel UHD Graphics | VAAPI enabled, no networking |
+| Machine | Year | Boot Mode | Graphics | Installer | Notes |
+|---------|------|-----------|----------|-----------|-------|
+| Dell Latitude E6400 | 2009 | Legacy BIOS | Intel GMA 4500 | hybrid or bios | Works with vga=817 (1280x800) |
+| MacBook Air 2010 | 2010 | EFI (IA32) | NVIDIA GeForce 320M | **refind** | Use refind script; hold Option at boot |
+| ThinkPad T60 | 2006 | Legacy BIOS | Intel GMA 950 | bios | May need `vga=771` (800x600) safe mode |
+| Jasper Lake PC | 2020+ | UEFI | Intel UHD Graphics | hybrid | VAAPI enabled, no networking |
 
 ### Boot Methods by Machine
 
-#### MacBook Air 2010
-1. Insert USB drive
-2. **Hold Option (Alt) key** while powering on
-3. Select "EFI Boot" or the USB drive icon
-4. GRUB menu should appear
+#### MacBook Air 2010 (Use rEFInd installer!)
+1. Use `install-to-usb-refind.sh` (not hybrid!)
+2. Insert USB drive
+3. **Hold Option (Alt) key** while powering on
+4. Select "EFI Boot" or the USB drive icon
+5. rEFInd menu should appear with boot options
+
+**Critical Mac EFI requirements:**
+- Must use **lowercase** `/efi/boot/` not `/EFI/BOOT/` (Mac is case-sensitive!)
+- Must use `boot.efi` not `BOOTX64.EFI` for 32-bit Macs
+- rEFInd handles all these requirements automatically
 
 If no boot option appears:
 - The Mac may have disabled external boot - check System Preferences > Startup Disk
 - Try holding Command+Option+P+R to reset NVRAM
+- Try a different USB port
+- External boot must be enabled in System Preferences
 
 #### ThinkPad T60
 1. Insert USB drive
