@@ -146,6 +146,7 @@ else
 fi
 
 # Create rEFInd config
+# Try both forward and backslash paths for Mac compatibility
 echo "Creating boot configuration..."
 sudo tee "$MOUNT_DIR/efi/boot/refind.conf" > /dev/null << 'EOF'
 timeout 20
@@ -156,32 +157,32 @@ scan_delay 1
 # Try GRUB chainloader if available
 menuentry "Typewrite OS (GRUB)" {
     icon /efi/boot/icons/os_ubuntu.icns
-    loader /efi/boot/grubia32.efi
+    loader \efi\boot\grubia32.efi
     options ""
 }
 
-# Direct kernel boot (requires kernel with EFI stub support)
+# Direct kernel boot (try various path formats)
 menuentry "Typewrite OS (1280x800)" {
     icon /efi/boot/icons/os_ubuntu.icns
-    loader /vmlinuz.efi
+    loader \vmlinuz.efi
     options "root=/dev/sda2 rw console=tty0 vga=817"
 }
 
 menuentry "Typewrite OS (1024x768)" {
     icon /efi/boot/icons/os_ubuntu.icns
-    loader /vmlinuz.efi
+    loader \vmlinuz.efi
     options "root=/dev/sda2 rw console=tty0 vga=791"
 }
 
 menuentry "Typewrite OS (800x600)" {
     icon /efi/boot/icons/os_ubuntu.icns
-    loader /vmlinuz.efi
+    loader \vmlinuz.efi
     options "root=/dev/sda2 rw console=tty0 vga=771"
 }
 
 menuentry "Typewrite OS (Text)" {
     icon /efi/boot/icons/tar.icns
-    loader /vmlinuz.efi
+    loader \vmlinuz.efi
     options "root=/dev/sda2 rw console=tty0 vga=text"
 }
 EOF
