@@ -114,11 +114,14 @@ fi
 echo "Installing diagnostic tools..."
 if [ -f "$TOOLS_DIR/shellx64.efi" ]; then
     sudo cp "$TOOLS_DIR/shellx64.efi" "$MOUNT_DIR/efi/boot/shell.efi"
-    echo "  Added EFI Shell"
+    sudo cp "$TOOLS_DIR/shellx64.efi" "$MOUNT_DIR/shell.efi"
+    echo "  Added EFI Shell (includes 'edit' command)"
 fi
 
-# Create tools directory with utilities
-sudo mkdir -p "$MOUNT_DIR/efi/tools"
+# Create startup script for shell
+if [ -f "$MOUNT_DIR/startup.nsh" ]; then
+    echo "  Added startup.nsh"
+fi
 
 # Build GRUB IA32 that can load 64-bit kernel
 echo "Building GRUB IA32 chainloader..."
@@ -208,6 +211,12 @@ menuentry ">>> EFI Shell (Debug)" {
     loader /efi/boot/shell.efi
 }
 
+menuentry ">>> Text Editor (via Shell)" {
+    icon /efi/boot/icons/tool_part.icns
+    loader /efi/boot/shell.efi
+    options "-nomap"
+}
+
 menuentry ">>> GRUB (Manual Boot)" {
     icon /efi/boot/icons/os_ubuntu.icns
     loader /efi/boot/grubia32.efi
@@ -256,6 +265,31 @@ menuentry "Troubleshoot: No Framebuffer" {
     loader /boot/bzImage
     options "root=/dev/sda1 rw console=tty0 vga=text nofb"
 }
+EOF
+
+# Create a startup script for the shell that opens editor
+sudo tee "$MOUNT_DIR/startup.nsh" > /dev/null << 'EOF'
+# Typewrite OS EFI Shell Startup
+# Type 'edit filename' to edit text files
+# Use 'ls' to list files, 'cd' to change directories
+# Type 'exit' to return to rEFInd
+
+echo ""
+echo "==========================================="
+echo "Typewrite OS - EFI Shell"
+echo "==========================================="
+echo ""
+echo "Available commands:"
+echo "  edit <file>   - Edit a text file"
+echo "  ls            - List files"
+echo "  cd <dir>      - Change directory"
+echo "  cat <file>    - Display file contents"
+echo "  mkdir <dir>   - Create directory"
+echo "  rm <file>     - Delete file"
+echo "  exit          - Return to boot menu"
+echo ""
+echo "Files are on: FS0: (the EFI partition)"
+echo ""
 EOF
 
 # Verify structure
