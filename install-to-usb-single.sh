@@ -11,20 +11,19 @@ IMAGES_DIR="$BUILDROOT_DIR/output/images"
 TOOLS_DIR="$SCRIPT_DIR/bootloader/tools"
 REFIND_LOCAL="$SCRIPT_DIR/bootloader/refind/refind-bin-0.14.2"
 
-# Try 32-bit i686 build first (for MacBook Air 2010), fall back to x86_64
-if [ -f "$BUILDROOT_DIR/output-i686/images/bzImage" ]; then
-    KERNEL="$BUILDROOT_DIR/output-i686/images/bzImage"
-    ROOTFS="$BUILDROOT_DIR/output-i686/images/rootfs.ext2"
-    echo "Using 32-bit (i686) kernel for MacBook Air 2010 compatibility"
-elif [ -f "$IMAGES_DIR/bzImage" ]; then
-    KERNEL="$IMAGES_DIR/bzImage"
-    ROOTFS="$IMAGES_DIR/rootfs.ext2"
-    echo "Using 64-bit (x86_64) kernel"
-else
+# Use existing x86_64 kernel (32-bit i686 build needs host dependencies)
+KERNEL="$IMAGES_DIR/bzImage"
+ROOTFS="$IMAGES_DIR/rootfs.ext2"
+
+if [ ! -f "$KERNEL" ]; then
     echo "Error: No kernel found. Build with:"
-    echo "  cd buildroot-2024.02 && make typewrite_i686_defconfig && make"
+    echo "  cd buildroot-2024.02 && make"
     exit 1
 fi
+
+echo "Using kernel: $KERNEL"
+echo "Kernel info:"
+file "$KERNEL"
 
 REFIND_LOCAL="$SCRIPT_DIR/bootloader/refind/refind-bin-0.14.2"
 
