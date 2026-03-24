@@ -248,14 +248,34 @@ echo "Root:"
 ls -la "$MOUNT_DIR/"
 echo ""
 echo "efi/boot/:"
-ls -la "$MOUNT_DIR/efi/boot/ 2>/dev/null || echo "  (not found)"
+ls -la "$MOUNT_DIR/efi/boot/" 2>/dev/null || echo "  (not found)"
 echo ""
 echo "Files that will be looked for:"
-[ -f "$MOUNT_DIR/vmlinuz.efi" ] && echo "  /vmlinuz.efi: EXISTS" || echo "  /vmlinuz.efi: MISSING"
-[ -f "$MOUNT_DIR/bzImage" ] && echo "  /bzImage: EXISTS" || echo "  /bzImage: MISSING"
-[ -f "$MOUNT_DIR/efi/boot/vmlinuz.efi" ] && echo "  /efi/boot/vmlinuz.efi: EXISTS" || echo "  /efi/boot/vmlinuz.efi: MISSING"
-[ -f "$MOUNT_DIR/efi/boot/grubia32.efi" ] && echo "  /efi/boot/grubia32.efi: EXISTS" || echo "  /efi/boot/grubia32.efi: MISSING"
-[ -f "$MOUNT_DIR/efi/boot/grub.cfg" ] && echo "  /efi/boot/grub.cfg: EXISTS" || echo "  /efi/boot/grub.cfg: MISSING"
+if [ -f "$MOUNT_DIR/vmlinuz.efi" ]; then
+    echo "  /vmlinuz.efi: EXISTS"
+else
+    echo "  /vmlinuz.efi: MISSING"
+fi
+if [ -f "$MOUNT_DIR/bzImage" ]; then
+    echo "  /bzImage: EXISTS"
+else
+    echo "  /bzImage: MISSING"
+fi
+if [ -f "$MOUNT_DIR/efi/boot/vmlinuz.efi" ]; then
+    echo "  /efi/boot/vmlinuz.efi: EXISTS"
+else
+    echo "  /efi/boot/vmlinuz.efi: MISSING"
+fi
+if [ -f "$MOUNT_DIR/efi/boot/grubia32.efi" ]; then
+    echo "  /efi/boot/grubia32.efi: EXISTS"
+else
+    echo "  /efi/boot/grubia32.efi: MISSING"
+fi
+if [ -f "$MOUNT_DIR/efi/boot/grub.cfg" ]; then
+    echo "  /efi/boot/grub.cfg: EXISTS"
+else
+    echo "  /efi/boot/grub.cfg: MISSING"
+fi
 
 sudo umount "$MOUNT_DIR"
 
