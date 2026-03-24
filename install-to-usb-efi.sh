@@ -1,6 +1,7 @@
 #!/bin/bash
-# USB Installer for Typewrite OS - MacBook Air 2010 Compatible
-# Uses lowercase /efi/boot/ structure which is what Mac EFI expects
+# USB Installer for Typewrite OS - EFI Only
+# For systems that only support EFI boot (MacBooks, modern UEFI-only PCs)
+# Uses GPT with EFI System Partition only - no BIOS/Legacy support
 
 set -e
 
@@ -13,10 +14,12 @@ ROOTFS="$IMAGES_DIR/rootfs.ext2"
 
 # Local rEFInd (bundled with project - no download needed)
 REFIND_LOCAL="$SCRIPT_DIR/bootloader/refind/refind-bin-0.14.2"
-REFIND_VERSION="0.14.2"
 
 if [ $# -lt 1 ]; then
     echo "Usage: $0 /dev/sdX"
+    echo ""
+    echo "Creates a USB drive with EFI-only boot (no BIOS/Legacy support)"
+    echo "Best for: MacBooks, modern UEFI-only PCs"
     echo ""
     echo "WARNING: ALL DATA WILL BE ERASED!"
     exit 1
@@ -25,7 +28,7 @@ fi
 DEVICE="$1"
 
 echo "=========================================="
-echo "Typewrite OS - MacBook Air 2010 USB Installer"
+echo "Typewrite OS - EFI Only USB Installer"
 echo "=========================================="
 echo ""
 
@@ -43,6 +46,7 @@ if [ ! -f "$ROOTFS" ]; then
 fi
 
 echo "WARNING: ALL DATA ON $DEVICE WILL BE ERASED!"
+echo "This USB will ONLY boot on EFI/UEFI systems (no BIOS/Legacy support)"
 echo ""
 read -p "Press Enter to continue, Ctrl+C to cancel..."
 
@@ -61,7 +65,7 @@ sudo udevadm settle 2>/dev/null || true
 EFI_SIZE=100
 ROOT_SIZE=80
 
-# Create GPT partition table
+# Create GPT partition table (EFI only - no BIOS partition needed)
 echo "Creating GPT partitions..."
 sudo parted -s "$DEVICE" mklabel gpt
 sudo parted -s "$DEVICE" mkpart primary fat32 1MiB "${EFI_SIZE}MB"
@@ -83,63 +87,53 @@ sudo mkfs.fat -F 32 -n "EFI" "$PART_EFI"
 sudo mkfs.ext4 -F -L "TYPEWRITE" "$PART_BOOT"
 sudo mkfs.vfat -F 32 -n "DOCUMENTS" "$PART_DOCS"
 
-# Create protective MBR (not hybrid) - Mac should still find it
-# Some Macs need the partition to be bootable in MBR
-echo "Creating protective MBR..."
-sudo sfdisk --part-type "$DEVICE" 1 0xEE >/dev/null 2>&1 || true
-
 # Mount EFI partition
 MOUNT_DIR="/mnt/typewrite-efi"
 sudo mkdir -p "$MOUNT_DIR"
 sudo mount "$PART_EFI" "$MOUNT_DIR"
 
-# Create the Mac-standard directory structure
-# CRITICAL: Must be lowercase /efi/boot/ for Mac EFI
+# Create Mac-compatible directory structure (lowercase /efi/boot/)
 echo "Creating EFI directory structure..."
-sudo mkdir -p "$MOUNT_DIR/efi/boot"
 sudo mkdir -p "$MOUNT_DIR/efi/boot/icons"
 
-# Use local rEFInd (bundled with project)
-if [ ! -d "$REFIND_LOCAL" ]; then
-    echo "Error: rEFInd not found at $REFIND_LOCAL"
-    echo "Please run: ./download-refind.sh"
-    exit 1
-fi
-
-REFIND_EXTRACT="$REFIND_LOCAL"
-echo "Using local rEFInd from $REFIND_LOCAL"
-
-echo "Installing rEFInd..."
-
-# Install 32-bit boot.efi for MacBook Air 2010 (CRITICAL)
-if [ -f "$REFIND_EXTRACT/refind_ia32.efi" ]; then
-    echo "  Installing 32-bit boot.efi (for MacBook Air 2010)..."
-    sudo cp "$REFIND_EXTRACT/refind_ia32.efi" "$MOUNT_DIR/efi/boot/boot.efi"
-fi
-
-# Also install 64-bit as fallback
-if [ -f "$REFIND_EXTRACT/refind_x64.efi" ]; then
-    echo "  Installing 64-bit bootx64.efi..."
-    sudo cp "$REFIND_EXTRACT/refind_x64.efi" "$MOUNT_DIR/efi/boot/bootx64.efi"
-fi
-
-# Copy icons
-if [ -d "$REFIND_EXTRACT/icons" ]; then
-    sudo cp -r "$REFIND_EXTRACT/icons/"* "$MOUNT_DIR/efi/boot/icons/" 2>/dev/null || true
-fi
-
-# Copy drivers for filesystem support
-if [ -d "$REFIND_EXTRACT/drivers_ia32" ]; then
-    sudo mkdir -p "$MOUNT_DIR/efi/boot/drivers_ia32"
-    sudo cp "$REFIND_EXTRACT/drivers_ia32/"* "$MOUNT_DIR/efi/boot/drivers_ia32/" 2>/dev/null || true
-fi
-if [ -d "$REFIND_EXTRACT/drivers_x64" ]; then
-    sudo mkdir -p "$MOUNT_DIR/efi/boot/drivers_x64"
-    sudo cp "$REFIND_EXTRACT/drivers_x64/"* "$MOUNT_DIR/efi/boot/drivers_x64/" 2>/dev/null || true
+# Use local rEFInd
+if [ -d "$REFIND_LOCAL" ]; then
+    echo "Installing rEFInd from local..."
+    REFIND_EXTRACT="$REFIND_LOCAL"
+    
+    # Install 32-bit boot.efi for MacBook Air 2010 and older Macs
+    if [ -f "$REFIND_EXTRACT/refind/refind_ia32.efi" ]; then
+        echo "  Installing 32-bit boot.efi..."
+        sudo cp "$REFIND_EXTRACT/refind/refind_ia32.efi" "$MOUNT_DIR/efi/boot/boot.efi"
+    fi
+    
+    # Also install 64-bit as fallback
+    if [ -f "$REFIND_EXTRACT/refind/refind_x64.efi" ]; then
+        echo "  Installing 64-bit bootx64.efi..."
+        sudo cp "$REFIND_EXTRACT/refind/refind_x64.efi" "$MOUNT_DIR/efi/boot/bootx64.efi"
+    fi
+    
+    # Copy icons
+    if [ -d "$REFIND_EXTRACT/refind/icons" ]; then
+        sudo cp -r "$REFIND_EXTRACT/refind/icons/"* "$MOUNT_DIR/efi/boot/icons/" 2>/dev/null || true
+    fi
+    
+    # Copy drivers
+    if [ -d "$REFIND_EXTRACT/refind/drivers_ia32" ]; then
+        sudo mkdir -p "$MOUNT_DIR/efi/boot/drivers_ia32"
+        sudo cp "$REFIND_EXTRACT/refind/drivers_ia32/"* "$MOUNT_DIR/efi/boot/drivers_ia32/" 2>/dev/null || true
+    fi
+    if [ -d "$REFIND_EXTRACT/refind/drivers_x64" ]; then
+        sudo mkdir -p "$MOUNT_DIR/efi/boot/drivers_x64"
+        sudo cp "$REFIND_EXTRACT/refind/drivers_x64/"* "$MOUNT_DIR/efi/boot/drivers_x64/" 2>/dev/null || true
+    fi
+else
+    echo "Warning: rEFInd not found at $REFIND_LOCAL"
+    echo "Creating minimal EFI structure without rEFInd..."
 fi
 
 # Create rEFInd config for direct kernel boot
-echo "Creating rEFInd configuration..."
+echo "Creating boot configuration..."
 sudo tee "$MOUNT_DIR/efi/boot/refind.conf" > /dev/null << 'EOF'
 timeout 20
 default 0
@@ -157,6 +151,18 @@ menuentry "Typewrite OS (1024x768)" {
     options "root=/dev/sda2 rw console=tty0 vga=791"
 }
 
+menuentry "Typewrite OS (1440x900)" {
+    icon /efi/boot/icons/os_ubuntu.icns
+    loader /bzImage
+    options "root=/dev/sda2 rw console=tty0 vga=855"
+}
+
+menuentry "Typewrite OS (1920x1080)" {
+    icon /efi/boot/icons/os_ubuntu.icns
+    loader /bzImage
+    options "root=/dev/sda2 rw console=tty0 vga=0x1B8"
+}
+
 menuentry "Typewrite OS (Safe 800x600)" {
     icon /efi/boot/icons/os_ubuntu.icns
     loader /bzImage
@@ -168,6 +174,12 @@ menuentry "Typewrite OS (Text Mode)" {
     loader /bzImage
     options "root=/dev/sda2 rw console=tty0 vga=text"
 }
+
+menuentry "Troubleshooting (Shell)" {
+    icon /efi/boot/icons/tool_shell.icns
+    loader /bzImage
+    options "root=/dev/sda2 rw console=tty0 shell=1"
+}
 EOF
 
 # Copy kernel to EFI partition root
@@ -178,7 +190,6 @@ sudo cp "$KERNEL" "$MOUNT_DIR/bzImage"
 echo ""
 echo "EFI partition contents:"
 ls -la "$MOUNT_DIR/"
-ls -la "$MOUNT_DIR/efi/boot/"
 
 sudo umount "$MOUNT_DIR"
 
@@ -198,29 +209,6 @@ sudo cp -a "$ROOTFS_MNT/"* "$MOUNT_DIR/"
 sudo umount "$ROOTFS_MNT"
 sudo rmdir "$ROOTFS_MNT"
 
-# Install extlinux for BIOS boot
-sudo mkdir -p "$MOUNT_DIR/boot/extlinux"
-for mod in ldlinux.c32 libcom32.c32 libutil.c32 menu.c32; do
-    for path in "/usr/lib/syslinux/modules/bios/$mod" "/usr/share/syslinux/$mod"; do
-        [ -f "$path" ] && sudo cp "$path" "$MOUNT_DIR/boot/extlinux/"
-    done
-done
-sudo extlinux --install "$MOUNT_DIR/boot/extlinux" 2>/dev/null || true
-
-# Create extlinux config
-sudo tee "$MOUNT_DIR/boot/extlinux/extlinux.conf" > /dev/null << 'EOF'
-DEFAULT typewrite
-
-MENU TITLE Typewrite OS
-TIMEOUT 30
-
-UI menu.c32
-
-LABEL typewrite
-    LINUX /boot/bzImage
-    APPEND root=/dev/sda2 rw console=tty0 vga=817
-EOF
-
 # Add fstab
 sudo mkdir -p "$MOUNT_DIR/root/Documents"
 sudo tee -a "$MOUNT_DIR/etc/fstab" > /dev/null << EOF
@@ -230,25 +218,26 @@ EOF
 sudo umount "$MOUNT_DIR"
 sudo rmdir "$MOUNT_DIR" 2>/dev/null || true
 
-# Cleanup
-rm -rf "$REFIND_TMP" "$REFIND_TMP.zip"
-
 echo ""
 echo "=========================================="
-echo "MacBook Air 2010 USB Ready!"
+echo "EFI-Only USB Ready!"
 echo "=========================================="
 echo ""
 echo "Partition layout:"
-echo "  sda1 - EFI System (FAT32, lowercase efi/boot/)"
+echo "  sda1 - EFI System (FAT32, /efi/boot/)"
 echo "  sda2 - Boot/Root (ext4)"
 echo "  sda3 - Documents (FAT32)"
 echo ""
 echo "Boot instructions:"
-echo "1. Insert USB, hold Option (Alt) at startup"
-echo "2. Select 'EFI Boot' or USB icon"
-echo "3. rEFInd should appear with boot options"
 echo ""
-echo "If still not showing:"
-echo "- Reset NVRAM: Cmd+Opt+P+R at startup chime"
-echo "- Try different USB port"
-echo "- External boot must be enabled in System Preferences"
+echo "MacBook:"
+echo "  1. Hold Option (Alt) at startup"
+echo "  2. Select 'EFI Boot' or USB icon"
+echo "  3. rEFInd should appear"
+echo ""
+echo "PC with UEFI:"
+echo "  1. Enter BIOS/UEFI setup (Del/F2)"
+echo "  2. Disable Secure Boot if needed"
+echo "  3. Select USB as boot device"
+echo ""
+echo "NOTE: This USB will NOT work on BIOS-only systems!"
