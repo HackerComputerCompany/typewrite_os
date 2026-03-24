@@ -157,21 +157,25 @@ scan_delay 1
 menuentry "Typewrite OS (Boot)" {
     icon /efi/boot/icons/os_ubuntu.icns
     loader /efi/boot/grubia32.efi
+    options ""
 }
 
-# Direct boot option (may not work on 32-bit EFI)
+# Direct boot option (kernel at partition root)
 menuentry "Typewrite OS (Direct)" {
     icon /efi/boot/icons/os_ubuntu.icns
-    loader /efi/boot/vmlinuz.efi
+    loader /vmlinuz.efi
     options "root=/dev/sda2 rw console=tty0 vga=817"
 }
 EOF
 
 # Copy kernel to EFI partition root
 # Use both bzImage and vmlinuz.efi names for compatibility
-echo "Copying kernel..."
+echo "Copying kernel to EFI partition..."
 sudo cp "$KERNEL" "$MOUNT_DIR/bzImage"
 sudo cp "$KERNEL" "$MOUNT_DIR/vmlinuz.efi"
+
+# Also put in efi/boot just in case
+sudo mkdir -p "$MOUNT_DIR/efi/boot"
 sudo cp "$KERNEL" "$MOUNT_DIR/efi/boot/bzImage"
 sudo cp "$KERNEL" "$MOUNT_DIR/efi/boot/vmlinuz.efi"
 
@@ -182,6 +186,7 @@ GRUB_I32_DIR=""
 for dir in "$BUILDROOT_DIR/output/host/lib/grub/i386-efi" "/usr/lib/grub/i386-efi"; do
     if [ -d "$dir" ] && [ -f "$dir/normal.mod" ]; then
         GRUB_I32_DIR="$dir"
+        echo "  Found GRUB IA32 modules at: $GRUB_I32_DIR"
         break
     fi
 done
@@ -190,6 +195,7 @@ GRUB_MKIMAGE=""
 for bin in "$BUILDROOT_DIR/output/host/bin/grub-mkimage" "/usr/bin/grub-mkimage"; do
     if [ -f "$bin" ]; then
         GRUB_MKIMAGE="$bin"
+        echo "  Found grub-mkimage at: $GRUB_MKIMAGE"
         break
     fi
 done
@@ -221,15 +227,18 @@ menuentry "Typewrite OS (Text Mode)" {
 }
 GRUBEOF
 
+    echo "  Building GRUB IA32..."
     # Build GRUB IA32 with embedded config
     "$GRUB_MKIMAGE" -O i386-efi \
         -p /efi/boot \
         -c "$MOUNT_DIR/efi/boot/grub.cfg" \
         -o "$MOUNT_DIR/efi/boot/grubia32.efi" \
         part_gpt fat normal linux boot cat echo ls \
-        2>/dev/null && echo "GRUB IA32 built successfully" || echo "GRUB IA32 build failed"
+        2>&1 && echo "  GRUB IA32 built successfully" || echo "  GRUB IA32 build failed"
 else
-    echo "Warning: Could not find GRUB tools for IA32"
+    echo "  Warning: Could not find GRUB tools for IA32"
+    echo "  GRUB_I32_DIR='$GRUB_I32_DIR'"
+    echo "  GRUB_MKIMAGE='$GRUB_MKIMAGE'"
 fi
 
 # Verify structure
