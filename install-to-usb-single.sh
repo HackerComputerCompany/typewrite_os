@@ -91,7 +91,7 @@ sudo mount "$PART" "$MOUNT_DIR"
 echo "Creating directory structure..."
 sudo mkdir -p "$MOUNT_DIR/efi/boot"
 sudo mkdir -p "$MOUNT_DIR/efi/boot/icons"
-sudo mkdir -p "$MOUNT_DIR/boot
+sudo mkdir -p "$MOUNT_DIR/boot"
 
 # Install rEFInd IA32 for MacBook Air 2010
 if [ -f "$REFIND_LOCAL/refind/refind_ia32.efi" ]; then
@@ -115,7 +115,7 @@ echo "Installing diagnostic tools..."
 if [ -f "$TOOLS_DIR/shellx64.efi" ]; then
     sudo cp "$TOOLS_DIR/shellx64.efi" "$MOUNT_DIR/efi/boot/shell.efi"
     sudo cp "$TOOLS_DIR/shellx64.efi" "$MOUNT_DIR/shell.efi"
-    echo "  Added EFI Shell (includes 'edit' command)"
+    echo "  Added EFI Shell (includes edit command)"
 fi
 
 # Create startup script for shell
@@ -301,7 +301,7 @@ echo "/boot:"
 ls -la "$MOUNT_DIR/boot/"
 echo ""
 echo "/efi/boot:"
-ls -la "$MOUNT_DIR/efi/boot/
+ls -la "$MOUNT_DIR/efi/boot/"
 
 sudo umount "$MOUNT_DIR"
 sudo rmdir "$MOUNT_DIR" 2>/dev/null || true
@@ -312,7 +312,7 @@ echo "Single Partition USB Ready!"
 echo "=========================================="
 echo ""
 echo "Partition layout:"
-echo "  /dev/sda1 - Everything (FAT32)"
+echo "  /dev/sda1 - Everything [FAT32]"
 echo "    /boot/bzImage - Kernel"
 echo "    /extracted/ - Root filesystem"
 echo "    /efi/boot/ - Bootloader"
