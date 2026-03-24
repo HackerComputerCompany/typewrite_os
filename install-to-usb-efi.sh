@@ -87,6 +87,11 @@ sudo mkfs.fat -F 32 -n "EFI" "$PART_EFI"
 sudo mkfs.ext4 -F -L "TYPEWRITE" "$PART_BOOT"
 sudo mkfs.vfat -F 32 -n "DOCUMENTS" "$PART_DOCS"
 
+# Verify partition labels
+echo "Verifying partitions:"
+sudo fatlabel "$PART_EFI" 2>/dev/null || echo "EFI partition created"
+sudo e2label "$PART_BOOT" 2>/dev/null || echo "Boot partition created"
+
 # Mount EFI partition
 MOUNT_DIR="/mnt/typewrite-efi"
 sudo mkdir -p "$MOUNT_DIR"
@@ -113,6 +118,14 @@ if [ -d "$REFIND_LOCAL" ]; then
         sudo cp "$REFIND_EXTRACT/refind/refind_x64.efi" "$MOUNT_DIR/efi/boot/bootx64.efi"
     fi
     
+    # Install both as BOOTX64.EFI and BOOTIA32.EFI (uppercase for some firmwares)
+    if [ -f "$REFIND_EXTRACT/refind/refind_x64.efi" ]; then
+        sudo cp "$REFIND_EXTRACT/refind/refind_x64.efi" "$MOUNT_DIR/efi/boot/BOOTX64.EFI"
+    fi
+    if [ -f "$REFIND_EXTRACT/refind/refind_ia32.efi" ]; then
+        sudo cp "$REFIND_EXTRACT/refind/refind_ia32.efi" "$MOUNT_DIR/efi/boot/BOOTIA32.EFI"
+    fi
+    
     # Copy icons
     if [ -d "$REFIND_EXTRACT/refind/icons" ]; then
         sudo cp -r "$REFIND_EXTRACT/refind/icons/"* "$MOUNT_DIR/efi/boot/icons/" 2>/dev/null || true
@@ -133,58 +146,52 @@ else
 fi
 
 # Create rEFInd config for direct kernel boot
+# NOTE: For MacBook Air 2010, we need the kernel on the EFI partition
+# and use the full volume-relative path
 echo "Creating boot configuration..."
 sudo tee "$MOUNT_DIR/efi/boot/refind.conf" > /dev/null << 'EOF'
 timeout 20
 default 0
-scanfor Manual
+scanfor Manual,External
+scan_delay 1
+
+# Explicitly set the volume to scan
+also_scan_dirs 
 
 menuentry "Typewrite OS (1280x800)" {
     icon /efi/boot/icons/os_ubuntu.icns
-    loader /bzImage
+    volume "EFI"
+    loader /efi/boot/vmlinuz.efi
     options "root=/dev/sda2 rw console=tty0 vga=817"
 }
 
 menuentry "Typewrite OS (1024x768)" {
     icon /efi/boot/icons/os_ubuntu.icns
-    loader /bzImage
+    volume "EFI"
+    loader /efi/boot/vmlinuz.efi
     options "root=/dev/sda2 rw console=tty0 vga=791"
-}
-
-menuentry "Typewrite OS (1440x900)" {
-    icon /efi/boot/icons/os_ubuntu.icns
-    loader /bzImage
-    options "root=/dev/sda2 rw console=tty0 vga=855"
-}
-
-menuentry "Typewrite OS (1920x1080)" {
-    icon /efi/boot/icons/os_ubuntu.icns
-    loader /bzImage
-    options "root=/dev/sda2 rw console=tty0 vga=0x1B8"
 }
 
 menuentry "Typewrite OS (Safe 800x600)" {
     icon /efi/boot/icons/os_ubuntu.icns
-    loader /bzImage
+    volume "EFI"
+    loader /efi/boot/vmlinuz.efi
     options "root=/dev/sda2 rw console=tty0 vga=771"
 }
 
 menuentry "Typewrite OS (Text Mode)" {
     icon /efi/boot/icons/tar.icns
-    loader /bzImage
+    volume "EFI"
+    loader /efi/boot/vmlinuz.efi
     options "root=/dev/sda2 rw console=tty0 vga=text"
-}
-
-menuentry "Troubleshooting (Shell)" {
-    icon /efi/boot/icons/tool_shell.icns
-    loader /bzImage
-    options "root=/dev/sda2 rw console=tty0 shell=1"
 }
 EOF
 
 # Copy kernel to EFI partition root
+# Use both bzImage and vmlinuz.efi names for compatibility
 echo "Copying kernel..."
 sudo cp "$KERNEL" "$MOUNT_DIR/bzImage"
+sudo cp "$KERNEL" "$MOUNT_DIR/vmlinuz.efi"
 
 # Verify structure
 echo ""
