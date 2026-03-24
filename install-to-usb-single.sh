@@ -175,9 +175,11 @@ else
     echo "Warning: Could not find GRUB tools"
 fi
 
-# Copy kernel to /boot on the same partition
-echo "Copying kernel to /boot..."
+# Copy kernel to both /boot AND root of partition for EFI compatibility
+echo "Copying kernel..."
 sudo cp "$KERNEL" "$MOUNT_DIR/boot/bzImage"
+sudo cp "$KERNEL" "$MOUNT_DIR/vmlinuz"
+sudo cp "$KERNEL" "$MOUNT_DIR/bzImage"
 
 # Copy rootfs and extract
 # Note: FAT32 doesn't support symlinks, so we use --copy-links to dereference them
@@ -228,44 +230,44 @@ menuentry ">>> GRUB (Manual Boot)" {
 # === TYPEWRITE OS ===
 menuentry "Typewrite OS (1280x800)" {
     icon /efi/boot/icons/os_ubuntu.icns
-    loader /boot/bzImage
+    loader /vmlinuz
     options "root=/dev/sda1 rw console=tty0 vga=817"
 }
 
 menuentry "Typewrite OS (1024x768)" {
     icon /efi/boot/icons/os_ubuntu.icns
-    loader /boot/bzImage
+    loader /vmlinuz
     options "root=/dev/sda1 rw console=tty0 vga=791"
 }
 
 menuentry "Typewrite OS (800x600)" {
     icon /efi/boot/icons/os_ubuntu.icns
-    loader /boot/bzImage
+    loader /vmlinuz
     options "root=/dev/sda1 rw console=tty0 vga=771"
 }
 
 menuentry "Typewrite OS (Text Only)" {
     icon /efi/boot/icons/tar.icns
-    loader /boot/bzImage
+    loader /vmlinuz
     options "root=/dev/sda1 rw console=tty0 vga=text"
 }
 
 # === TROUBLESHOOTING ===
 menuentry "Troubleshoot: Verbose Boot" {
     icon /efi/boot/icons/tar.icns
-    loader /boot/bzImage
+    loader /vmlinuz
     options "root=/dev/sda1 rw console=tty0 vga=817 debug"
 }
 
 menuentry "Troubleshoot: Shell Instead of App" {
     icon /efi/boot/icons/tool_shell.icns
-    loader /boot/bzImage
+    loader /vmlinuz
     options "root=/dev/sda1 rw console=tty0 vga=817 shell=1"
 }
 
 menuentry "Troubleshoot: No Framebuffer" {
     icon /efi/boot/icons/tar.icns
-    loader /boot/bzImage
+    loader /vmlinuz
     options "root=/dev/sda1 rw console=tty0 vga=text nofb"
 }
 EOF
@@ -297,11 +299,16 @@ EOF
 
 # Verify structure
 echo ""
-echo "=== Partition contents ==="
+echo "=== Partition contents (root) ==="
 ls -la "$MOUNT_DIR/"
+
 echo ""
 echo "/boot:"
 ls -la "$MOUNT_DIR/boot/"
+
+echo ""
+echo "Looking for kernel files:"
+find "$MOUNT_DIR" -name "bzImage" -o -name "vmlinuz" 2>/dev/null
 echo ""
 echo "/efi/boot:"
 ls -la "$MOUNT_DIR/efi/boot/"
