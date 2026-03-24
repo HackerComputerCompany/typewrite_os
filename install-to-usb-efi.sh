@@ -145,7 +145,7 @@ else
     echo "Creating minimal EFI structure without rEFInd..."
 fi
 
-# Create rEFInd config - use GRUB as chainloader since 32-bit EFI can't load 64-bit kernel directly
+# Create rEFInd config
 echo "Creating boot configuration..."
 sudo tee "$MOUNT_DIR/efi/boot/refind.conf" > /dev/null << 'EOF'
 timeout 20
@@ -153,18 +153,36 @@ default 0
 scanfor Manual,External
 scan_delay 1
 
-# Chainload to GRUB EFI which can load 64-bit kernel from 32-bit EFI
-menuentry "Typewrite OS (Boot)" {
+# Try GRUB chainloader if available
+menuentry "Typewrite OS (GRUB)" {
     icon /efi/boot/icons/os_ubuntu.icns
     loader /efi/boot/grubia32.efi
     options ""
 }
 
-# Direct boot option (kernel at partition root)
-menuentry "Typewrite OS (Direct)" {
+# Direct kernel boot (requires kernel with EFI stub support)
+menuentry "Typewrite OS (1280x800)" {
     icon /efi/boot/icons/os_ubuntu.icns
     loader /vmlinuz.efi
     options "root=/dev/sda2 rw console=tty0 vga=817"
+}
+
+menuentry "Typewrite OS (1024x768)" {
+    icon /efi/boot/icons/os_ubuntu.icns
+    loader /vmlinuz.efi
+    options "root=/dev/sda2 rw console=tty0 vga=791"
+}
+
+menuentry "Typewrite OS (800x600)" {
+    icon /efi/boot/icons/os_ubuntu.icns
+    loader /vmlinuz.efi
+    options "root=/dev/sda2 rw console=tty0 vga=771"
+}
+
+menuentry "Typewrite OS (Text)" {
+    icon /efi/boot/icons/tar.icns
+    loader /vmlinuz.efi
+    options "root=/dev/sda2 rw console=tty0 vga=text"
 }
 EOF
 
