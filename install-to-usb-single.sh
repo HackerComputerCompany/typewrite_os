@@ -180,12 +180,15 @@ echo "Copying kernel to /boot..."
 sudo cp "$KERNEL" "$MOUNT_DIR/boot/bzImage"
 
 # Copy rootfs and extract
+# Note: FAT32 doesn't support symlinks, so we use --copy-links to dereference them
 echo "Extracting rootfs to /..."
-sudo mkdir -p "$MOUNT_DIR/extracted"
 ROOTFS_MNT="/tmp/rootfs-$$"
 sudo mkdir -p "$ROOTFS_MNT"
 sudo mount -o loop,ro "$ROOTFS" "$ROOTFS_MNT"
-sudo cp -a "$ROOTFS_MNT/"* "$MOUNT_DIR/"
+sudo cp -aL --no-preserve=ownership "$ROOTFS_MNT/"* "$MOUNT_DIR/" 2>/dev/null || \
+sudo cp -a --no-preserve=links "$ROOTFS_MNT/"* "$MOUNT_DIR/" 2>/dev/null || \
+sudo rsync -a --copy-links "$ROOTFS_MNT/" "$MOUNT_DIR/" 2>/dev/null || \
+find "$ROOTFS_MNT" -mindepth 1 -exec sudo cp -a --no-preserve=links {} "$MOUNT_DIR/" \; 2>/dev/null
 sudo umount "$ROOTFS_MNT"
 sudo rmdir "$ROOTFS_MNT"
 
