@@ -4,7 +4,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-EFI_APP="${SCRIPT_DIR}/uefi-app/fs/HelloWorld.efi"
+EFI_APP="${SCRIPT_DIR}/uefi-app/fs/Typewriter.efi"
 OVMF_CODE="/usr/share/ovmf/OVMF.fd"
 OVMF_VARS_TEMPLATE="/usr/share/ovmf/OVMF.fd"
 OVMF_VARS="${SCRIPT_DIR}/ovmf_vars.fd"
@@ -27,5 +27,3 @@ qemu-system-x86_64 \
     -drive if=pflash,format=raw,file="$OVMF_VARS" \
     -drive format=raw,file=fat:rw:"${SCRIPT_DIR}/uefi-app/fs" \
     -net none \
-    -display gtk \
-    -serial mon:stdio

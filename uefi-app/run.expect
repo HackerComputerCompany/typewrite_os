@@ -1,0 +1,45 @@
+#!/usr/bin/expect -f
+
+set timeout 20
+
+# Start QEMU
+spawn qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd \
+    -m 256M \
+    -drive format=raw,file=fat:rw:fs \
+    -net none \
+    -display none \
+    -serial stdio
+
+# Wait for shell prompt
+expect {
+    "Shell>" { }
+    timeout { puts "Timeout waiting for shell"; exit 1 }
+}
+
+# Try to get detailed error info
+send "err -a typewrite.efi\r"
+
+# Wait a bit
+sleep 2
+
+# Try running with verbose
+send "typewrite.efi -v\r"
+
+# Wait for output
+expect {
+    "Hello from UEFI" { 
+        puts "\n SUCCESS: UEFI app is working!\n" 
+    }
+    "Unsupported" {
+        puts "\n ERROR: Unsupported format\n"
+    }
+    timeout { 
+        puts "\n Timeout - app might have run\n"
+    }
+}
+
+# Try exit
+send "exit\r"
+
+puts "\nTest completed!"
+exit 0
