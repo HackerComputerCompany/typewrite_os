@@ -1,15 +1,16 @@
-# Makefile for Typewrite UEFI App
-# Using system gnu-efi
+# Makefile for Typewriter UEFI App
+# Using locally-built modern gnu-efi
 
 ARCH            = x86_64
 OBJS            = main.o
 TARGET          = Typewriter.efi
 
-# System gnu-efi
-EFIINC          = /usr/include/efi
+# Use locally-built modern gnu-efi
+EFIDIR          = /ironwolf4TB/data01/projects/gnu-efi
+EFIINC          = $(EFIDIR)/inc
 EFIINCS         = -I$(EFIINC) -I$(EFIINC)/$(ARCH) -I$(EFIINC)/protocol
-LIB             = /usr/lib
-EFILIB          = /usr/lib
+LIB             = $(EFIDIR)/$(ARCH)/lib
+EFILIB          = $(EFIDIR)/gnuefi
 
 EFI_CRT_OBJS   = $(EFILIB)/crt0-efi-$(ARCH).o
 EFI_LDS         = $(EFILIB)/elf_$(ARCH)_efi.lds
@@ -20,12 +21,9 @@ CFLAGS          = $(EFIINCS) -fno-stack-protector -fpic \
 
 LDFLAGS         = -nostdlib -znocombreloc -T $(EFI_LDS) -shared -Bsymbolic
 
-LIBS            = /usr/lib/libgnuefi.a /usr/lib/libefi.a
+LIBS            = $(EFIDIR)/x86_64/gnuefi/libgnuefi.a $(LIB)/libefi.a
 
-# Font headers
-FONTS           = ../fonts/virgil.h ../fonts/helvetica.h
-
-.PHONY: all clean run
+.PHONY: all clean
 
 all: $(TARGET)
 
@@ -35,12 +33,8 @@ $(TARGET): main.so
 main.so: $(OBJS)
 	$(LD) $(LDFLAGS) -o $@ $(OBJS) $(LIBS)
 
-%.o: %.c $(FONTS)
+%.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
 	rm -f $(OBJS) *.so $(TARGET)
-
-run: $(TARGET)
-	@cp $(TARGET) fs/
-	@echo "Run: qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -m 256M -drive format=raw,file=fat:rw:fs -net none -nographic"
