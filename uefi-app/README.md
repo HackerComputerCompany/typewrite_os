@@ -1,10 +1,10 @@
-# Typewrite OS - UEFI App Experiment
+# Typewrite OS — UEFI application
 
-## Overview
+Native **UEFI** build of Typewrite: boots without Linux, talks to **GOP**, **ConIn**, and firmware services via gnu-efi.
 
-This branch (`uefi-app-experiment`) explores making Typewrite a native UEFI application instead of a Linux-based OS.
-
-> **Important**: See [BUILD_SYSTEM.md](../BUILD_SYSTEM.md) for detailed build troubleshooting and the critical fix for producing valid PE32+ binaries.
+> **Build troubleshooting (PE32+, objcopy):** see [`../BUILD_SYSTEM.md`](../BUILD_SYSTEM.md).  
+> **Framebuffer / hardware drawing issues:** see [`../GRAPHICS_DEBUG.md`](../GRAPHICS_DEBUG.md).  
+> **Repo-wide context:** see [`../AGENTS.md`](../AGENTS.md).
 
 ## Architecture
 
@@ -20,7 +20,7 @@ graph TB
 
     subgraph "UEFI App Approach"
         G[BIOS/UEFI] --> H[UEFI Shell]
-        H --> I[Typewrite.efi]
+        H --> I[Typewriter.efi]
     end
 
     subgraph "Typewrite UEFI App"
@@ -35,7 +35,7 @@ graph TB
     end
 ```
 
-## Build Flow
+## Build flow
 
 ```mermaid
 flowchart LR
@@ -44,74 +44,65 @@ flowchart LR
     C --> D[ld -shared]
     D --> E[main.so]
     E --> F[objcopy]
-    F --> G[typewrite.efi]
+    F --> G[Typewriter.efi]
     
     H[gnu-efi libs] --> D
     I[crt0-efi-x86_64.o] --> D
 ```
 
-## Current Status
+## Build
 
-### Accomplished
-
-1. **Build Environment Setup**
-   - Installed gnu-efi and libefivar-dev
-   - Created working Makefile for building UEFI apps
-   - QEMU with OVMF firmware ready for testing
-
-2. **Hello World App**
-   - Created `main.c` with basic UEFI app structure
-   - Successfully compiles to ELF shared object
-   - Successfully converts to PE/COFF format (.efi)
-   - File is recognized as valid PE x86-64 executable
-
-3. **Build Process**
-   ```bash
-   cd uefi-app
-   make          # Builds typewrite.efi
-   make run     # Runs in QEMU
-   ```
-
-### Current Issue
-
-The UEFI shell reports "Unsupported format" when trying to run the .efi file. This could be due to:
-
-1. **PE Header issues** - Subsystem not set correctly to UEFI application (10)
-2. **Section issues** - Missing required sections in the PE file
-3. **QEMU FAT filesystem** - May need proper EFI System Partition (ESP) format
-
-### Build Files
-
-- `Makefile` - Build system
-- `main.c` - Hello world UEFI app
-- `main_minimal.c` - Alternative minimal version (not built yet)
-- `fs/` - FAT filesystem for QEMU testing
-
-## Technical Notes
-
-### Key objcopy flags for UEFI:
-```
-objcopy -j .text -j .sdata -j .data -j .rodata -j .dynamic -j .dynsym \
-    -j .rel -j .rela -j .reloc --target=efi-app-x86_64 input.so output.efi
+```bash
+cd uefi-app
+make          # builds Typewriter.efi
+make clean    # remove objects and .efi
 ```
 
-- `--target=efi-app-x86_64` sets correct PE format (translates to pei-x86-64)
-- `--subsystem=10` should set UEFI application type
+**gnu-efi location:** `Makefile` sets `EFIDIR` (default points at a local clone). Override if needed.
 
-### UEFI Subsystem IDs:
-- 10 = EFI_APPLICATION
-- 11 = EFI_BOOT_SERVICE_DRIVER
-- 12 = EFI_RUNTIME_DRIVER
+For QEMU, run [`../start-qemu.sh`](../start-qemu.sh) from the repo root (it copies the freshly built `Typewriter.efi` into `fs/`). For USB/ESP, use [`../install-uefi-app.sh`](../install-uefi-app.sh).
 
-## Next Steps
+## Current status
 
-1. Fix the "Unsupported format" error
-2. Add graphics/framebuffer support
-3. Implement Typewrite's core typewriter functionality
-4. Add file system access for document storage
+### Working
+
+- **Valid PE32+** UEFI application (firmware loads it; prior “Unsupported format” came from bad `objcopy`/link — fixed per `BUILD_SYSTEM.md`).
+- **QEMU + OVMF** with FAT payload under `fs/` (e.g. `startup.nsh`).
+- **GOP**: mode set, framebuffer base/pitch; large region fills verified on QEMU and some real hardware.
+
+### Open
+
+- **Per-pixel / small glyph drawing** on some real machines (see `GRAPHICS_DEBUG.md`).
+- Feature growth toward the behavior described in [`../FEATURES.md`](../FEATURES.md) (save/load, typewriter rules) — implemented incrementally in `main.c`.
+
+## Source layout
+
+| File | Role |
+|------|------|
+| `Makefile` | `TARGET = Typewriter.efi`, gnu-efi link + objcopy |
+| `main.c` | Application entry, GOP, fonts, input loop |
+| `main_minimal.c` | Alternate minimal sketch (not the default `make` target) |
+| `virgil.h`, `helvetica.h` | Font bitmap data |
+| `fs/` | FAT contents for QEMU (copy `Typewriter.efi`, `startup.nsh`, etc.) |
+
+## Technical notes
+
+### objcopy (summary)
+
+Include `.text`, `.sdata`, `.data`, `.dynamic`, `.rodata`, `.rel`, `.rela`, **`.reloc`**, and use:
+
+`--target efi-app-x86_64`
+
+(not `-O efi-app-x86_64` — see `BUILD_SYSTEM.md`).
+
+### UEFI subsystem IDs
+
+- 10 = EFI_APPLICATION  
+- 11 = EFI_BOOT_SERVICE_DRIVER  
+- 12 = EFI_RUNTIME_DRIVER  
 
 ## Resources
 
 - [Rod Smith's EFI Programming Guide](http://www.rodsbooks.com/efi-programming/)
-- [OSDev Wiki - GNU-EFI](https://wiki.osdev.org/GNU-EFI)
-- [GNU-EFI GitHub](https://github.com/pbatard/gnu-efi)
+- [OSDev Wiki — GNU-EFI](https://wiki.osdev.org/GNU-EFI)
+- [GNU-EFI (GitHub)](https://github.com/pbatard/gnu-efi)

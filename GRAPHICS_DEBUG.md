@@ -1,6 +1,19 @@
 # Graphics Debugging Notes
 
-## Current Status (2026-03-28)
+> **Repo context:** [`AGENTS.md`](AGENTS.md)
+
+## Current Status (2026-03-29)
+
+### Font rendering — root cause fixed in code
+
+The **“H-like” glyphs and wrong shapes** were largely from **incorrect bitmap indexing**, not from GOP/pixels failing:
+
+1. **Virgil / Helvetica** (`DrawCharVirgil`, `DrawCharHelvetica`): glyphs are **row-major** (each row = `VIRGIL_ROW_BYTES` / `HELVETICA_ROW_BYTES`). The loop reused `offset` for every row, so **only the first row of each glyph was drawn 28 times** — repeated horizontal strips that often read as vertical bars (e.g. like an “H”).
+2. **Simple 5×8 font** (`DrawCharSimple`): data is **5 bytes per character = one byte per column** (bits = rows). The old code indexed `offset + row`, which scrambled columns/rows.
+
+**Fix:** advance bitmap pointer by `py * ROW_BYTES` per row; decode simple font as column-major with `(1u << row)` per column byte.
+
+The **square** tests used tight loops writing many pixels and did not use the font decode path, so they could “work” while text looked broken.
 
 ### What Works
 - ✅ Build system produces valid PE32+ EFI app
@@ -55,6 +68,10 @@
 ## Code Locations
 
 - Main app: `uefi-app/main.c`
-- Font data: Embedded in main.c (simple_font_data[])
-- DrawPixel function: Lines ~70-85 in main.c
-- Framebuffer init: Lines ~285-315 in main.c
+- Font data: `simple_font_data[]` in `main.c`; `virgil.h` / `helvetica.h`
+- `DrawPixel`, `DrawCharVirgil`, `DrawCharHelvetica`, `DrawCharSimple`: `uefi-app/main.c`
+- Framebuffer init: `efi_main` after GOP `SetMode`
+
+## App entry (2026-03-29)
+
+The temporary **blue screen + nested squares + early `return`** in `efi_main` was removed so the **typewriter loop** runs again. Reintroduce a short GFX self-test only behind a compile-time flag if needed.

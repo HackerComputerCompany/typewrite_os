@@ -210,11 +210,11 @@ EFI_STATUS DrawCharSimple(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 ch, UINT32
     UINT32 charIndex = ch - 32;
     UINT32 offset = simple_font_offsets[charIndex];
     
-    // Draw 8 rows (height 8)
+    /* simple_font_data: 5 bytes per glyph, one byte per COLUMN, bit 0 = top row */
     for (UINT32 row = 0; row < 8; row++) {
-        UINT8 rowData = simple_font_data[offset + row];
         for (UINT32 col = 0; col < 5; col++) {
-            if (rowData & (0x80 >> col)) {
+            UINT8 colBits = simple_font_data[offset + col];
+            if (colBits & (1u << row)) {
                 DrawPixel(fb, x + col, y + row, fgColor);
             } else {
                 DrawPixel(fb, x + col, y + row, bgColor);
@@ -234,13 +234,15 @@ EFI_STATUS DrawCharVirgil(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 ch, UINT32
     
     if (glyphBytes == 0 || offset >= sizeof(virgil_bitmap)) return EFI_SUCCESS;
     
+    /* Row-major bitmap: each row is VIRGIL_ROW_BYTES bytes (see virgil.h) */
     for (UINT32 py = 0; py < VIRGIL_HEIGHT && (y + py) < fb->Height; py++) {
-        for (UINT32 byteIdx = 0; byteIdx < VIRGIL_ROW_BYTES && (offset + byteIdx) < sizeof(virgil_bitmap); byteIdx++) {
-            UINT8 byte = virgil_bitmap[offset + byteIdx];
+        UINT32 rowOff = offset + py * VIRGIL_ROW_BYTES;
+        for (UINT32 byteIdx = 0; byteIdx < VIRGIL_ROW_BYTES && (rowOff + byteIdx) < sizeof(virgil_bitmap); byteIdx++) {
+            UINT8 byte = virgil_bitmap[rowOff + byteIdx];
             for (UINT32 bit = 0; bit < 8; bit++) {
                 UINT32 px = byteIdx * 8 + bit;
                 if (px >= VIRGIL_MAX_WIDTH) break;
-                if (byte & (1 << bit)) {
+                if (byte & (1u << bit)) {
                     DrawPixel(fb, x + px, y + py, fgColor);
                 } else {
                     DrawPixel(fb, x + px, y + py, bgColor);
@@ -262,12 +264,13 @@ EFI_STATUS DrawCharHelvetica(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 ch, UIN
     if (glyphBytes == 0 || offset >= sizeof(helvetica_bitmap)) return EFI_SUCCESS;
     
     for (UINT32 py = 0; py < HELVETICA_HEIGHT && (y + py) < fb->Height; py++) {
-        for (UINT32 byteIdx = 0; byteIdx < HELVETICA_ROW_BYTES && (offset + byteIdx) < sizeof(helvetica_bitmap); byteIdx++) {
-            UINT8 byte = helvetica_bitmap[offset + byteIdx];
+        UINT32 rowOff = offset + py * HELVETICA_ROW_BYTES;
+        for (UINT32 byteIdx = 0; byteIdx < HELVETICA_ROW_BYTES && (rowOff + byteIdx) < sizeof(helvetica_bitmap); byteIdx++) {
+            UINT8 byte = helvetica_bitmap[rowOff + byteIdx];
             for (UINT32 bit = 0; bit < 8; bit++) {
                 UINT32 px = byteIdx * 8 + bit;
                 if (px >= HELVETICA_MAX_WIDTH) break;
-                if (byte & (1 << bit)) {
+                if (byte & (1u << bit)) {
                     DrawPixel(fb, x + px, y + py, fgColor);
                 } else {
                     DrawPixel(fb, x + px, y + py, bgColor);
@@ -279,23 +282,33 @@ EFI_STATUS DrawCharHelvetica(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 ch, UIN
 }
 
 EFI_STATUS DrawChar(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 ch, UINT32 fgColor, UINT32 bgColor) {
-    // Use simple font - smaller and faster
-    return DrawCharSimple(fb, x, y, ch, fgColor, bgColor);
-    
-    // Original fonts disabled for testing
-    // if (UseVirgilFont) {
-    //     return DrawCharVirgil(fb, x, y, ch, fgColor, bgColor);
-    // } else {
-    //     return DrawCharHelvetica(fb, x, y, ch, fgColor, bgColor);
-    // }
+    if (UseVirgilFont) {
+        return DrawCharVirgil(fb, x, y, ch, fgColor, bgColor);
+    }
+    return DrawCharHelvetica(fb, x, y, ch, fgColor, bgColor);
+}
+
+/* Horizontal advance per glyph column (fixed cell; bitmaps are <= max width) */
+static UINT32 CharCellWidth(VOID) {
+    if (UseVirgilFont) {
+        return VIRGIL_MAX_WIDTH + 2;
+    }
+    return HELVETICA_MAX_WIDTH + 2;
+}
+
+static UINT32 LineAdvance(VOID) {
+    UINT32 fh = (UseVirgilFont ? VIRGIL_HEIGHT : HELVETICA_HEIGHT) * FontSize;
+    UINT32 lh = LINE_HEIGHT * FontSize;
+    return (fh > lh) ? fh : lh;
 }
 
 EFI_STATUS DrawString(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 *str, UINT32 fgColor, UINT32 bgColor) {
     if (!str) return EFI_SUCCESS;
     UINT32 posX = x;
+    UINT32 step = CharCellWidth();
     while (*str) {
         DrawChar(fb, posX, y, *str, fgColor, bgColor);
-        posX += 6;  // Simple font width = 5 + 1
+        posX += step;
         str++;
     }
     return EFI_SUCCESS;
@@ -325,15 +338,16 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
     
     UINT32 fgColor = (CurrentBgColor == 1) ? RGB(30, 30, 30) : RGB(240, 240, 230);
     
+    UINT32 lineStep = LineAdvance();
     for (UINT32 line = 0; line < Doc.LineCount; line++) {
-        UINT32 y = TOP_MARGIN + line * LINE_HEIGHT * FontSize;
+        UINT32 y = TOP_MARGIN + line * lineStep;
         DrawString(fb, LEFT_MARGIN, y, Doc.Text[line], fgColor, COLORS[CurrentBgColor]);
     }
     
     if (ShowCursor) {
-        UINT32 cursorY = TOP_MARGIN + Doc.CursorY * LINE_HEIGHT * FontSize;
-        UINT32 cursorX = LEFT_MARGIN + Doc.CursorX * 6 * FontSize;  // Simple font width = 5 + 1
-        DrawRect(fb, cursorX, cursorY, 2, LINE_HEIGHT * FontSize, fgColor);
+        UINT32 cursorY = TOP_MARGIN + Doc.CursorY * lineStep;
+        UINT32 cursorX = LEFT_MARGIN + Doc.CursorX * CharCellWidth() * FontSize;
+        DrawRect(fb, cursorX, cursorY, 2, lineStep, fgColor);
     }
     
     return EFI_SUCCESS;
@@ -452,26 +466,6 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         // Default to BGR
         fb.RedMask = 0xFF;
     }
-    
-    Print(L"Pixel format: %d\n", fb.PixelFormat);
-    
-    // Fill screen with solid red
-    for (UINT32 y = 0; y < fb.Height; y++) {
-        for (UINT32 x = 0; x < fb.Width; x++) {
-            DrawPixel(&fb, x, y, RGB(255, 0, 0));
-        }
-    }
-    uefi_call_wrapper(BS->Stall, 1, 3000000);
-    
-    // Draw green pixel at center
-    UINT32 cx = fb.Width / 2;
-    UINT32 cy = fb.Height / 2;
-    DrawPixel(&fb, cx, cy, RGB(0, 255, 0));
-    uefi_call_wrapper(BS->Stall, 1, 3000000);
-    
-    // Draw blue pixel to the right
-    DrawPixel(&fb, cx + 10, cy, RGB(0, 0, 255));
-    uefi_call_wrapper(BS->Stall, 1, 3000000);
     
     InitDocument();
     

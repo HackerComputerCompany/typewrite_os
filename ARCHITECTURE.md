@@ -1,5 +1,7 @@
 # Typewrite OS - Architecture Documentation
 
+> **Context:** High-level repo orientation (buildable paths, doc index) is in [`AGENTS.md`](AGENTS.md).
+
 ## Overview
 
 Typewrite OS is a native UEFI application designed to provide a minimalist typewriter experience with graphical menus and desk accessories. It runs directly on hardware from USB boot without requiring an operating system.

@@ -1,90 +1,96 @@
-# Typewrite OS - Project Summary
+# Typewrite OS — Project status
 
 ## Goal
-Create a minimalist Linux distro for x86 systems that simulates a typewriter experience (inspired by Freewrite). The app is a focused writing environment with no distractions, supporting strikethrough on backspace, ink colors, dark mode, and document persistence.
 
-## Build System
-- **Buildroot 2024.02** as the build system
-- **Target:** x86_64 with framebuffer/VESA for QEMU testing
-- **Graphics:** DRM/KMS + Mesa for real hardware (no X11/Wayland)
-- **Documents:** Saved as Markdown with `~~strikethrough~~` syntax
+A focused typewriter experience (Freewrite-inspired): minimal chrome, typewriter semantics, persistence. The same product idea is pursued on **two stacks**; only one is fully present in this checkout.
 
-## Key Features
-- No ruler at top - margins for 8.5x11 paper layout
-- Double buffering to prevent flicker
-- F-keys for ink color cycling and text scaling
-- Terminal raw mode with `cfmakeraw()`
-- Multiple F-key escape sequence formats handled
-- Anti-aliased TrueType fonts via FreeType2
+## Current focus (2026): Native UEFI
 
-## Current Status: IN PROGRESS
+**Primary active work:** [`uefi-app/`](uefi-app/) builds **`Typewriter.efi`** with gnu-efi.
 
-### Completed
-- ✅ Created unified typewrite app with FreeType2 integration (`typewrite/src/main.c`)
-- ✅ Removed ruler, kept margins
-- ✅ Implemented double buffering (backbuffer → memcpy to fb)
-- ✅ Fixed cursor drawing (small 3px underline instead of full block)
-- ✅ Fixed terminal raw mode with `cfmakeraw()`
-- ✅ Added multiple F-key escape sequence formats
-- ✅ Implemented Markdown save/load with `~~strikethrough~~`
-- ✅ Wrote unit tests for document logic (8 tests passing)
-- ✅ Created `start-qemu.sh` launcher script
-- ✅ Created `RUNNING_ON_HOST.md` for Ubuntu testing
-- ✅ Enabled FreeType and DejaVu fonts in Buildroot config
-- ✅ Created Buildroot package (`buildroot-2024.02/package/typewrite/`)
-- ✅ Created QEMU x86_64 board configs
-- ✅ Git initialized with essential files staged (16 files)
+### Done (UEFI)
 
-### In Progress
-- 🔄 Buildroot build compiling (~1800+ files done, kernel modules phase)
+- Valid **PE32+** EFI binary (fixed linker + `objcopy --target efi-app-x86_64`; see [`BUILD_SYSTEM.md`](BUILD_SYSTEM.md)).
+- QEMU + OVMF path via [`start-qemu.sh`](start-qemu.sh) and FAT layout under `uefi-app/fs/`.
+- GOP framebuffer bring-up; large fill tests work on QEMU and some real hardware.
+- Embedded / linked font data (`virgil.h`, `helvetica.h`) and simple bitmap font in `main.c`.
 
-### Remaining
-- ⏳ Wait for Buildroot build completion
-- ⏳ Test app in QEMU
-- ⏳ Commit to git
+### In progress / open (UEFI)
 
-## Git Tracked Files (16 total)
-```
-.gitignore
-REQUIREMENTS.md
-RUNNING_ON_HOST.md
-buildroot-2024.02/.config
-buildroot-2024.02/board/qemu/x86_64/linux.config
-buildroot-2024.02/board/qemu/x86_64/post-build.sh
-buildroot-2024.02/board/qemu/x86_64/readme.txt
-buildroot-2024.02/package/typewrite/Config.in
-buildroot-2024.02/package/typewrite/typewrite.mk
-start-qemu.sh
-typewrite/Makefile
-typewrite/src/framebuffer.c
-typewrite/src/main.c
-typewrite/src/sdl_main.c
-typewrite/src/simple.c
-typewrite/tests/test_document.c
-```
+- Fine-grained drawing and glyph rendering on **real hardware** (flicker, wrong shapes); see [`GRAPHICS_DEBUG.md`](GRAPHICS_DEBUG.md). Likely next steps: cache/barriers, pitch verification, GOP `Blt()`.
+- Full typewriter feature parity with the Linux app spec ([`FEATURES.md`](FEATURES.md)) — incremental.
 
-## Build Progress
-- Started: Mar 19 06:47
-- Log: `/tmp/build5.log`
-- Phase: Linux kernel compilation (modules)
+### How to build / run (UEFI)
 
-## How to Run Tests
 ```bash
-cd /ironwolf4TB/data01/projects/typewrite_os/typewrite
+cd uefi-app
+make
+# Optional: ./start-qemu.sh from repo root
+```
+
+**Note:** `uefi-app/Makefile` sets `EFIDIR` to a local gnu-efi path; change it if your tree differs.
+
+---
+
+## Parallel track: Linux + Buildroot (legacy / on hold in this tree)
+
+Originally: minimal **x86_64** image with framebuffer typewrite app (FreeType, double buffering, markdown + strikethrough, F-key features). Artifacts still in repo:
+
+- Vendored [`buildroot-2024.02/`](buildroot-2024.02/)
+- Package recipe [`buildroot-2024.02/package/typewrite/`](buildroot-2024.02/package/typewrite/)
+- Board overlays under `buildroot-2024.02/board/typewrite/`
+
+### Gap in this repository
+
+The Buildroot package expects application sources at **`/ironwolf4TB/data01/projects/typewrite_os/typewrite`** (`TYPEWRITE_SITE` in `typewrite.mk`). The **`typewrite/` directory is not present** in this workspace. To resume the Linux build:
+
+1. Restore the `typewrite` sources (or repoint `TYPEWRITE_SITE` to their location), then
+2. Run a normal Buildroot build with the intended defconfig.
+
+Historical detail (FreeType app, unit tests, host `make`) is preserved in older notes below for reference.
+
+---
+
+## Historical: Linux app milestones (when `typewrite/` existed)
+
+The following applied when the standalone Linux application lived at `typewrite/`:
+
+- Unified typewrite app with FreeType2, double buffering, raw terminal mode, markdown save/load with `~~strikethrough~~`, document unit tests.
+- Buildroot package and QEMU board configs wired for that tree.
+
+Host test commands (only valid if you restore `typewrite/`):
+
+```bash
+cd typewrite
 gcc -Wall -O2 -I/usr/include/freetype2 tests/test_document.c -lfreetype -lm -o tests/test_document
 ./tests/test_document
 ```
 
-## How to Test on Ubuntu (Host)
 ```bash
-cd /ironwolf4TB/data01/projects/typewrite_os/typewrite
+cd typewrite
 make clean && make
 sudo ./typewrite
 ```
 
-## Key Bug Fixes History
-1. **F-keys not working** - Fixed with `cfmakeraw()` and multiple sequence formats
-2. **Typing only 1 char per line** - Terminal wasn't in proper raw mode (fixed)
-3. **Cursor stretches full width** - Changed from block cursor to 3px underline
-4. **Font scaling bug** - `get_char_width()` returns scaled value, cursor was doubling width
-5. **Backspace cursor position** - Was advancing cursor after marking strikethrough (fixed)
+---
+
+## Documentation map
+
+| Document | Purpose |
+|----------|---------|
+| [`AGENTS.md`](AGENTS.md) | **Start here** for agents / return visits |
+| [`BUILD_SYSTEM.md`](BUILD_SYSTEM.md) | EFI toolchain, PE fix, QEMU |
+| [`GRAPHICS_DEBUG.md`](GRAPHICS_DEBUG.md) | GOP / framebuffer debugging |
+| [`uefi-app/README.md`](uefi-app/README.md) | UEFI experiment details |
+| [`FEATURES.md`](FEATURES.md) | Product behavior (Linux-oriented spec) |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | USB / UEFI layout |
+
+## Key bug-fix history (Linux app era)
+
+1. F-keys — `cfmakeraw()` and multiple escape sequence formats  
+2. One character per line — raw mode  
+3. Cursor width — 3px underline instead of full block  
+4. Font scaling — `get_char_width()` / cursor alignment  
+5. Backspace + strikethrough — cursor position after mark  
+
+Last updated: **2026-03-29**.

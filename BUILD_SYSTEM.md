@@ -1,5 +1,7 @@
 # Typewrite OS - Build System Documentation
 
+> **Context:** For a short repo overview (UEFI vs Buildroot, open issues, doc index), read [`AGENTS.md`](AGENTS.md).
+
 ## Overview
 
 Typewrite OS is built as a native UEFI application using gnu-efi. This document details the build system, troubleshooting, and known issues.
@@ -153,23 +155,55 @@ objcopy -j .text -j .sdata -j .data -j .dynamic -j .rodata \
 
 ## Testing
 
-### Running in QEMU
+### QEMU: `start-qemu.sh` (recommended)
+
+From the **repository root**, run:
 
 ```bash
 ./start-qemu.sh
 ```
 
-Or manually:
+The script:
+
+1. Runs **`make -C uefi-app`** (builds `uefi-app/Typewriter.efi`).
+2. **Copies** that binary to **`uefi-app/fs/Typewriter.efi`** so QEMU’s synthetic FAT drive always matches the latest build.
+3. Ensures **`uefi-app/fs/startup.nsh`** exists (runs `Typewriter.efi` automatically in the UEFI Shell).
+4. Picks **OVMF** from common distro paths (`/usr/share/OVMF/OVMF_CODE.fd`, `/usr/share/qemu/OVMF_CODE.fd`, or `/usr/share/ovmf/OVMF.fd`), or uses **`OVMF_CODE`** if set.
+5. Keeps writable NVRAM in **`ovmf_vars.fd`** at the repo root (initialized from `/usr/share/OVMF/OVMF_VARS.fd` when available, otherwise copied from the combined `OVMF.fd`).
+
+Options and environment:
+
+| Flag / variable | Meaning |
+|-----------------|--------|
+| `--no-build` | Skip `make`; use existing `uefi-app/Typewriter.efi`. |
+| `--fresh-vars` | Delete `ovmf_vars.fd` and recreate from the template (reset UEFI NVRAM / boot entries). |
+| `OVMF_CODE` | Absolute path to the read-only OVMF code image. |
+| `QEMU_DISPLAY` | Passed to QEMU `-display` (default `gtk`). Use `none` on headless hosts. |
+
+Help: `./start-qemu.sh --help`
+
+**Packages (Debian/Ubuntu):** `sudo apt install qemu-system-x86 ovmf`
+
+**Serial log:** `uefi-app/serial.log` (firmware and `Print()` output).
+
+**Display:** With GTK, use **Ctrl+Alt+G** to grab the mouse and **Ctrl+Alt** to release.
+
+### Manual QEMU command (equivalent layout)
+
+Do **not** pass both `-bios` and OVMF `pflash` for the same image (redundant / confusing). Typical layout:
+
 ```bash
 qemu-system-x86_64 \
-    -bios /usr/share/ovmf/OVMF.fd \
-    -drive if=pflash,format=raw,readonly=on,file=/usr/share/ovmf/OVMF.fd \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
     -drive if=pflash,format=raw,file=ovmf_vars.fd \
     -drive format=raw,file=fat:rw:uefi-app/fs \
     -m 256M \
     -net none \
+    -display gtk \
     -serial file:uefi-app/serial.log
 ```
+
+Copy `uefi-app/Typewriter.efi` into `uefi-app/fs/` after each `make` if you launch QEMU by hand.
 
 ### Expected Output
 
@@ -240,4 +274,6 @@ uefi-app/
 
 ## Changelog
 
+- **2026-03-29**: [`start-qemu.sh`](start-qemu.sh) now builds `uefi-app`, syncs `Typewriter.efi` into `uefi-app/fs/`, auto-detects OVMF paths, drops duplicate `-bios`, documents `--no-build` / `--fresh-vars` / `QEMU_DISPLAY` / `OVMF_CODE`.
+- **2026-03-29**: Added [`AGENTS.md`](AGENTS.md) and [`agent.md`](agent.md) pointers for return-to-context; root [`README.md`](README.md) and [`PROJECT_STATUS.md`](PROJECT_STATUS.md) updated for dual-track (UEFI + Buildroot) state.
 - **2026-03-28**: Fixed Makefile to produce valid PE32+ by using correct linker flags and objcopy --target option
