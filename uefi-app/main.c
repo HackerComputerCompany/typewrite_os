@@ -287,6 +287,26 @@ static VOID MarkFullRepaint(VOID) {
     RepaintFull = TRUE;
 }
 
+/*
+ * Text wraps when LinePixelWidth exceeds this. Must track GOP width minus margins;
+ * the old guard (width > margin + 80) left the default 800px wrap on many panels, so
+ * lines never broke. Use saturating margin math (no UINT32 underflow).
+ */
+static VOID UpdateWrapPixelWidthFromFb(const FRAMEBUFFER *fb) {
+    UINT32 margin = LEFT_MARGIN + RIGHT_MARGIN;
+    UINT32 w;
+
+    if (fb->Width > margin)
+        w = fb->Width - margin;
+    else if (fb->Width > 16)
+        w = fb->Width - 8;
+    else
+        w = 48;
+    if (w < 48)
+        w = 48;
+    WrapPixelWidth = w;
+}
+
 static VOID MarkDirtyRange(UINT32 top, UINT32 bot) {
     if (RepaintFull)
         return;
@@ -332,7 +352,7 @@ static VOID PrependToLine(CHAR16 *line, const CHAR16 *prefix) {
 }
 
 static VOID ApplyWordWrap(UINT32 L) {
-    if (L >= MAX_LINES - 1 || WrapPixelWidth < 80)
+    if (L >= MAX_LINES - 1 || WrapPixelWidth < 48)
         return;
     CHAR16 *line = Doc.Text[L];
     UINT32 guard = 0;
@@ -877,8 +897,7 @@ static VOID DrawKeyDebugOverlay(FRAMEBUFFER *fb) {
 }
 
 EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
-    if (fb->Width > LEFT_MARGIN + RIGHT_MARGIN + 80)
-        WrapPixelWidth = fb->Width - LEFT_MARGIN - RIGHT_MARGIN;
+    UpdateWrapPixelWidthFromFb(fb);
 
     UINT32 bgColor = COLORS[CurrentBgColor];
     UINT32 fgColor = (CurrentBgColor == 1) ? RGB(30, 30, 30) : RGB(240, 240, 230);
@@ -1112,7 +1131,8 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
         return EFI_SUCCESS;
     }
     
-    if (key->UnicodeChar >= 32 && key->UnicodeChar < 127) {
+    /* Printable BMP (not DEL); Latin/typical layouts need code points > 127 */
+    if (key->UnicodeChar >= 32 && key->UnicodeChar != 0x7F) {
         if (Doc.CursorX < MAX_CHARS_PER_LINE - 1) {
             UINT32 ly = Doc.CursorY;
             Doc.Text[Doc.CursorY][Doc.CursorX++] = key->UnicodeChar;
@@ -1122,7 +1142,7 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
             Doc.Modified = TRUE;
         }
     }
-    
+
     return EFI_SUCCESS;
 }
 
@@ -1211,6 +1231,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         }
     }
 
+    UpdateWrapPixelWidthFromFb(&fb);
     RunSplashScreen(&fb);
     CursorBlinkPhase = TRUE;
     CursorBlinkAccumUs = 0;
