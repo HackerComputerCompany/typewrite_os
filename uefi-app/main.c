@@ -133,8 +133,8 @@ static const UINT32 simple_font_offsets[] = {
 
 #define MAX_LINES 100
 #define MAX_CHARS_PER_LINE 120
-#define LINE_HEIGHT 12
 #define LEFT_MARGIN 20
+#define RIGHT_MARGIN 24
 #define TOP_MARGIN 30
 
 typedef struct {
@@ -188,8 +188,139 @@ static UINT32 FontSize = 1;
 static BOOLEAN ShowCursor = TRUE;
 static DOCUMENT Doc;
 static BOOLEAN Running = TRUE;
+static UINT32 WrapPixelWidth = 800;
 
 #define CHAR_GAP 2
+
+#define SCELL(_fb, _x, _y, _c) DrawRect((_fb), (_x), (_y), FontSize, FontSize, (_c))
+
+static UINT32 GlyphAdvance(CHAR16 ch);
+
+static UINT32 LineLen(const CHAR16 *s) {
+    UINT32 n = 0;
+    while (n < MAX_CHARS_PER_LINE && s[n])
+        n++;
+    return n;
+}
+
+static UINT32 LinePixelWidth(const CHAR16 *line) {
+    UINT32 w = 0;
+    for (UINT32 i = 0; i < MAX_CHARS_PER_LINE && line[i]; i++)
+        w += GlyphAdvance(line[i]);
+    return w;
+}
+
+static VOID PrependToLine(CHAR16 *line, const CHAR16 *prefix) {
+    UINT32 pl = LineLen(prefix);
+    UINT32 ol = LineLen(line);
+    if (pl + ol >= MAX_CHARS_PER_LINE - 1)
+        return;
+    CHAR16 buf[MAX_CHARS_PER_LINE];
+    CopyMem(buf, (VOID *)(UINTN)prefix, pl * sizeof(CHAR16));
+    CopyMem(buf + pl, line, (ol + 1) * sizeof(CHAR16));
+    CopyMem(line, buf, (pl + ol + 1) * sizeof(CHAR16));
+}
+
+static VOID ApplyWordWrap(UINT32 L) {
+    if (L >= MAX_LINES - 1 || WrapPixelWidth < 80)
+        return;
+    CHAR16 *line = Doc.Text[L];
+    UINT32 guard = 0;
+
+    while (LinePixelWidth(line) > WrapPixelWidth && guard++ < MAX_CHARS_PER_LINE * 2) {
+        UINT32 len = LineLen(line);
+        if (len == 0)
+            return;
+
+        UINT32 i = 0;
+        UINT32 w = 0;
+        UINT32 lastSpace = (UINT32)-1;
+        UINT32 overflowIdx = len;
+
+        for (i = 0; line[i] && i < MAX_CHARS_PER_LINE; i++) {
+            UINT32 adv = GlyphAdvance(line[i]);
+            if (line[i] == L' ')
+                lastSpace = i;
+            if (w + adv > WrapPixelWidth) {
+                overflowIdx = i;
+                break;
+            }
+            w += adv;
+        }
+
+        if (overflowIdx >= len)
+            break;
+
+        UINT32 breakStart;
+        if (lastSpace != (UINT32)-1 && lastSpace < overflowIdx && lastSpace > 0) {
+            breakStart = lastSpace + 1;
+            while (line[breakStart] == L' ')
+                breakStart++;
+        } else {
+            w = 0;
+            breakStart = 0;
+            for (i = 0; line[i] && i < MAX_CHARS_PER_LINE; i++) {
+                UINT32 adv = GlyphAdvance(line[i]);
+                if (w + adv > WrapPixelWidth)
+                    break;
+                w += adv;
+                breakStart = i + 1;
+            }
+            if (breakStart == 0 && line[0])
+                breakStart = 1;
+        }
+
+        if (breakStart >= len)
+            break;
+
+        UINT32 oldCx = Doc.CursorX;
+        UINT32 oldCy = Doc.CursorY;
+
+        CHAR16 tail[MAX_CHARS_PER_LINE];
+        UINT32 t = 0;
+        for (i = breakStart; line[i] && t < MAX_CHARS_PER_LINE - 1; i++)
+            tail[t++] = line[i];
+        tail[t] = 0;
+        line[breakStart] = 0;
+
+        while (LineLen(line) > 0) {
+            UINT32 u = LineLen(line);
+            if (u > 0 && line[u - 1] == L' ')
+                line[u - 1] = 0;
+            else
+                break;
+        }
+
+        if (Doc.Text[L + 1][0] == 0) {
+            StrCpy(Doc.Text[L + 1], tail);
+        } else {
+            PrependToLine(Doc.Text[L + 1], tail);
+        }
+
+        if (Doc.LineCount < L + 2)
+            Doc.LineCount = L + 2;
+
+        if (oldCy == L && oldCx >= breakStart) {
+            Doc.CursorY = L + 1;
+            Doc.CursorX = oldCx - breakStart;
+        }
+
+        ApplyWordWrap(L + 1);
+    }
+}
+
+static VOID ReflowAllLines(VOID) {
+    for (UINT32 iter = 0; iter < 500; iter++) {
+        UINT32 L;
+        for (L = 0; L < Doc.LineCount && L < MAX_LINES - 1; L++) {
+            if (LinePixelWidth(Doc.Text[L]) > WrapPixelWidth)
+                break;
+        }
+        if (L >= Doc.LineCount || L >= MAX_LINES - 1)
+            return;
+        ApplyWordWrap(L);
+    }
+}
 
 /* GOP front buffer (hardware). When non-NULL, fb->PixelData points at a Pool back buffer. */
 static UINT8 *FbFront = NULL;
@@ -240,13 +371,19 @@ EFI_STATUS DrawCharSimple(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 ch, UINT32
     UINT32 offset = simple_font_offsets[charIndex];
     
     /* simple_font_data: 5 bytes per glyph, one byte per COLUMN, bit 0 = top row */
-    for (UINT32 row = 0; row < 8; row++) {
-        for (UINT32 col = 0; col < 5; col++) {
+    for (UINT32 row = 0; row < SIMPLE_FONT_HEIGHT; row++) {
+        UINT32 dy = y + row * FontSize;
+        if (dy >= fb->Height)
+            break;
+        for (UINT32 col = 0; col < SIMPLE_FONT_WIDTH; col++) {
+            UINT32 dx = x + col * FontSize;
+            if (dx >= fb->Width)
+                continue;
             UINT8 colBits = simple_font_data[offset + col];
             if (colBits & (1u << row)) {
-                DrawPixel(fb, x + col, y + row, fgColor);
+                SCELL(fb, dx, dy, fgColor);
             } else {
-                DrawPixel(fb, x + col, y + row, bgColor);
+                SCELL(fb, dx, dy, bgColor);
             }
         }
     }
@@ -280,7 +417,10 @@ EFI_STATUS DrawCharVirgil(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 ch, UINT32
     if (gh > VIRGIL_HEIGHT)
         gh = VIRGIL_HEIGHT;
 
-    for (UINT32 py = 0; py < gh && (y + py) < fb->Height; py++) {
+    for (UINT32 py = 0; py < gh; py++) {
+        UINT32 dy = y + py * FontSize;
+        if (dy >= fb->Height)
+            break;
         UINT32 rowOff = offset + py * rowB;
         for (UINT32 byteIdx = 0; byteIdx < rowB && rowOff + byteIdx < sizeof(virgil_bitmap); byteIdx++) {
             UINT8 byte = virgil_bitmap[rowOff + byteIdx];
@@ -288,10 +428,13 @@ EFI_STATUS DrawCharVirgil(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 ch, UINT32
                 UINT32 px = byteIdx * 8 + bit;
                 if (px >= gw)
                     break;
+                UINT32 dx = x + px * FontSize;
+                if (dx >= fb->Width)
+                    continue;
                 if (byte & (1u << bit)) {
-                    DrawPixel(fb, x + px, y + py, fgColor);
+                    SCELL(fb, dx, dy, fgColor);
                 } else {
-                    DrawPixel(fb, x + px, y + py, bgColor);
+                    SCELL(fb, dx, dy, bgColor);
                 }
             }
         }
@@ -321,7 +464,10 @@ EFI_STATUS DrawCharHelvetica(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 ch, UIN
     if (gh > HELVETICA_HEIGHT)
         gh = HELVETICA_HEIGHT;
 
-    for (UINT32 py = 0; py < gh && (y + py) < fb->Height; py++) {
+    for (UINT32 py = 0; py < gh; py++) {
+        UINT32 dy = y + py * FontSize;
+        if (dy >= fb->Height)
+            break;
         UINT32 rowOff = offset + py * rowB;
         for (UINT32 byteIdx = 0; byteIdx < rowB && rowOff + byteIdx < sizeof(helvetica_bitmap); byteIdx++) {
             UINT8 byte = helvetica_bitmap[rowOff + byteIdx];
@@ -329,10 +475,13 @@ EFI_STATUS DrawCharHelvetica(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 ch, UIN
                 UINT32 px = byteIdx * 8 + bit;
                 if (px >= gw)
                     break;
+                UINT32 dx = x + px * FontSize;
+                if (dx >= fb->Width)
+                    continue;
                 if (byte & (1u << bit)) {
-                    DrawPixel(fb, x + px, y + py, fgColor);
+                    SCELL(fb, dx, dy, fgColor);
                 } else {
-                    DrawPixel(fb, x + px, y + py, bgColor);
+                    SCELL(fb, dx, dy, bgColor);
                 }
             }
         }
@@ -354,37 +503,45 @@ EFI_STATUS DrawChar(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 ch, UINT32 fgCol
 }
 
 static UINT32 GlyphAdvance(CHAR16 ch) {
+    UINT32 base;
     switch (CurrentFontKind) {
     case FONT_SIMPLE:
         if (ch >= 32 && ch <= 126)
-            return 6; /* 5 px glyph + 1 */
-        return CHAR_GAP;
+            base = SIMPLE_FONT_WIDTH + 1;
+        else
+            base = CHAR_GAP;
+        break;
     case FONT_VIRGIL:
         if (ch < VIRGIL_ASC_MIN || ch > VIRGIL_ASC_MAX)
-            return CHAR_GAP;
-        {
+            base = CHAR_GAP;
+        else {
             UINT32 idx = ch - VIRGIL_ASC_MIN;
             UINT32 w = virgil_widths[idx];
             if (w < 1)
                 w = 1;
             if (virgil_advances[idx] > 0)
-                return (UINT32)virgil_advances[idx];
-            return w + CHAR_GAP;
+                base = (UINT32)virgil_advances[idx];
+            else
+                base = w + CHAR_GAP;
         }
+        break;
     case FONT_HELVETICA:
     default:
         if (ch < HELVETICA_ASC_MIN || ch > HELVETICA_ASC_MAX)
-            return CHAR_GAP;
-        {
+            base = CHAR_GAP;
+        else {
             UINT32 idx2 = ch - HELVETICA_ASC_MIN;
             UINT32 w2 = helvetica_widths[idx2];
             if (w2 < 1)
                 w2 = 1;
             if (helvetica_advances[idx2] > 0)
-                return (UINT32)helvetica_advances[idx2];
-            return w2 + CHAR_GAP;
+                base = (UINT32)helvetica_advances[idx2];
+            else
+                base = w2 + CHAR_GAP;
         }
+        break;
     }
+    return base * FontSize;
 }
 
 static UINT32 ActiveFontLineHeight(VOID) {
@@ -399,10 +556,66 @@ static UINT32 ActiveFontLineHeight(VOID) {
     }
 }
 
+static UINT32 GlyphBitmapHeight(CHAR16 ch) {
+    switch (CurrentFontKind) {
+    case FONT_SIMPLE:
+        if (ch >= 32 && ch <= 126)
+            return SIMPLE_FONT_HEIGHT;
+        return ActiveFontLineHeight();
+    case FONT_VIRGIL:
+        if (ch < VIRGIL_ASC_MIN || ch > VIRGIL_ASC_MAX)
+            return ActiveFontLineHeight();
+        {
+            UINT32 charIndex = ch - VIRGIL_ASC_MIN;
+            UINT32 offset = virgil_offsets[charIndex];
+            UINT32 nextOffset = (charIndex < 94) ? virgil_offsets[charIndex + 1] : sizeof(virgil_bitmap);
+            UINT32 glyphBytes = nextOffset - offset;
+            if (glyphBytes == 0 || offset + glyphBytes > sizeof(virgil_bitmap))
+                return ActiveFontLineHeight();
+            UINT32 gw = virgil_widths[charIndex];
+            if (gw < 1)
+                gw = 1;
+            UINT32 rowB = (gw + 7) / 8;
+            if (rowB < 1)
+                rowB = 1;
+            UINT32 gh = glyphBytes / rowB;
+            if (gh < 1)
+                gh = 1;
+            if (gh > VIRGIL_HEIGHT)
+                gh = VIRGIL_HEIGHT;
+            return gh;
+        }
+    case FONT_HELVETICA:
+    default:
+        if (ch < HELVETICA_ASC_MIN || ch > HELVETICA_ASC_MAX)
+            return ActiveFontLineHeight();
+        {
+            UINT32 charIndex = ch - HELVETICA_ASC_MIN;
+            UINT32 offset = helvetica_offsets[charIndex];
+            UINT32 nextOffset = (charIndex < 94) ? helvetica_offsets[charIndex + 1] : sizeof(helvetica_bitmap);
+            UINT32 glyphBytes = nextOffset - offset;
+            if (glyphBytes == 0 || offset + glyphBytes > sizeof(helvetica_bitmap))
+                return ActiveFontLineHeight();
+            UINT32 gw = helvetica_widths[charIndex];
+            if (gw < 1)
+                gw = 1;
+            UINT32 rowB = (gw + 7) / 8;
+            if (rowB < 1)
+                rowB = 1;
+            UINT32 gh = glyphBytes / rowB;
+            if (gh < 1)
+                gh = 1;
+            if (gh > HELVETICA_HEIGHT)
+                gh = HELVETICA_HEIGHT;
+            return gh;
+        }
+    }
+}
+
 static UINT32 LineAdvance(VOID) {
-    UINT32 fh = ActiveFontLineHeight() * FontSize;
-    UINT32 lh = LINE_HEIGHT * FontSize;
-    return (fh > lh) ? fh : lh;
+    UINT32 box = ActiveFontLineHeight() * FontSize;
+    UINT32 leading = box / 4 + FontSize * 4;
+    return box + leading;
 }
 
 static UINT32 CursorPixelX(CHAR16 *line, UINT32 col) {
@@ -419,9 +632,13 @@ static UINT32 CursorPixelX(CHAR16 *line, UINT32 col) {
 EFI_STATUS DrawString(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 *str, UINT32 fgColor, UINT32 bgColor) {
     if (!str) return EFI_SUCCESS;
     UINT32 posX = x;
+    UINT32 lineBox = ActiveFontLineHeight() * FontSize;
     while (*str) {
-        DrawChar(fb, posX, y, *str, fgColor, bgColor);
-        posX += GlyphAdvance(*str);
+        CHAR16 c = *str;
+        UINT32 gh = GlyphBitmapHeight(c);
+        UINT32 yDraw = y + lineBox - gh * FontSize;
+        DrawChar(fb, posX, yDraw, c, fgColor, bgColor);
+        posX += GlyphAdvance(c);
         str++;
     }
     return EFI_SUCCESS;
@@ -447,6 +664,8 @@ VOID InitDocument(VOID) {
 }
 
 EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
+    if (fb->Width > LEFT_MARGIN + RIGHT_MARGIN + 80)
+        WrapPixelWidth = fb->Width - LEFT_MARGIN - RIGHT_MARGIN;
     ClearScreen(fb, COLORS[CurrentBgColor]);
     
     UINT32 fgColor = (CurrentBgColor == 1) ? RGB(30, 30, 30) : RGB(240, 240, 230);
@@ -460,7 +679,10 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
     if (ShowCursor) {
         UINT32 cursorY = TOP_MARGIN + Doc.CursorY * lineStep;
         UINT32 cursorX = CursorPixelX(Doc.Text[Doc.CursorY], Doc.CursorX);
-        DrawRect(fb, cursorX, cursorY, 2, lineStep, fgColor);
+        UINT32 cw = FontSize * 2;
+        if (cw < 2)
+            cw = 2;
+        DrawRect(fb, cursorX, cursorY, cw, lineStep, fgColor);
     }
     
     if (ShowHelp) {
@@ -485,9 +707,9 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
         ly += HELP_LINE_GAP;
         DrawString(fb, lx, ly, L"F2   Cycle font: Virgil -> Helvetica -> Simple", hf, hb);
         ly += HELP_LINE_GAP;
-        DrawString(fb, lx, ly, L"F3   Increase line spacing scale", hf, hb);
+        DrawString(fb, lx, ly, L"F3   Increase font size (scale)", hf, hb);
         ly += HELP_LINE_GAP;
-        DrawString(fb, lx, ly, L"F6   Decrease line spacing scale", hf, hb);
+        DrawString(fb, lx, ly, L"F6   Decrease font size (scale)", hf, hb);
         ly += HELP_LINE_GAP;
         DrawString(fb, lx, ly, L"F4   Cycle background color", hf, hb);
         ly += HELP_LINE_GAP;
@@ -521,10 +743,13 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
                 break;
             case 0x0C:  /* F2 - Cycle font */
                 CurrentFontKind = (FONT_KIND)((CurrentFontKind + 1) % FONT_NUM);
+                ReflowAllLines();
                 Doc.Modified = TRUE;
                 break;
-            case 0x0D:  /* F3 - Increase line scale */
-                if (FontSize < 3) FontSize++;
+            case 0x0D:  /* F3 - Increase font / scale */
+                if (FontSize < 6)
+                    FontSize++;
+                ReflowAllLines();
                 Doc.Modified = TRUE;
                 break;
             case 0x0E:  /* F4 - Cycle background */
@@ -535,8 +760,10 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
                 ShowCursor = !ShowCursor;
                 Doc.Modified = TRUE;
                 break;
-            case 0x10:  /* F6 - Decrease line scale */
-                if (FontSize > 1) FontSize--;
+            case 0x10:  /* F6 - Decrease font / scale */
+                if (FontSize > 1)
+                    FontSize--;
+                ReflowAllLines();
                 Doc.Modified = TRUE;
                 break;
         }
@@ -559,6 +786,7 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
             }
         }
         Doc.Text[Doc.CursorY][Doc.CursorX] = 0;
+        ApplyWordWrap(Doc.CursorY);
         Doc.Modified = TRUE;
         return EFI_SUCCESS;
     }
@@ -578,6 +806,7 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
         if (Doc.CursorX < MAX_CHARS_PER_LINE - 1) {
             Doc.Text[Doc.CursorY][Doc.CursorX++] = key->UnicodeChar;
             Doc.Text[Doc.CursorY][Doc.CursorX] = 0;
+            ApplyWordWrap(Doc.CursorY);
             Doc.Modified = TRUE;
         }
     }

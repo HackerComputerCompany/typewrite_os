@@ -82,7 +82,7 @@ For QEMU, run [`../start-qemu.sh`](../start-qemu.sh) from the repo root (it copi
 |-----|--------|
 | **F1** | Toggle on-screen **help** |
 | **F2** | **Cycle font:** Virgil → Helvetica → simple 5×8 |
-| **F3** / **F6** | Increase / decrease **line scale** (row spacing multiplier) |
+| **F3** / **F6** | Increase / decrease **font scale** (1–6: glyph size, advances, proportional line step; text wraps to the next line at the margins) |
 | **F4** | Cycle background color |
 | **F5** | Toggle cursor |
 | **ESC** | Close help if open; otherwise **exit** |
