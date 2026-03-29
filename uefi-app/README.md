@@ -64,7 +64,7 @@ Optional: `make ship MSG="Short commit subject"` (default subject is `uefi-app: 
 
 **gnu-efi location:** `Makefile` sets `EFIDIR` (default points at a local clone). Override if needed.
 
-For QEMU, run [`../start-qemu.sh`](../start-qemu.sh) from the repo root (it runs **`make -C uefi-app all`**, then copies **`Typewriter.efi`** into **`fs/`**). For USB/ESP, use [`../install-uefi-app.sh`](../install-uefi-app.sh).
+For QEMU, run [`../start-qemu.sh`](../start-qemu.sh) from the repo root (it runs **`make -C uefi-app all`**, then copies **`Typewriter.efi`** into **`fs/`**). For USB/ESP, run [`../write-typewriter-to-usb.sh`](../write-typewriter-to-usb.sh) `/dev/sdX` (build + sync + installer), or call [`../install-uefi-app.sh`](../install-uefi-app.sh) directly if `uefi-app/fs/Typewriter.efi` is already up to date.
 
 ## Current status
 

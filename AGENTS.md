@@ -48,7 +48,7 @@ Invalid PE output used to make the firmware report **“Unsupported format”**.
 | `uefi-app/fs/` | QEMU FAT contents (e.g. copied `Typewriter.efi`) |
 | `buildroot-2024.02/` | Vendored Buildroot; custom `package/typewrite/`, boards |
 | `start-qemu.sh` | QEMU launcher |
-| `install-uefi-app.sh`, `install-to-usb*.sh` | USB / ESP deployment helpers |
+| `write-typewriter-to-usb.sh`, `install-uefi-app.sh`, `install-to-usb*.sh` | USB / ESP deployment helpers |
 | `ARCHITECTURE.md` | USB layout, UEFI component view |
 | `FEATURES.md` | Product behavior (mostly Linux app design) |
 

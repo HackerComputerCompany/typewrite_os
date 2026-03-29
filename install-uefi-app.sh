@@ -1,31 +1,75 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # USB Installer for Typewrite OS - UEFI App Only
 # Pure UEFI application - no Linux kernel required
-# Simplest approach: just copy .efi to EFI partition
+# Simplest approach: copy .efi to EFI partition
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UEFI_APP="$SCRIPT_DIR/uefi-app/fs/Typewriter.efi"
 
-if [ ! -f "$UEFI_APP" ]; then
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [options] /dev/sdX | /dev/nvme0n1 | /dev/mmcblk0
+
+  Wipes the target disk, creates GPT + FAT32 ESP, installs Typewriter.efi as
+  efi/boot/bootx64.efi (and Typewriter.efi).
+
+Options:
+  --yes, -y    Skip confirmation prompt (destructive)
+  -h, --help   This help
+
+Build / refresh the .efi first, e.g.:
+  make -C uefi-app all && cp -f uefi-app/Typewriter.efi uefi-app/fs/Typewriter.efi
+Or use: ./write-typewriter-to-usb.sh /dev/sdX
+EOF
+}
+
+YES=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --yes|-y) YES=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
+        *) break ;;
+    esac
+done
+
+if [[ ! -f "$UEFI_APP" ]]; then
     echo "Error: Typewriter.efi not found at $UEFI_APP"
     echo "Build the app first with:"
-    echo "  cd uefi-app && make"
+    echo "  make -C uefi-app all"
+    echo "  cp -f uefi-app/Typewriter.efi uefi-app/fs/Typewriter.efi"
+    echo "Or run: ./write-typewriter-to-usb.sh /dev/sdX"
     exit 1
 fi
 
-if [ $# -lt 1 ]; then
-    echo "Usage: $0 /dev/sdX"
-    echo ""
-    echo "Creates a USB with Typewrite OS as a native UEFI application"
-    echo "No Linux kernel - runs directly as EFI app"
-    echo ""
-    echo "WARNING: ALL DATA WILL BE ERASED!"
+if [[ $# -lt 1 ]]; then
+    usage >&2
     exit 1
 fi
 
 DEVICE="$1"
+
+BLK_TYPE=$(lsblk -ndo TYPE "$DEVICE" 2>/dev/null || true)
+if [[ "$BLK_TYPE" != "disk" ]]; then
+    echo "Error: $DEVICE must be a whole disk (lsblk type: ${BLK_TYPE:-unknown})."
+    echo "Use e.g. /dev/sdb or /dev/nvme0n1, not a partition like /dev/sdb1."
+    exit 1
+fi
+
+# First partition name: /dev/sdb -> sdb1; /dev/nvme0n1 -> nvme0n1p1; /dev/mmcblk0 -> mmcblk0p1
+first_efi_partition() {
+    local d="$1"
+    local b
+    b="$(basename "$d")"
+    if [[ "$b" =~ ^(nvme[0-9]+n[0-9]+|mmcblk[0-9]+)$ ]]; then
+        echo "${d}p1"
+    else
+        echo "${d}1"
+    fi
+}
+PART="$(first_efi_partition "$DEVICE")"
 
 echo "=========================================="
 echo "Typewrite OS - UEFI App USB Installer"
@@ -34,10 +78,14 @@ echo ""
 echo "Source: $UEFI_APP"
 file "$UEFI_APP"
 echo ""
+echo "Target disk: $DEVICE  (ESP will be $PART)"
+echo ""
 
 echo "WARNING: ALL DATA ON $DEVICE WILL BE ERASED!"
 echo ""
-read -p "Press Enter to continue, Ctrl+C to cancel..."
+if [[ "$YES" -eq 0 ]]; then
+    read -r -p "Press Enter to continue, Ctrl+C to cancel..."
+fi
 
 # Unmount
 sudo umount "${DEVICE}"* 2>/dev/null || true
@@ -59,8 +107,6 @@ sudo parted -s "$DEVICE" set 1 esp on
 sleep 2
 sudo partprobe "$DEVICE" 2>/dev/null || true
 sudo udevadm settle 2>/dev/null || true
-
-PART="${DEVICE}1"
 
 # Format
 echo "Formatting as FAT32..."
@@ -86,14 +132,13 @@ sudo tee "$MOUNT_DIR/startup.nsh" > /dev/null << 'EOF'
 \efi\boot\Typewriter.efi
 EOF
 
-# Create a simple config for systems that support EFIs
+# Optional rEFInd-style menu (no icon path — avoids missing file on stick)
 sudo tee "$MOUNT_DIR/efi/boot/refind.conf" > /dev/null << 'EOF'
 timeout 20
 default 0
 scanfor Manual,External
 
 menuentry "Typewrite OS" {
-    icon /efi/boot/icons/os_ubuntu.icns
     loader /efi/boot/Typewriter.efi
 }
 EOF

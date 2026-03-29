@@ -753,11 +753,15 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
             if (bot >= Doc.LineCount)
                 bot = (Doc.LineCount > 0) ? Doc.LineCount - 1 : 0;
             UINT32 stripeW = fb->Width;
+            /* Only clear the typographic line body (cap height box), not the full
+             * LineAdvance() band — rewriting the inter-line leading every keystroke
+             * made visible tearing/flicker on some GOP scanouts. */
+            UINT32 lineBodyH = ActiveFontLineHeight() * FontSize;
             for (UINT32 line = top; line <= bot; line++) {
                 UINT32 y = TOP_MARGIN + line * lineStep;
                 if (y >= fb->Height)
                     break;
-                DrawRect(fb, 0, y, stripeW, lineStep, bgColor);
+                DrawRect(fb, 0, y, stripeW, lineBodyH, bgColor);
                 if (line < Doc.LineCount)
                     DrawString(fb, LEFT_MARGIN, y, Doc.Text[line], fgColor, bgColor);
             }
@@ -766,7 +770,7 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
                     UINT32 y = TOP_MARGIN + line * lineStep;
                     if (y >= fb->Height)
                         break;
-                    DrawRect(fb, 0, y, stripeW, lineStep, bgColor);
+                    DrawRect(fb, 0, y, stripeW, lineBodyH, bgColor);
                 }
             }
         }
