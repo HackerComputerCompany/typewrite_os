@@ -246,7 +246,7 @@ typedef enum {
     CURSOR_MODE_NUM
 } CURSOR_MODE;
 
-static UINT32 CursorMode = CURSOR_BAR;
+static UINT32 CursorMode = CURSOR_BLOCK_BLINK;
 static BOOLEAN CursorBlinkPhase = TRUE;
 static UINT64 CursorBlinkAccumUs = 0;
 
@@ -756,6 +756,86 @@ EFI_STATUS ClearScreen(FRAMEBUFFER *fb, UINT32 bgColor) {
     return EFI_SUCCESS;
 }
 
+static UINT32 StringPixelWidthChars(const CHAR16 *s) {
+    UINT32 w = 0;
+
+    if (s == NULL)
+        return 0;
+    for (; *s; s++)
+        w += GlyphAdvance(*s);
+    return w;
+}
+
+/* Splash (~4 s) or any key */
+#define SPLASH_TIMEOUT_US 4000000
+
+static VOID DrawSplashScreen(FRAMEBUFFER *fb) {
+    UINT32 bg = RGB(20, 22, 28);
+    UINT32 fg = RGB(236, 232, 218);
+    UINT32 accent = RGB(196, 160, 90);
+    UINT32 muted = RGB(120, 116, 108);
+    UINT32 rowStep = LineAdvance();
+    UINT32 ruleW, ruleX, ruleY;
+
+    ClearScreen(fb, bg);
+    ruleY = (fb->Height / 2 > rowStep * 3) ? fb->Height / 2 - rowStep * 3 : fb->Height / 4;
+    ruleW = fb->Width / 3;
+    if (ruleW < 120)
+        ruleW = fb->Width / 2;
+    ruleX = (fb->Width > ruleW) ? (fb->Width - ruleW) / 2 : 0;
+    if (ruleY + 2 < fb->Height)
+        DrawRect(fb, ruleX, ruleY, ruleW, 2, accent);
+
+    {
+        CHAR16 *t = L"Typewrite OS";
+        UINT32 tw = StringPixelWidthChars(t);
+        UINT32 x = (fb->Width > tw) ? (fb->Width - tw) / 2 : LEFT_MARGIN;
+        UINT32 y = fb->Height / 2 - rowStep * 2;
+
+        DrawString(fb, x, y, t, fg, bg);
+    }
+    {
+        CHAR16 *t = L"UEFI typewriter";
+        UINT32 tw = StringPixelWidthChars(t);
+        UINT32 x = (fb->Width > tw) ? (fb->Width - tw) / 2 : LEFT_MARGIN;
+        UINT32 y = fb->Height / 2 - rowStep / 2;
+
+        DrawString(fb, x, y, t, muted, bg);
+    }
+    {
+        CHAR16 *t = L"Press any key to start";
+        UINT32 tw = StringPixelWidthChars(t);
+        UINT32 x = (fb->Width > tw) ? (fb->Width - tw) / 2 : LEFT_MARGIN;
+        UINT32 y = fb->Height / 2 + rowStep;
+
+        DrawString(fb, x, y, t, accent, bg);
+    }
+}
+
+static VOID RunSplashScreen(FRAMEBUFFER *fb) {
+    EFI_INPUT_KEY key;
+    UINT64 elapsed;
+
+    DrawSplashScreen(fb);
+    FlipFramebuffer(fb);
+
+    while (!EFI_ERROR(uefi_call_wrapper(ST->ConIn->ReadKeyStroke, 2, ST->ConIn, &key)))
+        ;
+
+    elapsed = 0;
+    while (elapsed < (UINT64)SPLASH_TIMEOUT_US) {
+        EFI_STATUS ks = uefi_call_wrapper(ST->ConIn->ReadKeyStroke, 2, ST->ConIn, &key);
+
+        if (!EFI_ERROR(ks))
+            break;
+        uefi_call_wrapper(BS->Stall, 1, 40000);
+        elapsed += 40000;
+    }
+
+    while (!EFI_ERROR(uefi_call_wrapper(ST->ConIn->ReadKeyStroke, 2, ST->ConIn, &key)))
+        ;
+}
+
 VOID InitDocument(VOID) {
     ZeroMem(&Doc, sizeof(Doc));
     Doc.LineCount = 1;
@@ -911,7 +991,7 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
         DrawString(fb, lx, ly, L"F4   Cycle background color", hf, hb);
         ly += HELP_LINE_GAP;
         DrawString(fb, lx, ly,
-                  L"F5   Cycle cursor: bar | bar blink | block | block blink | hidden",
+                  L"F5   Cycle cursor (default: blinking block)",
                   hf, hb);
         ly += HELP_LINE_GAP;
         DrawString(fb, lx, ly, L"F7   Toggle key debug (scan/unicode log)", hf, hb);
@@ -1130,9 +1210,13 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
             fb.RedMask = 0xFF;
         }
     }
-    
+
+    RunSplashScreen(&fb);
+    CursorBlinkPhase = TRUE;
+    CursorBlinkAccumUs = 0;
+
     InitDocument();
-    
+
     while (Running) {
         if (Doc.Modified) {
             RenderDocument(&fb);
