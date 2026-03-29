@@ -53,9 +53,10 @@ ENVIRONMENT
                     (gtk,gl=off) to avoid common host hangs/black screens.
                     Examples: sdl, none, gtk, gtk,gl=on
     QEMU_GTK_GL     Set to 1 to use OpenGL with GTK (default is off).
-    QEMU_MACHINE    Machine type (default: q35,accel=kvm:tcg). OVMF + GOP behaves
-                    more reliably on q35 than the older i440fx default. Set empty
-                    to omit -machine and use QEMU’s default: QEMU_MACHINE= ./start-qemu.sh
+    QEMU_MACHINE    Full -machine string (default: q35,accel=…). Set empty to use
+                    QEMU’s default PC: QEMU_MACHINE= ./start-qemu.sh
+    QEMU_ACCEL      Accelerator when using the default machine: kvm:tcg (KVM if
+                    /dev/kvm is usable), tcg, etc. Overrides auto-detection.
 
 FILES (paths relative to repo root)
     uefi-app/Typewriter.efi   Built binary (make output).
@@ -169,6 +170,20 @@ fi
 
 init_ovmf_vars "$OVMF_CODE_PATH"
 
+# Default -machine uses KVM only when /dev/kvm is readable+writable (avoids qemu
+# "Could not access KVM kernel module: Permission denied" when user not in kvm group).
+resolve_default_accel() {
+    if [[ -n "${QEMU_ACCEL:-}" ]]; then
+        printf '%s' "$QEMU_ACCEL"
+        return
+    fi
+    if [[ -r /dev/kvm && -w /dev/kvm ]]; then
+        printf '%s' 'kvm:tcg'
+    else
+        printf '%s' 'tcg'
+    fi
+}
+
 QEMU_DISPLAY="${QEMU_DISPLAY:-gtk}"
 # GTK + OpenGL often black-screens or stalls on some hosts (Wayland/Mesa); default gl=off.
 if [[ "$QEMU_DISPLAY" == "gtk" && "${QEMU_GTK_GL:-0}" != "1" ]]; then
@@ -177,7 +192,12 @@ fi
 
 MACHINE_ARGS=()
 if [[ ! -v QEMU_MACHINE ]]; then
-    MACHINE_ARGS=(-machine "q35,accel=kvm:tcg")
+    _accel="$(resolve_default_accel)"
+    MACHINE_ARGS=(-machine "q35,accel=$_accel")
+    if [[ "$_accel" == "tcg" && -z "${QEMU_ACCEL:-}" ]]; then
+        echo "Note: KVM not available (/dev/kvm not usable by this user). Using TCG (slower)." >&2
+        echo "      Enable KVM: sudo usermod -aG kvm \"$USER\"  then log out and back in." >&2
+    fi
 elif [[ -n "$QEMU_MACHINE" ]]; then
     MACHINE_ARGS=(-machine "$QEMU_MACHINE")
 fi
@@ -203,7 +223,7 @@ fi
 if [[ -n "${MACHINE_ARGS[*]}" ]]; then
     echo "  Machine:    ${MACHINE_ARGS[1]}"
 else
-    echo "  Machine:    (QEMU default — set QEMU_MACHINE=q35,accel=kvm:tcg if unsure)"
+    echo "  Machine:    (QEMU default — set QEMU_MACHINE=q35,accel=kvm:tcg or tcg if unsure)"
 fi
 echo ""
 if [[ "$QEMU_DISPLAY" != "none" && "$QEMU_DISPLAY" != curses ]]; then

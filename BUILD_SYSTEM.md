@@ -182,7 +182,8 @@ Options and environment:
 | `OVMF_CODE` | Absolute path to the read-only OVMF code image. |
 | `QEMU_DISPLAY` | Passed to QEMU `-display`. Default is **`gtk,gl=off`** (plain `gtk` is upgraded unless `QEMU_GTK_GL=1`). |
 | `QEMU_GTK_GL` | Set to `1` to use GTK with OpenGL (`gtk` or `gtk,gl=on`). |
-| `QEMU_MACHINE` | `-machine` argument (default **`q35,accel=kvm:tcg`**). Set to empty to use QEMU’s default PC: `QEMU_MACHINE= ./start-qemu.sh` |
+| `QEMU_MACHINE` | Full `-machine` string. Default is **`q35`** + auto accel (KVM if `/dev/kvm` ok, else TCG). Empty uses QEMU’s default PC: `QEMU_MACHINE= ./start-qemu.sh` |
+| `QEMU_ACCEL` | Passed as `-accel` inside default machine (`kvm:tcg`, `tcg`, …). Overrides KVM/TCG auto-detection. |
 
 Full CLI reference: **`./start-qemu.sh --help`** (name, synopsis, options, env, files, examples).
 
@@ -204,7 +205,21 @@ If the **window stays blank** or **never seems to finish “display init”**:
 4. On **Wayland**, try forcing X11 for GTK: **`GDK_BACKEND=x11 ./start-qemu.sh`**
 5. Ensure **`qemu-system-gui`** (or your distro’s equivalent) is installed so the GTK/SDL UI modules load.
 
-The script uses **`-machine q35,accel=kvm:tcg`** by default (better match for UEFI + GOP than older i440fx defaults). Override only if you know you need another machine type.
+The script uses **`-machine q35,accel=…`** by default (better match for UEFI + GOP than older i440fx defaults). The accelerator is chosen automatically:
+
+- **KVM** (`kvm:tcg`) when **`/dev/kvm`** is readable and writable (you are in the **`kvm`** group or permissions allow it).
+- Otherwise **TCG** (software emulation) only — slower, but no “Permission denied” on KVM.
+
+To use hardware acceleration after seeing the TCG note:
+
+```bash
+sudo usermod -aG kvm "$USER"
+# then log out completely and back in (or reboot)
+```
+
+Verify: `groups` should list `kvm`, and `test -r /dev/kvm && test -w /dev/kvm && echo ok`.
+
+Override: **`QEMU_ACCEL=tcg`** forces software emulation; **`QEMU_ACCEL=kvm:tcg`** forces KVM (fails if permissions are wrong).
 
 ### Manual QEMU command (equivalent layout)
 
@@ -212,7 +227,7 @@ Do **not** pass both `-bios` and OVMF `pflash` for the same image (redundant / c
 
 ```bash
 qemu-system-x86_64 \
-    -machine q35,accel=kvm:tcg \
+    -machine q35,accel=kvm:tcg   # use accel=tcg if no access to /dev/kvm
     -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
     -drive if=pflash,format=raw,file=ovmf_vars.fd \
     -drive format=raw,file=fat:rw:uefi-app/fs \
@@ -293,7 +308,8 @@ uefi-app/
 
 ## Changelog
 
-- **2026-03-29**: **`start-qemu.sh`**: default **`-machine q35,accel=kvm:tcg`**, default GTK **`gl=off`**, **`--sdl`** and **`--serial-stdio`**, pre-launch tips; **BUILD_SYSTEM.md** QEMU display troubleshooting.
+- **2026-03-29**: **`start-qemu.sh`**: pick **KVM vs TCG** from **`/dev/kvm`** permissions (avoids KVM permission errors); **`QEMU_ACCEL`** override; **BUILD_SYSTEM.md** KVM group instructions.
+- **2026-03-29**: **`start-qemu.sh`**: default **`-machine q35`** + accel, default GTK **`gl=off`**, **`--sdl`** and **`--serial-stdio`**, pre-launch tips; **BUILD_SYSTEM.md** QEMU display troubleshooting.
 - **2026-03-29**: Removed redundant tracked **`buildroot.tar.gz`** (vendored tree remains under `buildroot-2024.02/`); local Buildroot **`output/`**, **`dl/`**, etc. are still safe to delete when present — they are build products, not source.
 - **2026-03-29**: [`start-qemu.sh`](start-qemu.sh) **`--help`** documents behavior, paths, requirements, and examples; script builds `uefi-app`, syncs `Typewriter.efi` into `uefi-app/fs/`, auto-detects OVMF, drops duplicate `-bios`.
 - **2026-03-29**: Added [`AGENTS.md`](AGENTS.md) and [`agent.md`](agent.md) pointers for return-to-context; root [`README.md`](README.md) and [`PROJECT_STATUS.md`](PROJECT_STATUS.md) updated for dual-track (UEFI + Buildroot) state.
