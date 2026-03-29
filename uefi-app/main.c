@@ -155,7 +155,18 @@ typedef struct {
 } DOCUMENT;
 
 static EFI_GRAPHICS_OUTPUT_PROTOCOL *Gop;
-static BOOLEAN UseVirgilFont = TRUE;
+
+typedef enum {
+    FONT_VIRGIL = 0,
+    FONT_HELVETICA,
+    FONT_SIMPLE,
+    FONT_NUM
+} FONT_KIND;
+
+static FONT_KIND CurrentFontKind = FONT_VIRGIL;
+static BOOLEAN ShowHelp = FALSE;
+
+#define HELP_LINE_GAP 24
 
 #define RGB(r, g, b) ((r) | ((g) << 8) | ((b) << 16))
 
@@ -330,37 +341,66 @@ EFI_STATUS DrawCharHelvetica(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 ch, UIN
 }
 
 EFI_STATUS DrawChar(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 ch, UINT32 fgColor, UINT32 bgColor) {
-    if (UseVirgilFont) {
+    switch (CurrentFontKind) {
+    case FONT_VIRGIL:
         return DrawCharVirgil(fb, x, y, ch, fgColor, bgColor);
+    case FONT_HELVETICA:
+        return DrawCharHelvetica(fb, x, y, ch, fgColor, bgColor);
+    case FONT_SIMPLE:
+        return DrawCharSimple(fb, x, y, ch, fgColor, bgColor);
+    default:
+        return EFI_SUCCESS;
     }
-    return DrawCharHelvetica(fb, x, y, ch, fgColor, bgColor);
 }
 
 static UINT32 GlyphAdvance(CHAR16 ch) {
-    if (UseVirgilFont) {
+    switch (CurrentFontKind) {
+    case FONT_SIMPLE:
+        if (ch >= 32 && ch <= 126)
+            return 6; /* 5 px glyph + 1 */
+        return CHAR_GAP;
+    case FONT_VIRGIL:
         if (ch < VIRGIL_ASC_MIN || ch > VIRGIL_ASC_MAX)
             return CHAR_GAP;
-        UINT32 idx = ch - VIRGIL_ASC_MIN;
-        UINT32 w = virgil_widths[idx];
-        if (w < 1)
-            w = 1;
-        if (virgil_advances[idx] > 0)
-            return (UINT32)virgil_advances[idx];
-        return w + CHAR_GAP;
+        {
+            UINT32 idx = ch - VIRGIL_ASC_MIN;
+            UINT32 w = virgil_widths[idx];
+            if (w < 1)
+                w = 1;
+            if (virgil_advances[idx] > 0)
+                return (UINT32)virgil_advances[idx];
+            return w + CHAR_GAP;
+        }
+    case FONT_HELVETICA:
+    default:
+        if (ch < HELVETICA_ASC_MIN || ch > HELVETICA_ASC_MAX)
+            return CHAR_GAP;
+        {
+            UINT32 idx2 = ch - HELVETICA_ASC_MIN;
+            UINT32 w2 = helvetica_widths[idx2];
+            if (w2 < 1)
+                w2 = 1;
+            if (helvetica_advances[idx2] > 0)
+                return (UINT32)helvetica_advances[idx2];
+            return w2 + CHAR_GAP;
+        }
     }
-    if (ch < HELVETICA_ASC_MIN || ch > HELVETICA_ASC_MAX)
-        return CHAR_GAP;
-    UINT32 idx2 = ch - HELVETICA_ASC_MIN;
-    UINT32 w2 = helvetica_widths[idx2];
-    if (w2 < 1)
-        w2 = 1;
-    if (helvetica_advances[idx2] > 0)
-        return (UINT32)helvetica_advances[idx2];
-    return w2 + CHAR_GAP;
+}
+
+static UINT32 ActiveFontLineHeight(VOID) {
+    switch (CurrentFontKind) {
+    case FONT_SIMPLE:
+        return SIMPLE_FONT_HEIGHT;
+    case FONT_VIRGIL:
+        return VIRGIL_HEIGHT;
+    case FONT_HELVETICA:
+    default:
+        return HELVETICA_HEIGHT;
+    }
 }
 
 static UINT32 LineAdvance(VOID) {
-    UINT32 fh = (UseVirgilFont ? VIRGIL_HEIGHT : HELVETICA_HEIGHT) * FontSize;
+    UINT32 fh = ActiveFontLineHeight() * FontSize;
     UINT32 lh = LINE_HEIGHT * FontSize;
     return (fh > lh) ? fh : lh;
 }
@@ -423,6 +463,39 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
         DrawRect(fb, cursorX, cursorY, 2, lineStep, fgColor);
     }
     
+    if (ShowHelp) {
+        UINT32 hf = RGB(28, 28, 32);
+        UINT32 hb = RGB(230, 224, 210);
+        UINT32 hd = RGB(72, 72, 88);
+        UINT32 bx = 48;
+        UINT32 by = 64;
+        UINT32 bw = fb->Width - 96;
+        if (bw > 760)
+            bw = 760;
+        UINT32 bh = 400;
+        if (by + bh + 48 > fb->Height)
+            bh = fb->Height - by - 64;
+        DrawRect(fb, bx - 2, by - 2, bw + 4, bh + 4, hd);
+        DrawRect(fb, bx, by, bw, bh, hb);
+        UINT32 lx = bx + 20;
+        UINT32 ly = by + 16;
+        DrawString(fb, lx, ly, L"Typewrite OS - Help", hf, hb);
+        ly += HELP_LINE_GAP + 10;
+        DrawString(fb, lx, ly, L"F1   Toggle this help", hf, hb);
+        ly += HELP_LINE_GAP;
+        DrawString(fb, lx, ly, L"F2   Cycle font: Virgil -> Helvetica -> Simple", hf, hb);
+        ly += HELP_LINE_GAP;
+        DrawString(fb, lx, ly, L"F3   Increase line spacing scale", hf, hb);
+        ly += HELP_LINE_GAP;
+        DrawString(fb, lx, ly, L"F6   Decrease line spacing scale", hf, hb);
+        ly += HELP_LINE_GAP;
+        DrawString(fb, lx, ly, L"F4   Cycle background color", hf, hb);
+        ly += HELP_LINE_GAP;
+        DrawString(fb, lx, ly, L"F5   Toggle cursor", hf, hb);
+        ly += HELP_LINE_GAP;
+        DrawString(fb, lx, ly, L"ESC  Close help; quit app when help is hidden", hf, hb);
+    }
+    
     FlipFramebuffer(fb);
     return EFI_SUCCESS;
 }
@@ -431,6 +504,11 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
     if (!key) return EFI_SUCCESS;
     
     if (key->ScanCode == 0x01) {  /* ESC */
+        if (ShowHelp) {
+            ShowHelp = FALSE;
+            Doc.Modified = TRUE;
+            return EFI_SUCCESS;
+        }
         Running = FALSE;
         return EFI_SUCCESS;
     }
@@ -438,12 +516,14 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
     if (key->ScanCode >= 0x0B && key->ScanCode <= 0x12) {  /* F1-F8 */
         switch (key->ScanCode) {
             case 0x0B:  /* F1 - Help */
-                break;
-            case 0x0C:  /* F2 - Decrease font */
-                if (FontSize > 1) FontSize--;
+                ShowHelp = !ShowHelp;
                 Doc.Modified = TRUE;
                 break;
-            case 0x0D:  /* F3 - Increase font */
+            case 0x0C:  /* F2 - Cycle font */
+                CurrentFontKind = (FONT_KIND)((CurrentFontKind + 1) % FONT_NUM);
+                Doc.Modified = TRUE;
+                break;
+            case 0x0D:  /* F3 - Increase line scale */
                 if (FontSize < 3) FontSize++;
                 Doc.Modified = TRUE;
                 break;
@@ -455,8 +535,8 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
                 ShowCursor = !ShowCursor;
                 Doc.Modified = TRUE;
                 break;
-            case 0x10:  /* F6 - Switch font */
-                UseVirgilFont = !UseVirgilFont;
+            case 0x10:  /* F6 - Decrease line scale */
+                if (FontSize > 1) FontSize--;
                 Doc.Modified = TRUE;
                 break;
         }
@@ -511,7 +591,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     Print(L"\r\n========================================\r\n");
     Print(L"  Typewrite OS v1.0\r\n");
     Print(L"  UEFI Typewriter Application\r\n");
-    Print(L"  Virgil & Helvetica Fonts\r\n");
+    Print(L"  F1 help  F2 font  F3/F6 scale\r\n");
     Print(L"========================================\r\n\r\n");
     
     EFI_GUID gopGuid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;

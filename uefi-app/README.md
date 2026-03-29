@@ -76,6 +76,17 @@ For QEMU, run [`../start-qemu.sh`](../start-qemu.sh) from the repo root (it copi
 - Retest **raw framebuffer** behavior on picky hardware; consider GOP **`Blt()`** if needed.
 - Feature growth toward the behavior described in [`../FEATURES.md`](../FEATURES.md) (save/load, typewriter rules) — implemented incrementally in `main.c`.
 
+## Keys (in the graphical editor)
+
+| Key | Action |
+|-----|--------|
+| **F1** | Toggle on-screen **help** |
+| **F2** | **Cycle font:** Virgil → Helvetica → simple 5×8 |
+| **F3** / **F6** | Increase / decrease **line scale** (row spacing multiplier) |
+| **F4** | Cycle background color |
+| **F5** | Toggle cursor |
+| **ESC** | Close help if open; otherwise **exit** |
+
 ## Source layout
 
 | File | Role |
