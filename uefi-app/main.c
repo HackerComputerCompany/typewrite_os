@@ -4,7 +4,8 @@
  * A native UEFI typewriter experience with:
  * - Bitmap font rendering (Virgil, Inter, + retro / typewriter faces)
  * - Typewriter-style input with visual feedback
- * - F8/F9 save/load Typewriter.txt (UTF-8) on boot volume; autoload if present at startup
+ * - F8/F9 save/load per slot/page (TWSnPmm.TXT); five slots; F10 switch; F11/F12 pages;
+ *   PgUp/PgDn; arrows move cursor; Ins line numbers; autoload TWS1Pxx then Typewriter.txt
  * - LCD-style clock HUD
  * - Multiple view modes
  * 
@@ -184,11 +185,13 @@ static const UINT32 simple_font_offsets[] = {
 
 /*
  * One in-memory page: US Letter–style grid (~6.5" × ~9" printable at ~10 cpi × ~60 lines).
- * Multi-page files: reserve TYPEWRITER_PAGE slots later; only index 0 is loaded today.
+ * Up to MAX_RAM_PAGES per session; disk files TWS{slot}P{nn}.TXT (slot 1–5, page 01–99).
  */
 #define PAGE_COLS 50
 #define PAGE_ROWS 60
 #define PAGE_CELLS (PAGE_COLS * PAGE_ROWS)
+#define SAVE_SLOT_COUNT 5
+#define MAX_RAM_PAGES 32
 
 /* Logical ~96 DPI for 1" margins when GOP gives no physical size. */
 #define FONT_ASSUMED_DPI 96
@@ -225,10 +228,11 @@ typedef struct {
 } DOCUMENT;
 
 typedef struct {
-    CHAR16 Cell[PAGE_ROWS][PAGE_COLS + 1];
-} TYPEWRITER_PAGE;
-
-/* Multi-page: extend with static TYPEWRITER_PAGE LoadedPages[N] and memcpy active page <-> Doc.Grid. */
+    CHAR16 Grid[PAGE_ROWS][PAGE_COLS + 1];
+    UINT32 CursorCol;
+    UINT32 CursorRow;
+    UINT32 ScrollYPx;
+} PAGE_SNAPSHOT;
 
 static EFI_GRAPHICS_OUTPUT_PROTOCOL *Gop;
 static EFI_HANDLE BootImageHandle;
@@ -321,6 +325,13 @@ static UINT32 DirtyLineBottom = 0; /* invalid until MarkDirtyRange (Top <= Botto
 static UINT32 LastPaintedLineCount = 0;
 /* Right edge (screen x) last cleared+painted per row — avoids over-clearing. */
 static UINT32 LastLinePaintedRight[PAGE_ROWS];
+
+static PAGE_SNAPSHOT RamPages[MAX_RAM_PAGES];
+static UINT32 RamPageCount = 1;
+static UINT32 ActiveRamPageIndex = 0;
+static UINT32 SaveSlotIndex = 0;
+static BOOLEAN ShowLineNumbers = FALSE;
+static UINT32 G_lineNumGutterPx = 0;
 
 /* Page layout (recomputed from GOP + font; document uses fixed column pitch). */
 static UINT32 G_docViewportBot = 600;
@@ -425,15 +436,26 @@ static VOID UpdatePageLayoutFromFb(const FRAMEBUFFER *fb) {
     G_pageColPitch = ComputePageColPitch();
     G_lineStep = LineAdvance();
 
+    G_lineNumGutterPx = 0;
+    if (ShowLineNumbers) {
+        UINT32 gw = GlyphAdvance(L'0');
+
+        if (gw < FONT_PIXEL_KERN())
+            gw = FONT_PIXEL_KERN();
+        G_lineNumGutterPx = gw * 3 + FONT_SZ_MUL(10);
+        if (G_lineNumGutterPx < FONT_SZ_MUL(24))
+            G_lineNumGutterPx = FONT_SZ_MUL(24);
+    }
+
     contentW = PAGE_COLS * G_pageColPitch;
     contentH = PAGE_ROWS * G_lineStep;
-    G_pageTotalW = 2 * G_pageMarginPx + contentW;
+    G_pageTotalW = 2 * G_pageMarginPx + contentW + G_lineNumGutterPx;
     G_pageTotalH = 2 * G_pageMarginPx + contentH;
 
     G_pagePaperX = (fb->Width > G_pageTotalW) ? (fb->Width - G_pageTotalW) / 2 : 0;
     G_pagePaperY = 0;
 
-    G_pageContentX0 = G_pagePaperX + G_pageMarginPx;
+    G_pageContentX0 = G_pagePaperX + G_pageMarginPx + G_lineNumGutterPx;
     G_pageContentY0 = G_pagePaperY + G_pageMarginPx;
 }
 
@@ -874,6 +896,12 @@ static UINT32 LinePaintRightX(const FRAMEBUFFER *fb, const CHAR16 *ln, UINT32 ro
     return r;
 }
 
+static UINT32 LineNumberInk(VOID) {
+    if (CurrentBgColor == 1)
+        return RGB(96, 110, 138);
+    return RGB(140, 150, 175);
+}
+
 static VOID DrawGridRowIfVisible(FRAMEBUFFER *fb, UINT32 r, UINT32 fg, UINT32 bg) {
     INT32 sy = RowTextScreenY(r);
     UINT32 yu;
@@ -885,6 +913,15 @@ static VOID DrawGridRowIfVisible(FRAMEBUFFER *fb, UINT32 r, UINT32 fg, UINT32 bg
     if (sy < 0 || sy >= (INT32)G_docViewportBot || sy + (INT32)lineBodyH <= 0)
         return;
     yu = (UINT32)sy;
+    if (ShowLineNumbers && G_lineNumGutterPx > 0) {
+        CHAR16 lnbuf[12];
+        UINT32 lnx = G_pageContentX0 - G_lineNumGutterPx + FONT_SZ_MUL(4);
+
+        if (lnx + 8 * FONT_PIXEL_KERN() > G_pageContentX0)
+            lnx = G_pagePaperX + FONT_SZ_MUL(2);
+        UnicodeSPrint(lnbuf, sizeof(lnbuf), L"%u", r + 1);
+        DrawString(fb, lnx, yu, lnbuf, LineNumberInk(), bg);
+    }
     px = G_pageContentX0;
     for (i = 0; i < PAGE_COLS; i++) {
         CHAR16 ch = ln[i] ? ln[i] : L' ';
@@ -999,9 +1036,14 @@ static VOID DrawHelpOverlay(FRAMEBUFFER *fb) {
         L"F4   Cycle background color",
         L"F5   Cycle cursor (default: blinking block)",
         L"F7   Toggle key debug (scan/unicode log)",
-        L"F8   Save document as Typewriter.txt (UTF-8) on boot volume",
-        L"F9   Load Typewriter.txt from boot volume (replaces buffer);",
-        L"     also loaded automatically at startup when the file exists",
+        L"F8   Save current page as TWS{slot}P{page}.TXT (UTF-8, boot volume)",
+        L"F9   Load that file for current slot/page",
+        L"F10  Next save slot (1–5); writes all pages, then loads new slot",
+        L"F11  Save page & go to next (or new) page; PgDn same",
+        L"F12  Save & previous page; PgUp same",
+        L"↑↓←→ Move cursor (type only at cursor; arrows do not edit cells)",
+        L"Ins  Toggle line numbers (gutter, muted color)",
+        L"Boot: TWS1P01.TXT, P02… if present; else Typewriter.txt",
         L"ESC  Close help; quit app when help is hidden",
     };
     UINT32 n = sizeof(helpLines) / sizeof(helpLines[0]);
@@ -1295,7 +1337,7 @@ static VOID DrawCasioStatusHud(FRAMEBUFFER *fb, UINT32 hudY, UINT32 docBg) {
         LcdDraw7SegDigit(fb, cx, cy, cw, ch, m2, segOn, segOff);
     }
 
-    if (FileOpBannerRemainUs > 0 && FileOpBanner[0]) {
+    {
         UINT32 bx = 10;
         UINT32 by = hudY + 4;
 
@@ -1303,7 +1345,15 @@ static VOID DrawCasioStatusHud(FRAMEBUFFER *fb, UINT32 hudY, UINT32 docBg) {
         saveFs = FontScaleTwice;
         CurrentFontKind = FONT_SIMPLE;
         FontScaleTwice = 2;
-        DrawString(fb, bx, by, FileOpBanner, segOn, face);
+        if (FileOpBannerRemainUs > 0 && FileOpBanner[0]) {
+            DrawString(fb, bx, by, FileOpBanner, segOn, face);
+        } else {
+            CHAR16 sp[32];
+
+            UnicodeSPrint(sp, sizeof(sp), L"S%u  P%u/%u", SaveSlotIndex + 1,
+                          ActiveRamPageIndex + 1, RamPageCount);
+            DrawString(fb, bx, by, sp, segOn, face);
+        }
         CurrentFontKind = saveFont;
         FontScaleTwice = saveFs;
     }
@@ -1330,6 +1380,8 @@ static UINTN Utf8WriteChar(CHAR16 c, UINT8 *dst, UINTN left) {
     return 0;
 }
 
+static VOID TypewriterLoadBytesIntoDoc(const UINT8 *data, UINTN len);
+
 static VOID FileOpSetBannerOk(const CHAR16 *msg) {
     StrCpy(FileOpBanner, msg);
     FileOpBannerRemainUs = FILE_BANNER_HOLD_US;
@@ -1342,7 +1394,28 @@ static VOID FileOpSetBannerErr(const CHAR16 *msg, EFI_STATUS st) {
     HudNeedPaint = TRUE;
 }
 
-static EFI_STATUS TypewriterSaveFile(EFI_HANDLE img) {
+static VOID TypewriterFormatPagePath(CHAR16 *buf, UINTN bufBytes, UINT32 slot0, UINT32 page1based) {
+    UnicodeSPrint(buf, bufBytes, L"TWS%uP%02u.TXT", slot0 + 1, page1based);
+}
+
+static VOID CopyDocToRamPage(UINT32 idx) {
+    CopyMem(RamPages[idx].Grid, Doc.Grid, sizeof(Doc.Grid));
+    RamPages[idx].CursorCol = Doc.CursorCol;
+    RamPages[idx].CursorRow = Doc.CursorRow;
+    RamPages[idx].ScrollYPx = Doc.ScrollYPx;
+}
+
+static VOID CopyRamPageToDoc(UINT32 idx) {
+    CopyMem(Doc.Grid, RamPages[idx].Grid, sizeof(Doc.Grid));
+    Doc.CursorCol = RamPages[idx].CursorCol;
+    Doc.CursorRow = RamPages[idx].CursorRow;
+    Doc.ScrollYPx = RamPages[idx].ScrollYPx;
+    Doc.Modified = TRUE;
+    MarkFullRepaint();
+}
+
+static EFI_STATUS TypewriterSaveGridToPath(EFI_HANDLE img, const CHAR16 *filename,
+                                           const CHAR16 (*grid)[PAGE_COLS + 1]) {
     EFI_GUID liGuid = EFI_LOADED_IMAGE_PROTOCOL_GUID;
     EFI_LOADED_IMAGE_PROTOCOL *li = NULL;
     EFI_FILE *root = NULL;
@@ -1362,13 +1435,13 @@ static EFI_STATUS TypewriterSaveFile(EFI_HANDLE img) {
     if (root == NULL)
         return EFI_NO_MEDIA;
 
-    if (!EFI_ERROR(uefi_call_wrapper(root->Open, 5, root, &f, TYPEWRITER_DOC_FILENAME,
+    if (!EFI_ERROR(uefi_call_wrapper(root->Open, 5, root, &f, (CHAR16 *)filename,
                                      EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, (UINT64)0))) {
         uefi_call_wrapper(f->Delete, 1, f);
         f = NULL;
     }
 
-    st = uefi_call_wrapper(root->Open, 5, root, &f, TYPEWRITER_DOC_FILENAME,
+    st = uefi_call_wrapper(root->Open, 5, root, &f, (CHAR16 *)filename,
                            EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_CREATE,
                            (UINT64)0);
     if (EFI_ERROR(st)) {
@@ -1386,14 +1459,14 @@ static EFI_STATUS TypewriterSaveFile(EFI_HANDLE img) {
     {
         UINT32 lastRow = PAGE_ROWS;
 
-        while (lastRow > 0 && GridRowLastUsedCol(Doc.Grid[lastRow - 1]) == 0)
+        while (lastRow > 0 && GridRowLastUsedCol(grid[lastRow - 1]) == 0)
             lastRow--;
 
         for (L = 0; L < lastRow; L++) {
             UINT32 c;
-            UINT32 last = GridRowLastUsedCol(Doc.Grid[L]);
+            UINT32 last = GridRowLastUsedCol(grid[L]);
 
-            p = Doc.Grid[L];
+            p = (CHAR16 *)grid[L];
             for (c = 0; c < last && used + 4 < cap; c++) {
                 UINTN n = Utf8WriteChar(p[c], buf + used, cap - used);
 
@@ -1418,6 +1491,94 @@ static EFI_STATUS TypewriterSaveFile(EFI_HANDLE img) {
     uefi_call_wrapper(root->Close, 1, root);
     FreePool(buf);
     return st;
+}
+
+static EFI_STATUS TypewriterSaveCurrentSlotPage(EFI_HANDLE img) {
+    CHAR16 path[48];
+
+    CopyDocToRamPage(ActiveRamPageIndex);
+    TypewriterFormatPagePath(path, sizeof(path), SaveSlotIndex, ActiveRamPageIndex + 1);
+    return TypewriterSaveGridToPath(img, path, RamPages[ActiveRamPageIndex].Grid);
+}
+
+static EFI_STATUS TypewriterLoadDocFromPath(EFI_HANDLE img, const CHAR16 *filename) {
+    EFI_GUID liGuid = EFI_LOADED_IMAGE_PROTOCOL_GUID;
+    EFI_LOADED_IMAGE_PROTOCOL *li = NULL;
+    EFI_FILE *root = NULL;
+    EFI_FILE *f = NULL;
+    EFI_STATUS st;
+    UINT8 *buf = NULL;
+    UINTN sz;
+
+    st = uefi_call_wrapper(BS->HandleProtocol, 3, img, &liGuid, (VOID **)&li);
+    if (EFI_ERROR(st) || li == NULL || li->DeviceHandle == NULL)
+        return (st != EFI_SUCCESS) ? st : EFI_NOT_READY;
+
+    root = LibOpenRoot(li->DeviceHandle);
+    if (root == NULL)
+        return EFI_NO_MEDIA;
+
+    st = uefi_call_wrapper(root->Open, 5, root, &f, (CHAR16 *)filename, EFI_FILE_MODE_READ, (UINT64)0);
+    if (EFI_ERROR(st)) {
+        uefi_call_wrapper(root->Close, 1, root);
+        return st;
+    }
+
+    buf = AllocatePool(DOC_FILE_MAX_BYTES + 1);
+    if (buf == NULL) {
+        uefi_call_wrapper(f->Close, 1, f);
+        uefi_call_wrapper(root->Close, 1, root);
+        return EFI_OUT_OF_RESOURCES;
+    }
+
+    sz = DOC_FILE_MAX_BYTES;
+    st = uefi_call_wrapper(f->Read, 3, f, &sz, buf);
+    if (!EFI_ERROR(st)) {
+        buf[sz] = 0;
+        TypewriterLoadBytesIntoDoc(buf, sz);
+    }
+    uefi_call_wrapper(f->Close, 1, f);
+    uefi_call_wrapper(root->Close, 1, root);
+    FreePool(buf);
+    return st;
+}
+
+static EFI_STATUS TypewriterLoadCurrentSlotPage(EFI_HANDLE img) {
+    CHAR16 path[48];
+
+    TypewriterFormatPagePath(path, sizeof(path), SaveSlotIndex, ActiveRamPageIndex + 1);
+    return TypewriterLoadDocFromPath(img, path);
+}
+
+static EFI_STATUS TypewriterFlushRamToSlot(EFI_HANDLE img, UINT32 slot0) {
+    UINT32 i;
+    CHAR16 path[48];
+    EFI_STATUS st;
+
+    for (i = 0; i < RamPageCount; i++) {
+        TypewriterFormatPagePath(path, sizeof(path), slot0, i + 1);
+        st = TypewriterSaveGridToPath(img, path, RamPages[i].Grid);
+        if (EFI_ERROR(st))
+            return st;
+    }
+    return EFI_SUCCESS;
+}
+
+static UINT32 TypewriterLoadSlotPagesFromDisk(EFI_HANDLE img, UINT32 slot0) {
+    UINT32 n = 0;
+    UINT32 p;
+    CHAR16 path[48];
+    EFI_STATUS st;
+
+    for (p = 1; p <= MAX_RAM_PAGES; p++) {
+        TypewriterFormatPagePath(path, sizeof(path), slot0, p);
+        st = TypewriterLoadDocFromPath(img, path);
+        if (EFI_ERROR(st))
+            break;
+        CopyDocToRamPage(n);
+        n++;
+    }
+    return n;
 }
 
 static VOID TypewriterLoadBytesIntoDoc(const UINT8 *data, UINTN len) {
@@ -1492,62 +1653,139 @@ static VOID TypewriterLoadBytesIntoDoc(const UINT8 *data, UINTN len) {
     MarkFullRepaint();
 }
 
-static EFI_STATUS TypewriterLoadFile(EFI_HANDLE img) {
-    EFI_GUID liGuid = EFI_LOADED_IMAGE_PROTOCOL_GUID;
-    EFI_LOADED_IMAGE_PROTOCOL *li = NULL;
-    EFI_FILE *root = NULL;
-    EFI_FILE *f = NULL;
-    EFI_STATUS st;
-    UINT8 *buf = NULL;
-    UINTN sz;
-
-    st = uefi_call_wrapper(BS->HandleProtocol, 3, img, &liGuid, (VOID **)&li);
-    if (EFI_ERROR(st) || li == NULL || li->DeviceHandle == NULL)
-        return (st != EFI_SUCCESS) ? st : EFI_NOT_READY;
-
-    root = LibOpenRoot(li->DeviceHandle);
-    if (root == NULL)
-        return EFI_NO_MEDIA;
-
-    st = uefi_call_wrapper(root->Open, 5, root, &f, TYPEWRITER_DOC_FILENAME, EFI_FILE_MODE_READ,
-                           (UINT64)0);
-    if (EFI_ERROR(st)) {
-        uefi_call_wrapper(root->Close, 1, root);
-        return st;
-    }
-
-    buf = AllocatePool(DOC_FILE_MAX_BYTES + 1);
-    if (buf == NULL) {
-        uefi_call_wrapper(f->Close, 1, f);
-        uefi_call_wrapper(root->Close, 1, root);
-        return EFI_OUT_OF_RESOURCES;
-    }
-
-    sz = DOC_FILE_MAX_BYTES;
-    st = uefi_call_wrapper(f->Read, 3, f, &sz, buf);
-    if (!EFI_ERROR(st)) {
-        buf[sz] = 0;
-        TypewriterLoadBytesIntoDoc(buf, sz);
-    }
-    uefi_call_wrapper(f->Close, 1, f);
-    uefi_call_wrapper(root->Close, 1, root);
-    FreePool(buf);
-    return st;
-}
-
-/* If Typewriter.txt exists on the boot volume, load it (silent if missing). */
+/*
+ * Boot: prefer TWS1P01.TXT, TWS1P02.TXT, … then legacy Typewriter.txt.
+ * Missing files are silent; other errors show in the HUD.
+ */
 static VOID TypewriterAutoloadIfPresent(EFI_HANDLE img) {
-    EFI_STATUS st = TypewriterLoadFile(img);
+    UINT32 n = 0;
+    UINT32 p;
+    CHAR16 path[48];
+    EFI_STATUS st;
 
+    for (p = 1; p <= MAX_RAM_PAGES; p++) {
+        TypewriterFormatPagePath(path, sizeof(path), 0, p);
+        st = TypewriterLoadDocFromPath(img, path);
+        if (EFI_ERROR(st))
+            break;
+        CopyDocToRamPage(n);
+        n++;
+    }
+
+    if (n > 0) {
+        RamPageCount = n;
+        ActiveRamPageIndex = 0;
+        SaveSlotIndex = 0;
+        CopyRamPageToDoc(0);
+        FileOpSetBannerOk(L"Loaded slot 1 (pages)");
+        Print(L"[Typewrite] startup: loaded %u page(s) from TWS1Pxx.TXT\r\n", n);
+        return;
+    }
+
+    st = TypewriterLoadDocFromPath(img, TYPEWRITER_DOC_FILENAME);
     if (!EFI_ERROR(st)) {
+        RamPageCount = 1;
+        ActiveRamPageIndex = 0;
+        SaveSlotIndex = 0;
+        CopyDocToRamPage(0);
         FileOpSetBannerOk(L"Loaded Typewriter.txt");
         Print(L"[Typewrite] startup: loaded Typewriter.txt\r\n");
         return;
     }
-    if (st == EFI_NOT_FOUND)
+
+    if (st != EFI_NOT_FOUND) {
+        FileOpSetBannerErr(L"Startup load failed", st);
+        Print(L"[Typewrite] startup load %r\r\n", st);
+    }
+    RamPageCount = 1;
+    ActiveRamPageIndex = 0;
+    SaveSlotIndex = 0;
+    CopyDocToRamPage(0);
+}
+
+static VOID PageGoNext(EFI_HANDLE img) {
+    UINT32 cur = ActiveRamPageIndex;
+    CHAR16 path[48];
+    EFI_STATUS st;
+
+    if (cur + 1 >= MAX_RAM_PAGES) {
+        FileOpSetBannerOk(L"Page limit reached (32)");
         return;
-    FileOpSetBannerErr(L"Startup load failed", st);
-    Print(L"[Typewrite] startup load %r\r\n", st);
+    }
+    CopyDocToRamPage(cur);
+    TypewriterFormatPagePath(path, sizeof(path), SaveSlotIndex, cur + 1);
+    st = TypewriterSaveGridToPath(img, path, RamPages[cur].Grid);
+    if (EFI_ERROR(st)) {
+        FileOpSetBannerErr(L"Page save failed", st);
+        return;
+    }
+    cur++;
+    if (cur < RamPageCount) {
+        ActiveRamPageIndex = cur;
+        CopyRamPageToDoc(cur);
+    } else {
+        ActiveRamPageIndex = cur;
+        RamPageCount = cur + 1;
+        InitDocument();
+        CopyDocToRamPage(cur);
+    }
+    FileOpSetBannerOk(L"Next page");
+    Doc.Modified = TRUE;
+    HudNeedPaint = TRUE;
+}
+
+static VOID PageGoPrev(EFI_HANDLE img) {
+    UINT32 cur = ActiveRamPageIndex;
+    CHAR16 path[48];
+    EFI_STATUS st;
+
+    CopyDocToRamPage(cur);
+    TypewriterFormatPagePath(path, sizeof(path), SaveSlotIndex, cur + 1);
+    st = TypewriterSaveGridToPath(img, path, RamPages[cur].Grid);
+    if (EFI_ERROR(st))
+        FileOpSetBannerErr(L"Page save failed", st);
+    if (cur == 0) {
+        FileOpSetBannerOk(L"First page");
+        Doc.Modified = TRUE;
+        HudNeedPaint = TRUE;
+        return;
+    }
+    cur--;
+    ActiveRamPageIndex = cur;
+    CopyRamPageToDoc(cur);
+    FileOpSetBannerOk(L"Previous page");
+    Doc.Modified = TRUE;
+    HudNeedPaint = TRUE;
+}
+
+static VOID SlotCycleNext(EFI_HANDLE img) {
+    EFI_STATUS st;
+    UINT32 oldSlot = SaveSlotIndex;
+    UINT32 n;
+    CHAR16 b[64];
+
+    CopyDocToRamPage(ActiveRamPageIndex);
+    st = TypewriterFlushRamToSlot(img, oldSlot);
+    if (EFI_ERROR(st)) {
+        FileOpSetBannerErr(L"Slot flush failed", st);
+        return;
+    }
+    SaveSlotIndex = (SaveSlotIndex + 1) % SAVE_SLOT_COUNT;
+    n = TypewriterLoadSlotPagesFromDisk(img, SaveSlotIndex);
+    if (n == 0) {
+        RamPageCount = 1;
+        ActiveRamPageIndex = 0;
+        InitDocument();
+        CopyDocToRamPage(0);
+    } else {
+        RamPageCount = n;
+        ActiveRamPageIndex = 0;
+        CopyRamPageToDoc(0);
+    }
+    UnicodeSPrint(b, sizeof(b), L"Switched to slot %u", SaveSlotIndex + 1);
+    FileOpSetBannerOk(b);
+    Doc.Modified = TRUE;
+    HudNeedPaint = TRUE;
 }
 
 static VOID KeyDbgPush(const EFI_INPUT_KEY *k) {
@@ -1687,8 +1925,10 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
 }
 
 EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
-    if (!key) return EFI_SUCCESS;
-    
+    if (!key)
+        return EFI_SUCCESS;
+    KickFirmwareWatchdog();
+
     /*
      * UEFI: SCAN_UP is 0x0001; SCAN_ESC is 0x0017 (see eficon.h). Treating 0x01
      * as ESC breaks the Up Arrow on spec-compliant firmware.
@@ -1704,8 +1944,16 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
         Running = FALSE;
         return EFI_SUCCESS;
     }
-    
-    if (key->ScanCode >= SCAN_F1 && key->ScanCode <= SCAN_F9) {
+
+    if (key->ScanCode == SCAN_INSERT && key->UnicodeChar == 0) {
+        ShowLineNumbers = !ShowLineNumbers;
+        MarkFullRepaint();
+        Doc.Modified = TRUE;
+        HudNeedPaint = TRUE;
+        return EFI_SUCCESS;
+    }
+
+    if (key->ScanCode >= SCAN_F1 && key->ScanCode <= SCAN_F12) {
         switch (key->ScanCode) {
             case SCAN_F1:  /* Help */
                 ShowHelp = !ShowHelp;
@@ -1750,32 +1998,100 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
                 Doc.Modified = TRUE;
                 break;
             case SCAN_F8: {
-                EFI_STATUS fst = TypewriterSaveFile(BootImageHandle);
+                CHAR16 b[64];
+                EFI_STATUS fst = TypewriterSaveCurrentSlotPage(BootImageHandle);
 
-                if (!EFI_ERROR(fst))
-                    FileOpSetBannerOk(L"Saved Typewriter.txt");
-                else
+                if (!EFI_ERROR(fst)) {
+                    UnicodeSPrint(b, sizeof(b), L"Saved TWS%uP%02u", SaveSlotIndex + 1,
+                                  ActiveRamPageIndex + 1);
+                    FileOpSetBannerOk(b);
+                } else
                     FileOpSetBannerErr(L"Save failed", fst);
                 Print(L"[Typewrite] save %r\n", fst);
                 MarkFullRepaint();
+                HudNeedPaint = TRUE;
                 Doc.Modified = TRUE;
                 break;
             }
             case SCAN_F9: {
-                EFI_STATUS fst = TypewriterLoadFile(BootImageHandle);
+                CHAR16 b[64];
+                EFI_STATUS fst = TypewriterLoadCurrentSlotPage(BootImageHandle);
 
-                if (!EFI_ERROR(fst))
-                    FileOpSetBannerOk(L"Loaded Typewriter.txt");
-                else
+                if (!EFI_ERROR(fst)) {
+                    CopyDocToRamPage(ActiveRamPageIndex);
+                    UnicodeSPrint(b, sizeof(b), L"Loaded TWS%uP%02u", SaveSlotIndex + 1,
+                                  ActiveRamPageIndex + 1);
+                    FileOpSetBannerOk(b);
+                } else
                     FileOpSetBannerErr(L"Load failed", fst);
                 Print(L"[Typewrite] load %r\n", fst);
                 Doc.Modified = TRUE;
+                HudNeedPaint = TRUE;
                 break;
             }
+            case SCAN_F10:
+                SlotCycleNext(BootImageHandle);
+                HudNeedPaint = TRUE;
+                break;
+            case SCAN_F11:
+                PageGoNext(BootImageHandle);
+                MarkFullRepaint();
+                HudNeedPaint = TRUE;
+                break;
+            case SCAN_F12:
+                PageGoPrev(BootImageHandle);
+                MarkFullRepaint();
+                HudNeedPaint = TRUE;
+                break;
         }
+        KickFirmwareWatchdog();
         return EFI_SUCCESS;
     }
-    
+
+    if (key->UnicodeChar == 0) {
+        UINT32 oldR = Doc.CursorRow;
+        UINT32 oldC = Doc.CursorCol;
+
+        if (key->ScanCode == SCAN_LEFT) {
+            if (Doc.CursorCol > 0)
+                Doc.CursorCol--;
+            else if (Doc.CursorRow > 0) {
+                Doc.CursorRow--;
+                Doc.CursorCol = PAGE_COLS - 1;
+            }
+        } else if (key->ScanCode == SCAN_RIGHT) {
+            if (Doc.CursorCol < PAGE_COLS - 1)
+                Doc.CursorCol++;
+            else if (Doc.CursorRow < PAGE_ROWS - 1) {
+                Doc.CursorRow++;
+                Doc.CursorCol = 0;
+            }
+        } else if (key->ScanCode == SCAN_UP) {
+            if (Doc.CursorRow > 0)
+                Doc.CursorRow--;
+        } else if (key->ScanCode == SCAN_DOWN) {
+            if (Doc.CursorRow < PAGE_ROWS - 1)
+                Doc.CursorRow++;
+        } else if (key->ScanCode == SCAN_PAGE_DOWN) {
+            PageGoNext(BootImageHandle);
+            MarkFullRepaint();
+            KickFirmwareWatchdog();
+            return EFI_SUCCESS;
+        } else if (key->ScanCode == SCAN_PAGE_UP) {
+            PageGoPrev(BootImageHandle);
+            MarkFullRepaint();
+            KickFirmwareWatchdog();
+            return EFI_SUCCESS;
+        }
+
+        if (oldR != Doc.CursorRow || oldC != Doc.CursorCol) {
+            MarkDirtyRange(oldR, Doc.CursorRow);
+            Doc.Modified = TRUE;
+            KickFirmwareWatchdog();
+            return EFI_SUCCESS;
+        }
+    }
+
     if (key->UnicodeChar == 0x08) {  /* Backspace */
         if (Doc.CursorCol > 0) {
             Doc.CursorCol--;
@@ -1848,6 +2164,7 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
         Doc.Modified = TRUE;
     }
 
+    KickFirmwareWatchdog();
     return EFI_SUCCESS;
 }
 
@@ -1859,7 +2176,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     Print(L"\r\n========================================\r\n");
     Print(L"  Typewrite OS v1.0\r\n");
     Print(L"  UEFI Typewriter Application\r\n");
-    Print(L"  F1 help  F2 font  F3/F6 scale  F5 cursor  F7 key dbg  F8 save  F9 load\r\n");
+    Print(L"  F1 help  F8 save  F9 load  F10 slot  F11 next pg  F12 prev  Ins line#\r\n");
     Print(L"========================================\r\n\r\n");
     
     EFI_GUID gopGuid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
