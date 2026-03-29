@@ -57,6 +57,8 @@ ENVIRONMENT
                     QEMU’s default PC: QEMU_MACHINE= ./start-qemu.sh
     QEMU_ACCEL      Accelerator when using the default machine: kvm:tcg (KVM if
                     /dev/kvm is usable), tcg, etc. Overrides auto-detection.
+    KEEP_NVRAM      Set to 1 to prevent auto-reinitializing ./ovmf_vars.fd when
+                    its size doesn't match the system OVMF_VARS.fd template.
 
 FILES (paths relative to repo root)
     uefi-app/Typewriter.efi   Built binary (make output).
@@ -121,17 +123,31 @@ init_ovmf_vars() {
     if [[ "$FRESH_VARS" -eq 1 ]]; then
         rm -f "$OVMF_VARS_LOCAL"
     fi
-    if [[ -f "$OVMF_VARS_LOCAL" ]]; then
-        return 0
-    fi
     local template=""
     for template in /usr/share/OVMF/OVMF_VARS.fd /usr/share/qemu/OVMF_VARS.fd; do
         if [[ -f "$template" ]]; then
-            echo "Initializing NVRAM from $template"
-            cp "$template" "$OVMF_VARS_LOCAL"
+            # If we already have a vars file but it's a different size than the
+            # distro template, it's often from a different OVMF layout (e.g. a
+            # combined OVMF.fd copy). That mismatch can crash OVMF very early.
+            if [[ -f "$OVMF_VARS_LOCAL" && "${KEEP_NVRAM:-0}" != "1" ]]; then
+                local cur_sz tmpl_sz
+                cur_sz="$(stat -c '%s' "$OVMF_VARS_LOCAL" 2>/dev/null || echo 0)"
+                tmpl_sz="$(stat -c '%s' "$template" 2>/dev/null || echo 0)"
+                if [[ "$cur_sz" != "$tmpl_sz" ]]; then
+                    echo "NVRAM size mismatch ($cur_sz != $tmpl_sz). Re-initializing from $template" >&2
+                    rm -f "$OVMF_VARS_LOCAL"
+                fi
+            fi
+            if [[ ! -f "$OVMF_VARS_LOCAL" ]]; then
+                echo "Initializing NVRAM from $template"
+                cp "$template" "$OVMF_VARS_LOCAL"
+            fi
             return 0
         fi
     done
+    if [[ -f "$OVMF_VARS_LOCAL" ]]; then
+        return 0
+    fi
     echo "Initializing NVRAM from $code_path (combined OVMF image)"
     cp "$code_path" "$OVMF_VARS_LOCAL"
 }
