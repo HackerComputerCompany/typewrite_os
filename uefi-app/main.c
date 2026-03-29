@@ -4,7 +4,8 @@
  * A native UEFI typewriter experience with:
  * - Bitmap font rendering (Virgil, Inter, + retro / typewriter faces)
  * - Typewriter-style input with visual feedback
- * - F8/F9 save/load Typewriter.txt (UTF-8) on boot volume; LCD-style clock HUD
+ * - F8/F9 save/load Typewriter.txt (UTF-8) on boot volume; autoload if present at startup
+ * - LCD-style clock HUD
  * - Multiple view modes
  * 
  * Built with gnu-efi
@@ -999,7 +1000,8 @@ static VOID DrawHelpOverlay(FRAMEBUFFER *fb) {
         L"F5   Cycle cursor (default: blinking block)",
         L"F7   Toggle key debug (scan/unicode log)",
         L"F8   Save document as Typewriter.txt (UTF-8) on boot volume",
-        L"F9   Load Typewriter.txt from boot volume (replaces buffer)",
+        L"F9   Load Typewriter.txt from boot volume (replaces buffer);",
+        L"     also loaded automatically at startup when the file exists",
         L"ESC  Close help; quit app when help is hidden",
     };
     UINT32 n = sizeof(helpLines) / sizeof(helpLines[0]);
@@ -1533,6 +1535,21 @@ static EFI_STATUS TypewriterLoadFile(EFI_HANDLE img) {
     return st;
 }
 
+/* If Typewriter.txt exists on the boot volume, load it (silent if missing). */
+static VOID TypewriterAutoloadIfPresent(EFI_HANDLE img) {
+    EFI_STATUS st = TypewriterLoadFile(img);
+
+    if (!EFI_ERROR(st)) {
+        FileOpSetBannerOk(L"Loaded Typewriter.txt");
+        Print(L"[Typewrite] startup: loaded Typewriter.txt\r\n");
+        return;
+    }
+    if (st == EFI_NOT_FOUND)
+        return;
+    FileOpSetBannerErr(L"Startup load failed", st);
+    Print(L"[Typewrite] startup load %r\r\n", st);
+}
+
 static VOID KeyDbgPush(const EFI_INPUT_KEY *k) {
     UINTN i;
     for (i = 0; i < KEY_DBG_LINES - 1; i++)
@@ -1927,6 +1944,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     CursorBlinkAccumUs = 0;
 
     InitDocument();
+    TypewriterAutoloadIfPresent(ImageHandle);
     RefreshStatusCache();
     HudNeedPaint = TRUE;
 
