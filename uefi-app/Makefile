@@ -42,6 +42,7 @@ ship: all
 	@cp -f $(TARGET) fs/$(TARGET)
 	@cd $(REPO_ROOT) && \
 	git add -A -- uefi-app/ && \
+	git add -u -- start-qemu.sh README.md BUILD_SYSTEM.md 2>/dev/null || true && \
 	if git diff --staged --quiet; then \
 		echo "uefi-app: nothing to commit (already synced)."; \
 	else \

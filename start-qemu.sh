@@ -26,7 +26,7 @@ SYNOPSIS
 
 DESCRIPTION
     Runs from the repository root. By default:
-      1. make -C uefi-app          (produces uefi-app/Typewriter.efi)
+      1. make -C uefi-app all      (compile only; use bare make in uefi-app to commit+push)
       2. cp Typewriter.efi         → uefi-app/fs/ (QEMU synthetic FAT drive)
       3. Ensures uefi-app/fs/startup.nsh runs Typewriter.efi in the UEFI Shell
       4. Launches qemu-system-x86_64 with OVMF pflash + FAT + serial log
@@ -158,8 +158,8 @@ if [[ ! -d "$UEFI_DIR" ]]; then
 fi
 
 if [[ "$DO_BUILD" -eq 1 ]]; then
-    echo "Building UEFI app (make -C uefi-app)..."
-    make -C "$UEFI_DIR"
+    echo "Building UEFI app (make -C uefi-app all)..."
+    make -C "$UEFI_DIR" all
 else
     echo "Skipping build (--no-build)."
 fi

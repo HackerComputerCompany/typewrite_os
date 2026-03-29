@@ -165,7 +165,7 @@ From the **repository root**, run:
 
 The script:
 
-1. Runs **`make -C uefi-app`** (builds `uefi-app/Typewriter.efi`).
+1. Runs **`make -C uefi-app all`** (builds `uefi-app/Typewriter.efi`; avoids auto-commit; from **`uefi-app/`**, bare **`make`** commits+pushes when the tree changes).
 2. **Copies** that binary to **`uefi-app/fs/Typewriter.efi`** so QEMU’s synthetic FAT drive always matches the latest build.
 3. Ensures **`uefi-app/fs/startup.nsh`** exists (runs `Typewriter.efi` automatically in the UEFI Shell).
 4. Picks **OVMF** from common distro paths (`/usr/share/OVMF/OVMF_CODE.fd`, `/usr/share/qemu/OVMF_CODE.fd`, or `/usr/share/ovmf/OVMF.fd`), or uses **`OVMF_CODE`** if set.

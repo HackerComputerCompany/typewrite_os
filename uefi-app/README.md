@@ -54,13 +54,17 @@ flowchart LR
 
 ```bash
 cd uefi-app
-make          # builds Typewriter.efi
-make clean    # remove objects and .efi
+make          # default: build, sync fs/Typewriter.efi, commit+push if uefi-app/ changed
+make all      # compile only (no git); used by ../start-qemu.sh
+make ship     # same as bare make
+make clean    # remove objects and .efi (does not run git)
 ```
+
+Optional: `make ship MSG="Short commit subject"` (default subject is `uefi-app: build Typewriter.efi`).
 
 **gnu-efi location:** `Makefile` sets `EFIDIR` (default points at a local clone). Override if needed.
 
-For QEMU, run [`../start-qemu.sh`](../start-qemu.sh) from the repo root (it copies the freshly built `Typewriter.efi` into `fs/`). For USB/ESP, use [`../install-uefi-app.sh`](../install-uefi-app.sh).
+For QEMU, run [`../start-qemu.sh`](../start-qemu.sh) from the repo root (it runs **`make -C uefi-app all`**, then copies **`Typewriter.efi`** into **`fs/`**). For USB/ESP, use [`../install-uefi-app.sh`](../install-uefi-app.sh).
 
 ## Current status
 
