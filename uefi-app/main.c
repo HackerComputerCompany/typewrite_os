@@ -610,21 +610,24 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     FRAMEBUFFER fb;
     fb.Width = Gop->Mode->Info->HorizontalResolution;
     fb.Height = Gop->Mode->Info->VerticalResolution;
-    fb.Pitch = Gop->Mode->Info->PixelsPerScanLine * 4;
+    /*
+     * PixelsPerScanLine can be 0 on some firmware; Pitch must never be 0 or all
+     * DrawPixel addressing breaks (black screen / single column).
+     */
+    {
+        UINT32 ppl = Gop->Mode->Info->PixelsPerScanLine;
+        if (ppl == 0 || ppl < fb.Width)
+            ppl = fb.Width;
+        fb.Pitch = ppl * 4;
+    }
     FbFront = (UINT8*)(UINTN)Gop->Mode->FrameBufferBase;
     fb.PixelData = FbFront;
-    FbCopyBytes = (UINTN)fb.Pitch * (UINTN)fb.Height;
-    
-    {
-        UINT8 *back = NULL;
-        EFI_STATUS bstat = uefi_call_wrapper(BS->AllocatePool, 3, EfiBootServicesData, FbCopyBytes, (VOID**)&back);
-        if (!EFI_ERROR(bstat) && back != NULL) {
-            fb.PixelData = back;
-        } else {
-            Print(L"Note: back buffer alloc failed; drawing directly to framebuffer (may flicker).\n");
-            FbCopyBytes = 0;
-        }
-    }
+    /*
+     * Off-screen pool + CopyMem worked on some hosts but leaves a black display on
+     * other OVMF/QEMU paths (scanout vs CPU writes). Draw directly to GOP FB; use
+     * Doc.Modified coalescing to limit full clears. Revisit with GOP Blt if needed.
+     */
+    FbCopyBytes = 0;
     
     // Detect pixel format from GOP
     fb.PixelFormat = Gop->Mode->Info->PixelFormat;

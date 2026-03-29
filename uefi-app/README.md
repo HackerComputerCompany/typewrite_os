@@ -69,7 +69,7 @@ For QEMU, run [`../start-qemu.sh`](../start-qemu.sh) from the repo root (it copi
 - **Valid PE32+** UEFI application (firmware loads it; prior “Unsupported format” came from bad `objcopy`/link — fixed per `BUILD_SYSTEM.md`).
 - **QEMU + OVMF** with FAT payload under `fs/` (e.g. `startup.nsh`).
 - **GOP**: mode set, framebuffer base/pitch; large region fills verified on QEMU and some real hardware.
-- **Virgil / Helvetica** text: proportional bitmap stride matches `fonts/convert_font.py`; redraw coalescing + **compositing back-buffer** (`FlipFramebuffer`) to reduce full-frame flashing on key events (see [`../GRAPHICS_DEBUG.md`](../GRAPHICS_DEBUG.md)).
+- **Virgil / Helvetica** text: proportional bitmap stride matches `fonts/convert_font.py`; redraw coalescing when **`Doc.Modified`** (see [`../GRAPHICS_DEBUG.md`](../GRAPHICS_DEBUG.md) for pitch / framebuffer notes).
 
 ### Open
 

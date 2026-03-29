@@ -8,7 +8,7 @@
 
 - **Bitmap fonts** (Virgil / Helvetica) match **`fonts/convert_font.py`** layout: per-glyph width, row stride \((w+7)/8\), variable height; proportional advance and cursor position. Landed in commit **`cd386303`**.
 - **Idle flicker** reduced by redrawing only when **`Doc.Modified`**.
-- **Keystroke flash** reduced by drawing into a **pool back-buffer** and **`CopyMem`** once to the GOP **`FrameBufferBase`** per frame (`FlipFramebuffer` in **`uefi-app/main.c`**). If **`AllocatePool`** fails, the app draws directly and may still flash.
+- **Keystroke flash:** pool + **`CopyMem`** to **`FrameBufferBase`** was tried but caused a **black screen** on some OVMF/QEMU paths; **current** code draws **directly** to the GOP framebuffer (`FlipFramebuffer` is a no-op). Mitigation: **`Doc.Modified`** coalescing. **Pitch** is clamped so **`PixelsPerScanLine` is never 0** (that also caused black/wrong output).
 
 ### Font rendering — root cause fixed in code
 
@@ -31,9 +31,7 @@ The main loop was calling **`RenderDocument` ~100×/s** (full-screen clear each 
 
 ### Full-frame flash on each keystroke
 
-Even with **`Doc.Modified`**, **`RenderDocument`** still does **`ClearScreen`** then redraws everything into the **visible GOP framebuffer**. The hardware can show that **cleared** frame briefly → perceived **flash** on every key.
-
-**Fix:** **compositing back-buffer** — allocate a same-size **`EfiBootServicesData`** pool, set **`fb.PixelData`** to it for all **`DrawPixel`** paths, then **`CopyMem`** once into **`FrameBufferBase`** at end of **`RenderDocument`** (`FlipFramebuffer`). The user sees a single update per frame. If pool allocation fails, the app falls back to drawing directly (may flicker). See **`uefi-app/main.c`** (`FbFront`, `FlipFramebuffer`).
+Even with **`Doc.Modified`**, **`RenderDocument`** still does **`ClearScreen`** then redraws into the framebuffer — a brief **flash** is possible. **Off-screen pool + `CopyMem`** was reverted after black-screen regressions; a future fix may use **GOP `Blt`** with **`EfiBltBufferToVideo`**.
 
 The **square** tests used tight loops writing many pixels and did not use the font decode path, so they could “work” while text looked broken.
 
