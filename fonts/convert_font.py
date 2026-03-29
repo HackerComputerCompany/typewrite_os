@@ -23,7 +23,11 @@ import freetype
 def render_glyph(face, char, size):
     """
     Render a character to a bitmap using FreeType.
-    Returns a tuple: (width, height, advance_width, bitmap_data)
+    Returns: (width, height, advance_width, bitmap_data, bitmap_top)
+
+    bitmap_top: pixels from horizontal baseline up to top row of the bitmap
+    (FreeType glyph.bitmap_top). Required for baseline-aligned drawing so
+    descenders (g, p, q, y) extend below the baseline correctly.
     """
     # Load the glyph
     glyph_index = face.get_char_index(char)
@@ -31,6 +35,7 @@ def render_glyph(face, char, size):
     
     glyph = face.glyph
     bitmap = glyph.bitmap
+    bitmap_top = int(glyph.bitmap_top)
     
     # Get metrics
     width = bitmap.width
@@ -64,7 +69,7 @@ def render_glyph(face, char, size):
     while len(packed_data) < ((width + 7) // 8) * height:
         packed_data.append(0)
     
-    return width, height, advance, packed_data
+    return width, height, advance, packed_data, bitmap_top
 
 
 def convert_font(input_file, output_name, size=24):
@@ -90,14 +95,15 @@ def convert_font(input_file, output_name, size=24):
     for ascii_code in range(32, 127):
         char = chr(ascii_code)
         try:
-            width, height, advance, bitmap = render_glyph(face, char, size)
+            width, height, advance, bitmap, bmp_top = render_glyph(face, char, size)
             glyphs.append({
                 'char': char,
                 'ascii': ascii_code,
                 'width': width,
                 'height': height,
                 'advance': advance,
-                'bitmap': bitmap
+                'bitmap': bitmap,
+                'bitmap_top': bmp_top,
             })
         except Exception as e:
             print(f"  Warning: Failed to render '{char}': {e}")
@@ -108,15 +114,19 @@ def convert_font(input_file, output_name, size=24):
                 'width': size // 2,
                 'height': size,
                 'advance': size // 2,
-                'bitmap': [0] * ((size // 2 + 7) // 8 * size)
+                'bitmap': [0] * ((size // 2 + 7) // 8 * size),
+                'bitmap_top': size,
             })
     
     # Calculate metrics
     max_width = max(g['width'] for g in glyphs)
     max_height = max(g['height'] for g in glyphs)
+    max_top = max(g['bitmap_top'] for g in glyphs)
+    max_descent = max(g['height'] - g['bitmap_top'] for g in glyphs)
+    line_box = max_top + max_descent
     row_bytes = (max_width + 7) // 8
     
-    print(f"Max glyph size: {max_width}x{max_height}")
+    print(f"Max glyph size: {max_width}x{max_height}, ascent={max_top}, descent={max_descent}, line_box={line_box}")
     
     # Generate C header
     output_file = f"{output_name}.h"
@@ -136,11 +146,14 @@ def convert_font(input_file, output_name, size=24):
 #ifndef {output_name.upper()}_H
 #define {output_name.upper()}_H
 
-#include <Uefi.h>
+#include <efi.h>
 
 /* Font metadata */
 #define {output_name.upper()}_SIZE       {size}
 #define {output_name.upper()}_HEIGHT     {max_height}
+#define {output_name.upper()}_MAX_TOP    {max_top}
+#define {output_name.upper()}_DESCENT    {max_descent}
+#define {output_name.upper()}_LINE_BOX   {line_box}
 #define {output_name.upper()}_MAX_WIDTH {max_width}
 #define {output_name.upper()}_ROW_BYTES  {row_bytes}
 #define {output_name.upper()}_ASC_MIN   32
@@ -162,6 +175,14 @@ def convert_font(input_file, output_name, size=24):
         f.write(f"static const UINT8 {output_name}_widths[] = {{\n")
         for g in glyphs:
             f.write(f"  {g['width']},  /* '{g['char']}' */\n")
+        f.write("};\n\n")
+        
+        # Distance from baseline to top of each glyph bitmap (see FreeType bitmap_top)
+        f.write(f"/* Pixels from baseline to top of bitmap per glyph */\n")
+        f.write(f"static const UINT8 {output_name}_bitmap_top[] = {{\n")
+        for g in glyphs:
+            top = min(int(g['bitmap_top']), 255)
+            f.write(f"  {top},  /* '{g['char']}' */\n")
         f.write("};\n\n")
         
         # Write glyph advance widths
