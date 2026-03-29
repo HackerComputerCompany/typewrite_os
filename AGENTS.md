@@ -35,7 +35,7 @@ Invalid PE output used to make the firmware report **“Unsupported format”**.
 
 ## Open problems (UEFI / graphics)
 
-- **`GRAPHICS_DEBUG.md`**: Bitmap font decode is fixed (proportional stride, etc.); **typing flash** is mitigated with an off-screen compositing buffer + **`CopyMem`** per frame. Remaining real-hardware quirks may need GOP **`Blt()`** or cache/barrier tests.
+- **`GRAPHICS_DEBUG.md`**: Bitmap font decode is fixed (proportional stride, etc.). **Direct GOP framebuffer** drawing (off-screen pool + `CopyMem` reverted — black screen on some OVMF builds). **GOP pitch** must not be 0 (`PixelsPerScanLine` clamp). Keystroke flash: **`Doc.Modified`** only; future **`Blt()`** possible.
 
 ## Key paths
 
