@@ -7,6 +7,7 @@ A minimalist **typewriter-style** writing environment (Freewrite-inspired), expl
 
 ## Where to look first
 
+- **[`MILESTONE.md`](MILESTONE.md)** — **Current milestone:** beta-ready UEFI typewriter (what works, how to run, doc index).
 - **[`AGENTS.md`](AGENTS.md)** — Return-to-context summary for you and coding agents (tracks, build commands, open issues).
 - **[`BUILD_SYSTEM.md`](BUILD_SYSTEM.md)** — Valid PE32+ EFI build (`objcopy`, linker flags), QEMU.
 - **[`GRAPHICS_DEBUG.md`](GRAPHICS_DEBUG.md)** — GOP / framebuffer status on QEMU vs real hardware.
@@ -19,7 +20,7 @@ cd uefi-app
 make
 ```
 
-Output: **`Typewriter.efi`**. Adjust `EFIDIR` in `uefi-app/Makefile` if gnu-efi lives elsewhere on your machine.
+Output: **`Typewriter.efi`**; default **`make`** also syncs **`fs/Typewriter.efi`** and **commits + pushes** when the tree changes (see [`uefi-app/README.md`](uefi-app/README.md)). Use **`make all`** for compile only. Adjust `EFIDIR` in `uefi-app/Makefile` if gnu-efi lives elsewhere on your machine.
 
 ## Run in QEMU
 

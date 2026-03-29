@@ -13,13 +13,13 @@ Use this file when you (or an assistant) return to the repo after time away. It 
 | **Native UEFI** | Single `Typewriter.efi` — boots from firmware, no Linux | **Yes** — primary active work under `uefi-app/` |
 | **Linux + Buildroot** | Minimal distro + framebuffer typewrite app (FreeType, etc.) | **Partially** — Buildroot tree and package recipes exist; the **`typewrite/` application source tree is not present** here. `buildroot-2024.02/package/typewrite/typewrite.mk` still sets `TYPEWRITE_SITE` to `.../typewrite_os/typewrite`; restore or repoint that path before expecting Buildroot to build the app. |
 
-Documentation elsewhere may still describe only the Linux path (`PROJECT_STATUS.md` history, `FEATURES.md`). **Authoritative “what works now”** for firmware: `uefi-app/README.md`, `BUILD_SYSTEM.md`, `GRAPHICS_DEBUG.md`.
+Documentation elsewhere may still describe only the Linux path (`PROJECT_STATUS.md` history, `FEATURES.md`). **Authoritative “what works now”** for firmware: **`MILESTONE.md`**, `uefi-app/README.md`, `BUILD_SYSTEM.md`, `GRAPHICS_DEBUG.md`.
 
 ## Quick start (UEFI app)
 
 ```bash
 cd uefi-app
-make    # produces Typewriter.efi
+make    # default: build + ship (commit/push if uefi-app/ changed); make all = compile only
 ```
 
 Requirements:
@@ -35,15 +35,15 @@ Invalid PE output used to make the firmware report **“Unsupported format”**.
 
 ## Open problems (UEFI / graphics)
 
-- **`GRAPHICS_DEBUG.md`**: Bitmap font decode is fixed (proportional stride, etc.). **Direct GOP framebuffer** drawing (off-screen pool + `CopyMem` reverted — black screen on some OVMF builds). **GOP pitch** must not be 0 (`PixelsPerScanLine` clamp). Keystroke flash: **`Doc.Modified`** only; future **`Blt()`** possible.
+- **`GRAPHICS_DEBUG.md`**: Bitmap font decode is fixed (proportional stride, baseline via `bitmap_top`, etc.). **Direct GOP framebuffer** drawing (off-screen pool + `CopyMem` reverted — black screen on some OVMF builds). **GOP pitch** must not be 0 (`PixelsPerScanLine` clamp). Typing uses **incremental** stripe repaint to limit flicker; future **`Blt()`** possible.
 
 ## Key paths
 
 | Path | Contents |
 |------|-----------|
 | `uefi-app/main.c` | Main UEFI application |
-| `uefi-app/Makefile` | EFI build; `TARGET = Typewriter.efi` |
-| `uefi-app/virgil.h`, `helvetica.h` | Font data |
+| `uefi-app/Makefile` | EFI build; default **ship** (git); `make all` for compile only |
+| `fonts/virgil.h`, `fonts/helvetica.h` | Font bitmaps (regenerate with `fonts/convert_font.py`) |
 | `uefi-app/fs/` | QEMU FAT contents (e.g. copied `Typewriter.efi`) |
 | `buildroot-2024.02/` | Vendored Buildroot; custom `package/typewrite/`, boards |
 | `start-qemu.sh` | QEMU launcher |
@@ -53,6 +53,7 @@ Invalid PE output used to make the firmware report **“Unsupported format”**.
 
 ## Doc index
 
+- **`MILESTONE.md`** — Beta milestone summary (UEFI editor capabilities, March 2026)
 - **`BUILD_SYSTEM.md`** — PE32+ / objcopy / linker, QEMU invocation
 - **`GRAPHICS_DEBUG.md`** — GOP / framebuffer test status
 - **`uefi-app/README.md`** — UEFI experiment overview and build flow
@@ -67,4 +68,4 @@ Invalid PE output used to make the firmware report **“Unsupported format”**.
 - After changing the EFI build, verify **`Typewriter.efi`** is still valid PE32+ (see `BUILD_SYSTEM.md`).
 - If adding Linux app sources back, align **`typewrite.mk`** `TYPEWRITE_SITE` with the real path and update this file.
 
-Last reviewed: **2026-03-29**.
+Last reviewed: **2026-03-29** (milestone doc added).
