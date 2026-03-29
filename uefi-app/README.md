@@ -95,9 +95,9 @@ For QEMU, run [`../start-qemu.sh`](../start-qemu.sh) from the repo root (it runs
 | **F9** | **Load** **`Typewriter.txt`** from the boot volume (replaces the in-memory buffer). |
 | **ESC** | Close help if open; otherwise **exit** (uses UEFI **SCAN_ESC** `0x0017`, not Up Arrow `0x0001`) |
 
-### Battery HUD (laptops)
+### Status HUD (laptops + clock)
 
-Core UEFI does **not** define a portable “battery %” API. If the firmware publishes Microsoft’s optional **`EFI_BATTERY_CHARGING_PROTOCOL`** (common on some OEM bring-up stacks), the bottom strip shows **SOC %**, **AC** / **DC**, and a segmented bar. Otherwise it shows **`--%`** — the layout still looks like a small LCD status line.
+Core UEFI does **not** define a portable “battery %” API. If the firmware publishes Microsoft’s optional **`EFI_BATTERY_CHARGING_PROTOCOL`** (common on some OEM bring-up stacks), a **lower-right** panel shows **SOC %** (7-segment style, not the document font) and a small **AC** indicator. Otherwise the digits show **`--`**. A **centered** **HH:MM** clock uses the same gray LCD face (from **`RT->GetTime`** when available; otherwise placeholder digits). Battery and clock values are **refreshed about every 45 seconds** to limit firmware calls and avoid HUD flicker; the HUD is only repainted when the document does a **full** clear (help, font change, etc.), on that timer, or when a **save/load** banner appears or clears. File status text uses the built-in simple font on the left of the status row.
 
 ## Source layout
 

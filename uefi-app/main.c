@@ -4,7 +4,7 @@
  * A native UEFI typewriter experience with:
  * - Bitmap font rendering (Virgil, Inter, + retro / typewriter faces)
  * - Typewriter-style input with visual feedback
- * - F8/F9 save/load Typewriter.txt (UTF-8) on boot volume; optional battery HUD
+ * - F8/F9 save/load Typewriter.txt (UTF-8) on boot volume; LCD-style clock HUD
  * - Multiple view modes
  * 
  * Built with gnu-efi
@@ -23,36 +23,6 @@
 #include <press_start_2p.h>
 #include <ibm_plex_mono.h>
 #include <share_tech_mono.h>
-
-/*
- * Microsoft bring-up EFI_BATTERY_CHARGING_PROTOCOL (optional). Not part of base UEFI;
- * some OEM firmware exposes it for SOC %. If missing, the HUD shows "--%".
- * https://learn.microsoft.com/en-us/windows-hardware/drivers/bringup/efi-battery-charging-protocol
- */
-typedef struct _EFI_BATTERY_CHARGING_PROTOCOL EFI_BATTERY_CHARGING_PROTOCOL;
-
-struct _EFI_BATTERY_CHARGING_PROTOCOL {
-    EFI_STATUS (EFIAPI *GetBatteryStatus)(EFI_BATTERY_CHARGING_PROTOCOL *This,
-                                          OUT UINT32 *StateOfCharge,
-                                          OUT UINT32 *RatedCapacity,
-                                          OUT INT32 *ChargeCurrent);
-    EFI_STATUS (EFIAPI *ChargeBattery)(EFI_BATTERY_CHARGING_PROTOCOL *This,
-                                         IN UINT32 ChargerType,
-                                         IN UINT32 MaxCurrentmA,
-                                         IN UINT32 TargetmAh,
-                                         IN UINTN Reserved);
-    UINT32 Revision;
-    EFI_STATUS (EFIAPI *GetBatteryInformation)(EFI_BATTERY_CHARGING_PROTOCOL *This,
-                                               OUT UINT32 *StateOfCharge,
-                                               OUT INT32 *CurrentIntoBattery,
-                                               OUT UINT32 *BatteryTerminalVoltage,
-                                               OUT INT32 *BatteryTemperature,
-                                               OUT UINT32 *USBCableVoltage,
-                                               OUT UINT32 *USBCableCurrent);
-};
-
-#define EFI_BATTERY_CHARGING_PROTOCOL_GUID                                     \
-    { 0x840cb643, 0x8198, 0x428a, { 0xa8, 0xb3, 0xa0, 0x72, 0xce, 0x57, 0xcd, 0xb9 } }
 
 #define TYPEWRITER_DOC_FILENAME L"Typewriter.txt"
 #define DOC_FILE_MAX_BYTES      (128 * 1024)
@@ -241,16 +211,12 @@ typedef struct {
 } DOCUMENT;
 
 static EFI_GRAPHICS_OUTPUT_PROTOCOL *Gop;
-static EFI_BATTERY_CHARGING_PROTOCOL *BattChargeProto;
 static EFI_HANDLE BootImageHandle;
 static CHAR16 FileOpBanner[96];
 static UINT32 FileOpBannerRemainUs = 0;
 static BOOLEAN HudNeedPaint = FALSE;
 
-/* Cached status (updated only every STATUS_REFRESH_US to limit firmware calls + flicker). */
-static UINT32 CachedBattSoc = 0;
-static BOOLEAN CachedBattValid = FALSE;
-static BOOLEAN CachedBattAc = FALSE;
+/* Cached clock (updated only every STATUS_REFRESH_US to limit firmware calls + HUD flicker). */
 static UINT8 CachedClockH = 0;
 static UINT8 CachedClockM = 0;
 static BOOLEAN CachedClockOk = FALSE;
@@ -268,14 +234,12 @@ typedef enum {
     FONT_NUM
 } FONT_KIND;
 
-static FONT_KIND CurrentFontKind = FONT_VIRGIL;
+static FONT_KIND CurrentFontKind = FONT_COURIER_PRIME;
 static BOOLEAN ShowHelp = FALSE;
 static BOOLEAN KeyDebugMode = FALSE;
 
 #define KEY_DBG_LINES 8
 #define KEY_DBG_COLS 72
-
-#define HELP_LINE_GAP 24
 
 #define RGB(r, g, b) ((r) | ((g) << 8) | ((b) << 16))
 
@@ -332,6 +296,10 @@ static BOOLEAN RepaintFull = TRUE;
 static UINT32 DirtyLineTop = 1;
 static UINT32 DirtyLineBottom = 0; /* invalid until MarkDirtyRange (Top <= Bottom). */
 static UINT32 LastPaintedLineCount = 0;
+/* Right edge (x) last cleared+painted per line — avoids full-width line clears. */
+static UINT32 LastLinePaintedRight[MAX_LINES];
+/* Blinking cursor: repaint only the cursor band, not the whole line. */
+static BOOLEAN CursorBlinkRedraw = FALSE;
 
 #define CHAR_GAP 2
 /* Word space advance multiplier (advance for ' ' is this × normal font advance). */
@@ -343,6 +311,7 @@ static UINT32 GlyphAdvance(CHAR16 ch);
 
 static VOID MarkFullRepaint(VOID) {
     RepaintFull = TRUE;
+    SetMem(LastLinePaintedRight, sizeof(LastLinePaintedRight), 0);
 }
 
 /*
@@ -847,6 +816,183 @@ EFI_STATUS DrawString(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 *str, UINT32 f
     return EFI_SUCCESS;
 }
 
+static VOID DrawCharOnDocLine(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 c, UINT32 fgColor, UINT32 bgColor) {
+    UINT32 lineBox = ActiveFontLineHeight() * FontSize;
+
+    if (CurrentFontKind == FONT_SIMPLE) {
+        UINT32 gh = GlyphBitmapHeight(c);
+        UINT32 yDraw = y + lineBox - gh * FontSize;
+
+        DrawChar(fb, x, yDraw, c, fgColor, bgColor);
+    } else {
+        UINT32 baselineY = y + gBitmapFonts[CurrentFontKind].max_top * FontSize;
+
+        DrawChar(fb, x, baselineY, c, fgColor, bgColor);
+    }
+}
+
+static UINT32 CursorBarThickness(VOID) {
+    UINT32 t = FontSize;
+
+    return t < 1 ? 1 : t;
+}
+
+static UINT32 CursorGlyphWidthOnLine(CHAR16 *ln) {
+    UINT32 gw;
+
+    if (Doc.CursorX < MAX_CHARS_PER_LINE && ln[Doc.CursorX] != 0)
+        gw = GlyphAdvance(ln[Doc.CursorX]);
+    else
+        gw = GlyphAdvance(L' ');
+    if (gw < (UINT32)FontSize)
+        gw = FontSize;
+    return gw;
+}
+
+/* Right x of cursor bar/block on this line (0 if cursor not on line or help hides doc). */
+static UINT32 LineCursorRightEdgePx(CHAR16 *ln, UINT32 lineIdx) {
+    UINT32 cx;
+    UINT32 cw;
+
+    if (Doc.CursorY != lineIdx || ShowHelp)
+        return 0;
+    cx = CursorPixelX(ln, Doc.CursorX);
+    if (CursorMode == CURSOR_BAR || CursorMode == CURSOR_BAR_BLINK)
+        cw = CursorBarThickness();
+    else
+        cw = CursorGlyphWidthOnLine(ln);
+    return cx + cw;
+}
+
+static UINT32 LinePaintRightX(const FRAMEBUFFER *fb, CHAR16 *ln, UINT32 lineIdx) {
+    UINT32 r = LEFT_MARGIN + LinePixelWidth(ln);
+    UINT32 cr = LineCursorRightEdgePx(ln, lineIdx);
+
+    if (cr > r)
+        r = cr;
+    r += FontSize * 2;
+    if (r > fb->Width)
+        r = fb->Width;
+    return r;
+}
+
+static VOID RepaintDocLineCursorBand(FRAMEBUFFER *fb, UINT32 line, UINT32 bgColor, UINT32 fgColor) {
+    CHAR16 *ln = Doc.Text[line];
+    UINT32 lineStep = LineAdvance();
+    UINT32 y = TOP_MARGIN + line * lineStep;
+    UINT32 lineBodyH = ActiveFontLineHeight() * FontSize;
+    UINT32 cx = CursorPixelX(ln, Doc.CursorX);
+    UINT32 cw;
+
+    if (CursorMode == CURSOR_BAR || CursorMode == CURSOR_BAR_BLINK)
+        cw = CursorBarThickness();
+    else
+        cw = CursorGlyphWidthOnLine(ln);
+
+    {
+        UINT32 bandL = cx;
+        UINT32 bandR = cx + cw;
+        UINT32 drawL = bandL;
+        UINT32 drawR = bandR;
+        UINT32 firstCol = (UINT32)-1;
+        UINT32 lastCol = 0;
+        UINT32 px = LEFT_MARGIN;
+
+        for (UINT32 i = 0; i < MAX_CHARS_PER_LINE && ln[i]; i++) {
+            UINT32 adv = GlyphAdvance(ln[i]);
+            UINT32 gL = px;
+            UINT32 gR = px + adv;
+
+            if (gR > bandL && gL < bandR) {
+                if (firstCol == (UINT32)-1)
+                    firstCol = i;
+                lastCol = i;
+                if (gL < drawL)
+                    drawL = gL;
+                if (gR > drawR)
+                    drawR = gR;
+            }
+            px += adv;
+        }
+        if (drawL >= fb->Width)
+            return;
+        if (drawR > fb->Width)
+            drawR = fb->Width;
+        DrawRect(fb, drawL, y, drawR - drawL, lineBodyH, bgColor);
+        if (firstCol != (UINT32)-1) {
+            px = CursorPixelX(ln, firstCol);
+            for (UINT32 i = firstCol; i <= lastCol && i < MAX_CHARS_PER_LINE && ln[i]; i++) {
+                DrawCharOnDocLine(fb, px, y, ln[i], fgColor, bgColor);
+                px += GlyphAdvance(ln[i]);
+            }
+        }
+    }
+
+    if (CursorShouldDrawThisFrame())
+        DrawRect(fb, cx, y, cw, lineBodyH, fgColor);
+}
+
+static VOID DrawHelpOverlay(FRAMEBUFFER *fb) {
+    UINT32 hf = RGB(28, 28, 32);
+    UINT32 hb = RGB(230, 224, 210);
+    UINT32 hd = RGB(72, 72, 88);
+    static const CHAR16 *const helpLines[] = {
+        L"Typewrite OS - Help",
+        L"F1   Toggle this help",
+        L"F2   Cycle font (9): Virgil, Inter, Special Elite,",
+        L"     Courier Prime, VT323, Press Start 2P,",
+        L"     IBM Plex Mono, Share Tech Mono, Simple",
+        L"F3   Increase font size (scale)",
+        L"F6   Decrease font size (scale)",
+        L"F4   Cycle background color",
+        L"F5   Cycle cursor (default: blinking block)",
+        L"F7   Toggle key debug (scan/unicode log)",
+        L"F8   Save document as Typewriter.txt (UTF-8) on boot volume",
+        L"F9   Load Typewriter.txt from boot volume (replaces buffer)",
+        L"ESC  Close help; quit app when help is hidden",
+    };
+    UINT32 n = sizeof(helpLines) / sizeof(helpLines[0]);
+    UINT32 step = LineAdvance();
+    UINT32 margin = FontSize * 6;
+    UINT32 inner = FontSize * 5;
+    UINT32 maxTw = 0;
+    UINT32 i;
+
+    for (i = 0; i < n; i++) {
+        UINT32 w = StringPixelWidthChars(helpLines[i]);
+
+        if (w > maxTw)
+            maxTw = w;
+    }
+    {
+        UINT32 bw = maxTw + inner * 2;
+
+        if (bw < 120)
+            bw = 120;
+        if (bw > fb->Width - margin * 2 && fb->Width > margin * 2 + 120)
+            bw = fb->Width - margin * 2;
+        {
+            UINT32 bh = n * step + inner * 2;
+
+            if (bh > fb->Height - margin * 2 && fb->Height > margin * 2 + step * 2)
+                bh = fb->Height - margin * 2;
+            {
+                UINT32 bx = (fb->Width > bw) ? (fb->Width - bw) / 2 : margin;
+                UINT32 by = (fb->Height > bh) ? (fb->Height - bh) / 2 : margin;
+                UINT32 lx = bx + inner;
+                UINT32 ly = by + inner;
+
+                DrawRect(fb, bx - 2, by - 2, bw + 4, bh + 4, hd);
+                DrawRect(fb, bx, by, bw, bh, hb);
+                for (i = 0; i < n; i++) {
+                    DrawString(fb, lx, ly, (CHAR16 *)helpLines[i], hf, hb);
+                    ly += step;
+                }
+            }
+        }
+    }
+}
+
 EFI_STATUS ClearScreen(FRAMEBUFFER *fb, UINT32 bgColor) {
     // Use direct framebuffer for full screen clear
     for (UINT32 y = 0; y < fb->Height; y++) {
@@ -945,66 +1091,16 @@ VOID InitDocument(VOID) {
     Doc.Text[0][0] = 0;
     Doc.Modified = TRUE;
     ZeroMem(KeyDbgLines, sizeof(KeyDbgLines));
+    CursorBlinkRedraw = FALSE;
     MarkFullRepaint();
     DirtyLineTop = 1;
     DirtyLineBottom = 0;
     LastPaintedLineCount = 0;
 }
 
-static VOID BattTryLocate(VOID) {
-    EFI_GUID guid = EFI_BATTERY_CHARGING_PROTOCOL_GUID;
-
-    BattChargeProto = NULL;
-    if (EFI_ERROR(LibLocateProtocol(&guid, (VOID **)&BattChargeProto)))
-        BattChargeProto = NULL;
-}
-
-static VOID BattSample(UINT32 *soc, BOOLEAN *haveSoc, BOOLEAN *onAc) {
-    UINT32 s = 0;
-    INT32 cur = 0;
-    UINT32 termV = 0;
-    INT32 batT = 0;
-    UINT32 usbV = 0;
-    UINT32 usbI = 0;
-    EFI_STATUS st;
-
-    *haveSoc = FALSE;
-    *onAc = FALSE;
-    *soc = 0;
-    if (BattChargeProto == NULL)
-        return;
-
-    if (BattChargeProto->Revision >= 0x10002 && BattChargeProto->GetBatteryInformation != NULL) {
-        st = uefi_call_wrapper(BattChargeProto->GetBatteryInformation, 7, BattChargeProto,
-                               &s, &cur, &termV, &batT, &usbV, &usbI);
-        if (!EFI_ERROR(st) && s <= 150) {
-            if (s > 100)
-                s = 100;
-            *soc = s;
-            *haveSoc = TRUE;
-            *onAc = (cur > 0);
-            return;
-        }
-    }
-    if (BattChargeProto->GetBatteryStatus != NULL) {
-        UINT32 cap = 0;
-
-        st = uefi_call_wrapper(BattChargeProto->GetBatteryStatus, 4, BattChargeProto, &s, &cap, &cur);
-        if (!EFI_ERROR(st) && s <= 150) {
-            if (s > 100)
-                s = 100;
-            *soc = s;
-            *haveSoc = TRUE;
-            *onAc = (cur > 0);
-        }
-    }
-}
-
 static VOID RefreshStatusCache(VOID) {
     EFI_TIME tm;
     EFI_STATUS st;
-
-    BattSample(&CachedBattSoc, &CachedBattValid, &CachedBattAc);
 
     CachedClockOk = FALSE;
     if (RT != NULL && RT->GetTime != NULL) {
@@ -1098,7 +1194,7 @@ static VOID LcdDrawColon(FRAMEBUFFER *fb, UINT32 x, UINT32 y, UINT32 ch, UINT32 
     DrawRect(fb, x, y + 2 * ch / 3 - d / 2, d, d, onC);
 }
 
-/* Gray face, black “on” segments, slightly darker gray “off” segments (90s LCD). */
+/* Gray face, black “on” segments: centered 7-seg HH:MM clock + optional file banner (left). */
 static VOID DrawCasioStatusHud(FRAMEBUFFER *fb, UINT32 hudY, UINT32 docBg) {
     UINT32 face = RGB(168, 172, 158);
     UINT32 frame = RGB(72, 74, 70);
@@ -1110,11 +1206,7 @@ static VOID DrawCasioStatusHud(FRAMEBUFFER *fb, UINT32 hudY, UINT32 docBg) {
     UINT32 clockW = 4 * cw + gap * 2 + 6;
     UINT32 clockH = ch + 8;
     UINT32 clockX = (fb->Width > clockW) ? (fb->Width - clockW) / 2 : 4;
-    UINT32 battW = 3 * cw + 36;
-    UINT32 battH = ch + 8;
-    UINT32 battX = (fb->Width > battW + 10) ? fb->Width - battW - 10 : 4;
     UINT32 h1, h2, m1, m2;
-    UINT32 p1, p2, p3;
     FONT_KIND saveFont;
     UINT32 saveFs;
 
@@ -1122,12 +1214,9 @@ static VOID DrawCasioStatusHud(FRAMEBUFFER *fb, UINT32 hudY, UINT32 docBg) {
         return;
 
     DrawRect(fb, clockX - 3, hudY, clockW + 6, clockH, docBg);
-    DrawRect(fb, battX - 3, hudY, battW + 6, battH, docBg);
 
     DrawRect(fb, clockX - 3, hudY, clockW + 6, clockH, frame);
     DrawRect(fb, clockX - 1, hudY + 2, clockW + 2, clockH - 4, face);
-    DrawRect(fb, battX - 3, hudY, battW + 6, battH, frame);
-    DrawRect(fb, battX - 1, hudY + 2, battW + 2, battH - 4, face);
 
     if (CachedClockOk) {
         h1 = CachedClockH / 10;
@@ -1151,33 +1240,6 @@ static VOID DrawCasioStatusHud(FRAMEBUFFER *fb, UINT32 hudY, UINT32 docBg) {
         LcdDraw7SegDigit(fb, cx, cy, cw, ch, m1, segOn, segOff);
         cx += cw + gap;
         LcdDraw7SegDigit(fb, cx, cy, cw, ch, m2, segOn, segOff);
-    }
-
-    if (CachedBattValid) {
-        p1 = CachedBattSoc / 100;
-        p2 = (CachedBattSoc / 10) % 10;
-        p3 = CachedBattSoc % 10;
-    } else {
-        p1 = 10;
-        p2 = 10;
-        p3 = 11;
-    }
-
-    {
-        UINT32 by = hudY + 5;
-        UINT32 bx = battX + 6;
-
-        LcdDraw7SegDigit(fb, bx, by, cw, ch, p1, segOn, segOff);
-        bx += cw + gap;
-        LcdDraw7SegDigit(fb, bx, by, cw, ch, p2, segOn, segOff);
-        bx += cw + gap;
-        LcdDraw7SegDigit(fb, bx, by, cw, ch, p3, segOn, segOff);
-        bx += cw + 5;
-        DrawRect(fb, bx, by + 2, 2, ch - 10, segOn);
-        DrawRect(fb, bx + 5, by + 4, 5, 2, segOn);
-        DrawRect(fb, bx + 3, by + ch - 8, 6, 2, segOn);
-        if (CachedBattAc)
-            DrawRect(fb, battX + battW - 18, by + 4, 7, 7, segOn);
     }
 
     if (FileOpBannerRemainUs > 0 && FileOpBanner[0]) {
@@ -1350,9 +1412,13 @@ static VOID TypewriterLoadBytesIntoDoc(const UINT8 *data, UINTN len) {
 
     Doc.Text[line][col] = 0;
     Doc.LineCount = (line < MAX_LINES) ? line + 1 : MAX_LINES;
-    Doc.CursorX = 0;
-    Doc.CursorY = 0;
     ReflowAllLines();
+    {
+        UINT32 ly = (Doc.LineCount > 0) ? Doc.LineCount - 1 : 0;
+
+        Doc.CursorY = ly;
+        Doc.CursorX = LineLen(Doc.Text[ly]);
+    }
     MarkFullRepaint();
 }
 
@@ -1443,6 +1509,8 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
      */
     BOOLEAN docDirty =
         RepaintFull || ShowHelp || (DirtyLineTop <= DirtyLineBottom);
+    BOOLEAN cursorBlinkOnly =
+        CursorBlinkRedraw && !docDirty && !ShowHelp && CursorWantsBlinkTimer();
 
     if (docDirty) {
         clearedAllForHud = RepaintFull || ShowHelp;
@@ -1450,33 +1518,56 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
             ClearScreen(fb, bgColor);
             for (UINT32 line = 0; line < Doc.LineCount; line++) {
                 UINT32 y = TOP_MARGIN + line * lineStep;
+
                 DrawString(fb, LEFT_MARGIN, y, Doc.Text[line], fgColor, bgColor);
+                if (line < MAX_LINES)
+                    LastLinePaintedRight[line] = LinePaintRightX(fb, Doc.Text[line], line);
             }
             RepaintFull = FALSE;
         } else {
             UINT32 top = DirtyLineTop;
             UINT32 bot = DirtyLineBottom;
+
             if (bot >= Doc.LineCount)
                 bot = (Doc.LineCount > 0) ? Doc.LineCount - 1 : 0;
-            UINT32 stripeW = fb->Width;
             /* Only clear the typographic line body (cap height box), not the full
              * LineAdvance() band — rewriting the inter-line leading every keystroke
              * made visible tearing/flicker on some GOP scanouts. */
             UINT32 lineBodyH = ActiveFontLineHeight() * FontSize;
+
             for (UINT32 line = top; line <= bot; line++) {
                 UINT32 y = TOP_MARGIN + line * lineStep;
+                UINT32 clearR;
+                CHAR16 *ln;
+
                 if (y >= fb->Height)
                     break;
-                DrawRect(fb, 0, y, stripeW, lineBodyH, bgColor);
-                if (line < Doc.LineCount)
-                    DrawString(fb, LEFT_MARGIN, y, Doc.Text[line], fgColor, bgColor);
+                if (line >= Doc.LineCount)
+                    continue;
+                ln = Doc.Text[line];
+                clearR = LinePaintRightX(fb, ln, line);
+                if (line < MAX_LINES && LastLinePaintedRight[line] > clearR)
+                    clearR = LastLinePaintedRight[line];
+                DrawRect(fb, LEFT_MARGIN, y, clearR - LEFT_MARGIN, lineBodyH, bgColor);
+                DrawString(fb, LEFT_MARGIN, y, ln, fgColor, bgColor);
+                if (line < MAX_LINES)
+                    LastLinePaintedRight[line] = LinePaintRightX(fb, ln, line);
             }
             if (prevPainted > Doc.LineCount) {
                 for (UINT32 line = Doc.LineCount; line < prevPainted; line++) {
                     UINT32 y = TOP_MARGIN + line * lineStep;
+                    UINT32 clearR;
+
                     if (y >= fb->Height)
                         break;
-                    DrawRect(fb, 0, y, stripeW, lineBodyH, bgColor);
+                    clearR = (line < MAX_LINES && LastLinePaintedRight[line] > LEFT_MARGIN)
+                                 ? LastLinePaintedRight[line]
+                                 : LEFT_MARGIN + FontSize * 24;
+                    if (clearR > fb->Width)
+                        clearR = fb->Width;
+                    DrawRect(fb, LEFT_MARGIN, y, clearR - LEFT_MARGIN, lineBodyH, bgColor);
+                    if (line < MAX_LINES)
+                        LastLinePaintedRight[line] = LEFT_MARGIN;
                 }
             }
         }
@@ -1485,76 +1576,27 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
             UINT32 lineBox = ActiveFontLineHeight() * FontSize;
             CHAR16 *ln = Doc.Text[Doc.CursorY];
             UINT32 cx = CursorPixelX(ln, Doc.CursorX);
-            /* Thin bar like "|": one tall-pixel wide, height = line body (not line+leading). */
-            UINT32 cwBar = FontSize;
-            if (cwBar < 1)
-                cwBar = 1;
+            UINT32 cwBar = CursorBarThickness();
 
-            if (CursorMode == CURSOR_BAR || CursorMode == CURSOR_BAR_BLINK) {
+            if (CursorMode == CURSOR_BAR || CursorMode == CURSOR_BAR_BLINK)
                 DrawRect(fb, cx, y, cwBar, lineBox, fgColor);
-            } else if (CursorMode == CURSOR_BLOCK || CursorMode == CURSOR_BLOCK_BLINK) {
-                UINT32 gw;
-                if (Doc.CursorX < MAX_CHARS_PER_LINE && ln[Doc.CursorX] != 0)
-                    gw = GlyphAdvance(ln[Doc.CursorX]);
-                else
-                    gw = GlyphAdvance(L' ');
-                if (gw < (UINT32)FontSize)
-                    gw = FontSize;
-                DrawRect(fb, cx, y, gw, lineBox, fgColor);
-            }
+            else if (CursorMode == CURSOR_BLOCK || CursorMode == CURSOR_BLOCK_BLINK)
+                DrawRect(fb, cx, y, CursorGlyphWidthOnLine(ln), lineBox, fgColor);
         }
         DirtyLineTop = 1;
         DirtyLineBottom = 0;
         LastPaintedLineCount = Doc.LineCount;
+        CursorBlinkRedraw = FALSE;
+    } else if (cursorBlinkOnly) {
+        RepaintDocLineCursorBand(fb, Doc.CursorY, bgColor, fgColor);
+        CursorBlinkRedraw = FALSE;
     }
 
     if (KeyDebugMode && !ShowHelp)
         DrawKeyDebugOverlay(fb);
 
-    if (ShowHelp) {
-        UINT32 hf = RGB(28, 28, 32);
-        UINT32 hb = RGB(230, 224, 210);
-        UINT32 hd = RGB(72, 72, 88);
-        UINT32 bx = 48;
-        UINT32 by = 64;
-        UINT32 bw = fb->Width - 96;
-        if (bw > 760)
-            bw = 760;
-        UINT32 bh = 540;
-        if (by + bh + 48 > fb->Height)
-            bh = fb->Height - by - 64;
-        DrawRect(fb, bx - 2, by - 2, bw + 4, bh + 4, hd);
-        DrawRect(fb, bx, by, bw, bh, hb);
-        UINT32 lx = bx + 20;
-        UINT32 ly = by + 16;
-        DrawString(fb, lx, ly, L"Typewrite OS - Help", hf, hb);
-        ly += HELP_LINE_GAP + 10;
-        DrawString(fb, lx, ly, L"F1   Toggle this help", hf, hb);
-        ly += HELP_LINE_GAP;
-        DrawString(fb, lx, ly, L"F2   Cycle font (9): Virgil, Inter, Special Elite,", hf, hb);
-        ly += HELP_LINE_GAP;
-        DrawString(fb, lx, ly, L"     Courier Prime, VT323, Press Start 2P,", hf, hb);
-        ly += HELP_LINE_GAP;
-        DrawString(fb, lx, ly, L"     IBM Plex Mono, Share Tech Mono, Simple", hf, hb);
-        ly += HELP_LINE_GAP;
-        DrawString(fb, lx, ly, L"F3   Increase font size (scale)", hf, hb);
-        ly += HELP_LINE_GAP;
-        DrawString(fb, lx, ly, L"F6   Decrease font size (scale)", hf, hb);
-        ly += HELP_LINE_GAP;
-        DrawString(fb, lx, ly, L"F4   Cycle background color", hf, hb);
-        ly += HELP_LINE_GAP;
-        DrawString(fb, lx, ly,
-                  L"F5   Cycle cursor (default: blinking block)",
-                  hf, hb);
-        ly += HELP_LINE_GAP;
-        DrawString(fb, lx, ly, L"F7   Toggle key debug (scan/unicode log)", hf, hb);
-        ly += HELP_LINE_GAP;
-        DrawString(fb, lx, ly, L"F8   Save document as Typewriter.txt (UTF-8) on boot volume", hf, hb);
-        ly += HELP_LINE_GAP;
-        DrawString(fb, lx, ly, L"F9   Load Typewriter.txt from boot volume (replaces buffer)", hf, hb);
-        ly += HELP_LINE_GAP;
-        DrawString(fb, lx, ly, L"ESC  Close help; quit app when help is hidden", hf, hb);
-    }
+    if (ShowHelp)
+        DrawHelpOverlay(fb);
 
     {
         BOOLEAN needHud = HudNeedPaint || clearedAllForHud;
@@ -1722,7 +1764,6 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     InitializeLib(ImageHandle, SystemTable);
     KickFirmwareWatchdog();
     BootImageHandle = ImageHandle;
-    BattTryLocate();
 
     Print(L"\r\n========================================\r\n");
     Print(L"  Typewrite OS v1.0\r\n");
@@ -1863,7 +1904,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
                 while (CursorBlinkAccumUs >= CURSOR_BLINK_PERIOD_US) {
                     CursorBlinkAccumUs -= CURSOR_BLINK_PERIOD_US;
                     CursorBlinkPhase = !CursorBlinkPhase;
-                    MarkDirtyRange(Doc.CursorY, Doc.CursorY);
+                    CursorBlinkRedraw = TRUE;
                     Doc.Modified = TRUE;
                 }
             }
