@@ -30,7 +30,6 @@
 #define DOC_FILE_MAX_BYTES      (128 * 1024)
 #define LCD_STATUS_ROW_H        34
 #define LCD_STATUS_MARGIN_BOT   6
-#define STATUS_REFRESH_US       (45U * 1000000U)
 #define FILE_BANNER_HOLD_US     (4500000U)
 
 static UINT32 StringPixelWidthChars(const CHAR16 *s);
@@ -240,10 +239,9 @@ static CHAR16 FileOpBanner[96];
 static UINT32 FileOpBannerRemainUs = 0;
 static BOOLEAN HudNeedPaint = FALSE;
 
-/* Cached clock (updated only every STATUS_REFRESH_US to limit firmware calls + HUD flicker). */
-static UINT8 CachedClockH = 0;
-static UINT8 CachedClockM = 0;
-static BOOLEAN CachedClockOk = FALSE;
+/* Session timer (µs since editor loop started); HUD shows HH:MM on 7-seg LCD. */
+static UINT64 SessionElapsedUs = 0;
+static UINT32 LastHudSessionMinute = (UINT32)-1;
 
 typedef enum {
     FONT_VIRGIL = 0,
@@ -1193,21 +1191,6 @@ VOID InitDocument(VOID) {
     LastPaintedLineCount = 0;
 }
 
-static VOID RefreshStatusCache(VOID) {
-    EFI_TIME tm;
-    EFI_STATUS st;
-
-    CachedClockOk = FALSE;
-    if (RT != NULL && RT->GetTime != NULL) {
-        st = uefi_call_wrapper(RT->GetTime, 2, &tm, NULL);
-        if (!EFI_ERROR(st)) {
-            CachedClockH = tm.Hour;
-            CachedClockM = tm.Minute;
-            CachedClockOk = TRUE;
-        }
-    }
-}
-
 /* 7-segment patterns (a..g, standard GFEDCBA-style bit order used below). */
 #define LCD7_A 0x01
 #define LCD7_B 0x02
@@ -1289,7 +1272,7 @@ static VOID LcdDrawColon(FRAMEBUFFER *fb, UINT32 x, UINT32 y, UINT32 ch, UINT32 
     DrawRect(fb, x, y + 2 * ch / 3 - d / 2, d, d, onC);
 }
 
-/* Gray face, black “on” segments: centered 7-seg HH:MM clock + optional file banner (left). */
+/* Gray face, black “on” segments: centered 7-seg HH:MM session timer + file/slot banner (left). */
 static VOID DrawCasioStatusHud(FRAMEBUFFER *fb, UINT32 hudY, UINT32 docBg) {
     UINT32 face = RGB(168, 172, 158);
     UINT32 frame = RGB(72, 74, 70);
@@ -1313,13 +1296,15 @@ static VOID DrawCasioStatusHud(FRAMEBUFFER *fb, UINT32 hudY, UINT32 docBg) {
     DrawRect(fb, clockX - 3, hudY, clockW + 6, clockH, frame);
     DrawRect(fb, clockX - 1, hudY + 2, clockW + 2, clockH - 4, face);
 
-    if (CachedClockOk) {
-        h1 = CachedClockH / 10;
-        h2 = CachedClockH % 10;
-        m1 = CachedClockM / 10;
-        m2 = CachedClockM % 10;
-    } else {
-        h1 = h2 = m1 = m2 = 8;
+    {
+        UINT64 sec = SessionElapsedUs / 1000000ULL;
+        UINT32 h = (UINT32)((sec / 3600ULL) % 100ULL);
+        UINT32 m = (UINT32)((sec / 60ULL) % 60ULL);
+
+        h1 = h / 10;
+        h2 = h % 10;
+        m1 = m / 10;
+        m2 = m % 10;
     }
 
     {
@@ -2262,7 +2247,8 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
 
     InitDocument();
     TypewriterAutoloadIfPresent(ImageHandle);
-    RefreshStatusCache();
+    SessionElapsedUs = 0;
+    LastHudSessionMinute = (UINT32)-1;
     HudNeedPaint = TRUE;
 
     while (Running) {
@@ -2290,14 +2276,14 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         
         /* Idle longer when unchanged to avoid burning CPU; short delay after input */
         {
-            static UINT32 statusAccumUs = 0;
             UINT32 stallUs = EFI_ERROR(keyStatus) ? 50000 : 5000;
+            UINT32 curMin;
 
             uefi_call_wrapper(BS->Stall, 1, stallUs);
-            statusAccumUs += stallUs;
-            if (statusAccumUs >= STATUS_REFRESH_US) {
-                statusAccumUs = 0;
-                RefreshStatusCache();
+            SessionElapsedUs += (UINT64)stallUs;
+            curMin = (UINT32)(SessionElapsedUs / 60000000ULL);
+            if (curMin != LastHudSessionMinute) {
+                LastHudSessionMinute = curMin;
                 HudNeedPaint = TRUE;
             }
             if (FileOpBannerRemainUs > 0) {

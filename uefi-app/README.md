@@ -98,7 +98,7 @@ For QEMU, run [`../start-qemu.sh`](../start-qemu.sh) from the repo root (it runs
 
 ### Status HUD (clock)
 
-A **centered** **HH:MM** readout uses a fixed **7-segment** style (not the document font), gray LCD look. Time comes from UEFI **`RT->GetTime`** when the firmware provides it; otherwise **88:88**-style placeholders. The clock is **refetched about every 45 seconds**; the HUD repaints on that tick, on **full** document clears, or when a **save/load** banner appears or expires. File status uses the built-in simple font on the **left** of the status row.
+A **centered** **HH:MM** readout uses a fixed **7-segment** style (not the document font), gray LCD look. It shows **session elapsed time** (hours and minutes since the editor loop starts after splash/autoload), updated when the minute rolls over. The HUD also repaints on **full** document clears or when a **save/load** banner appears or expires. File/slot status uses the built-in simple font on the **left** of the status row.
 
 ### Page memory model (`main.c`)
 
