@@ -190,7 +190,34 @@ static const UINT32 COLORS[] = {
 
 static UINT32 CurrentBgColor = 1;
 static UINT32 FontSize = 1;
-static BOOLEAN ShowCursor = TRUE;
+
+typedef enum {
+    CURSOR_BAR = 0,
+    CURSOR_BAR_BLINK,
+    CURSOR_BLOCK,
+    CURSOR_BLOCK_BLINK,
+    CURSOR_HIDDEN,
+    CURSOR_MODE_NUM
+} CURSOR_MODE;
+
+static UINT32 CursorMode = CURSOR_BAR;
+static BOOLEAN CursorBlinkPhase = TRUE;
+static UINT64 CursorBlinkAccumUs = 0;
+
+#define CURSOR_BLINK_PERIOD_US 500000
+
+static BOOLEAN CursorWantsBlinkTimer(VOID) {
+    return CursorMode == CURSOR_BAR_BLINK || CursorMode == CURSOR_BLOCK_BLINK;
+}
+
+static BOOLEAN CursorShouldDrawThisFrame(VOID) {
+    if (CursorMode == CURSOR_HIDDEN)
+        return FALSE;
+    if (CursorWantsBlinkTimer())
+        return CursorBlinkPhase;
+    return TRUE;
+}
+
 static DOCUMENT Doc;
 static BOOLEAN Running = TRUE;
 static UINT32 WrapPixelWidth = 800;
@@ -780,13 +807,27 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
                 }
             }
         }
-        if (ShowCursor && !ShowHelp) {
-            UINT32 cursorY = TOP_MARGIN + Doc.CursorY * lineStep;
-            UINT32 cursorX = CursorPixelX(Doc.Text[Doc.CursorY], Doc.CursorX);
-            UINT32 cw = FontSize * 2;
-            if (cw < 2)
-                cw = 2;
-            DrawRect(fb, cursorX, cursorY, cw, lineStep, fgColor);
+        if (CursorShouldDrawThisFrame() && !ShowHelp) {
+            UINT32 y = TOP_MARGIN + Doc.CursorY * lineStep;
+            UINT32 lineBox = ActiveFontLineHeight() * FontSize;
+            CHAR16 *ln = Doc.Text[Doc.CursorY];
+            UINT32 cx = CursorPixelX(ln, Doc.CursorX);
+            UINT32 cwBar = FontSize * 2;
+            if (cwBar < 2)
+                cwBar = 2;
+
+            if (CursorMode == CURSOR_BAR || CursorMode == CURSOR_BAR_BLINK) {
+                DrawRect(fb, cx, y, cwBar, lineStep, fgColor);
+            } else if (CursorMode == CURSOR_BLOCK || CursorMode == CURSOR_BLOCK_BLINK) {
+                UINT32 gw;
+                if (Doc.CursorX < MAX_CHARS_PER_LINE && ln[Doc.CursorX] != 0)
+                    gw = GlyphAdvance(ln[Doc.CursorX]);
+                else
+                    gw = GlyphAdvance(L' ');
+                if (gw < (UINT32)FontSize)
+                    gw = FontSize;
+                DrawRect(fb, cx, y, gw, lineBox, fgColor);
+            }
         }
         DirtyLineTop = 1;
         DirtyLineBottom = 0;
@@ -824,7 +865,9 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
         ly += HELP_LINE_GAP;
         DrawString(fb, lx, ly, L"F4   Cycle background color", hf, hb);
         ly += HELP_LINE_GAP;
-        DrawString(fb, lx, ly, L"F5   Toggle cursor", hf, hb);
+        DrawString(fb, lx, ly,
+                  L"F5   Cycle cursor: bar | bar blink | block | block blink | hidden",
+                  hf, hb);
         ly += HELP_LINE_GAP;
         DrawString(fb, lx, ly, L"F7   Toggle key debug (scan/unicode log)", hf, hb);
         ly += HELP_LINE_GAP;
@@ -879,9 +922,11 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
                 MarkFullRepaint();
                 Doc.Modified = TRUE;
                 break;
-            case 0x0F:  /* F5 - Toggle cursor */
-                ShowCursor = !ShowCursor;
-                MarkFullRepaint();
+            case 0x0F:  /* F5 - Cycle cursor style */
+                CursorMode = (CursorMode + 1) % CURSOR_MODE_NUM;
+                CursorBlinkAccumUs = 0;
+                CursorBlinkPhase = TRUE;
+                MarkDirtyRange(Doc.CursorY, Doc.CursorY);
                 Doc.Modified = TRUE;
                 break;
             case 0x10:  /* F6 - Decrease font / scale */
@@ -962,7 +1007,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     Print(L"\r\n========================================\r\n");
     Print(L"  Typewrite OS v1.0\r\n");
     Print(L"  UEFI Typewriter Application\r\n");
-    Print(L"  F1 help  F2 font  F3/F6 scale  F7 key debug\r\n");
+    Print(L"  F1 help  F2 font  F3/F6 scale  F5 cursor  F7 key debug\r\n");
     Print(L"========================================\r\n\r\n");
     
     EFI_GUID gopGuid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
@@ -1038,7 +1083,19 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         }
         
         /* Idle longer when unchanged to avoid burning CPU; short delay after input */
-        uefi_call_wrapper(BS->Stall, 1, EFI_ERROR(keyStatus) ? 50000 : 5000);
+        {
+            UINT32 stallUs = EFI_ERROR(keyStatus) ? 50000 : 5000;
+            uefi_call_wrapper(BS->Stall, 1, stallUs);
+            if (!ShowHelp && CursorWantsBlinkTimer()) {
+                CursorBlinkAccumUs += stallUs;
+                while (CursorBlinkAccumUs >= CURSOR_BLINK_PERIOD_US) {
+                    CursorBlinkAccumUs -= CURSOR_BLINK_PERIOD_US;
+                    CursorBlinkPhase = !CursorBlinkPhase;
+                    MarkDirtyRange(Doc.CursorY, Doc.CursorY);
+                    Doc.Modified = TRUE;
+                }
+            }
+        }
     }
     
     Print(L"Typewriter exited. Lines: %d\n", Doc.LineCount);
