@@ -73,8 +73,9 @@ For QEMU, run [`../start-qemu.sh`](../start-qemu.sh) from the repo root (it runs
 - **Valid PE32+** UEFI application (firmware loads it; prior “Unsupported format” came from bad `objcopy`/link — fixed per `BUILD_SYSTEM.md`).
 - **QEMU + OVMF** with FAT payload under `fs/` (e.g. `startup.nsh`).
 - **GOP**: mode set, framebuffer base/pitch; large region fills verified on QEMU and some real hardware.
-- **Virgil / Helvetica** text: proportional bitmap stride matches `fonts/convert_font.py`; redraw coalescing when **`Doc.Modified`** (see [`../GRAPHICS_DEBUG.md`](../GRAPHICS_DEBUG.md) for pitch / framebuffer notes).
-- **Typing / wrap / Enter**: document repaint is **incremental** (full-width horizontal stripes for changed lines only), not a full-frame clear, to reduce flicker. Full clears still run for help, F2–F7, background change, and first paint.
+- **Bitmap fonts** from `fonts/convert_font.py`; **`Doc.Modified`** drives redraw (incremental row updates where possible; see [`../GRAPHICS_DEBUG.md`](../GRAPHICS_DEBUG.md)).
+- **US Letter–style page**: fixed **50×60** character grid (**3000** cells), **~1"** margins at **96 logical DPI** (clamped on small displays), **black** outside the paper, centered horizontally. Column pitch is derived from the font so line length is consistent. **Vertical scroll** (`Doc.ScrollYPx`) keeps the caret in view when the scaled page is taller than the area above the status HUD.
+- **Font scale**: **half-step** zoom (**1.0× … 6.0×**, stored as `FontScaleTwice` = 2…12).
 
 ### Open
 
@@ -87,7 +88,7 @@ For QEMU, run [`../start-qemu.sh`](../start-qemu.sh) from the repo root (it runs
 |-----|--------|
 | **F1** | Toggle on-screen **help** |
 | **F2** | **Cycle font** (9): Virgil, Inter (sans), Special Elite, Courier Prime, VT323, Press Start 2P, IBM Plex Mono, Share Tech Mono, simple — see [`../fonts/README.md`](../fonts/README.md) |
-| **F3** / **F6** | Increase / decrease **font scale** (1–6: glyph size, advances, proportional line step; text wraps to the next line at the margins) |
+| **F3** / **F6** | Increase / decrease **font scale** in **half steps** (effective **1.0× … 6.0×**). At end of a row, further typing wraps to the next row of the grid. |
 | **F4** | Cycle background color |
 | **F5** | **Cycle cursor:** bar (solid) → bar (blink ~0.5s) → block (solid) → block (blink) → hidden |
 | **F7** | Toggle **key debug**: last 8 keys as `SC=` scan code / `UC=` Unicode on-screen and on the firmware **serial** console (`[KeyDbg]`) |
@@ -95,9 +96,15 @@ For QEMU, run [`../start-qemu.sh`](../start-qemu.sh) from the repo root (it runs
 | **F9** | **Load** **`Typewriter.txt`** from the boot volume (replaces the in-memory buffer). |
 | **ESC** | Close help if open; otherwise **exit** (uses UEFI **SCAN_ESC** `0x0017`, not Up Arrow `0x0001`) |
 
-### Status HUD (laptops + clock)
+### Status HUD (clock)
 
-Core UEFI does **not** define a portable “battery %” API. If the firmware publishes Microsoft’s optional **`EFI_BATTERY_CHARGING_PROTOCOL`** (common on some OEM bring-up stacks), a **lower-right** panel shows **SOC %** (7-segment style, not the document font) and a small **AC** indicator. Otherwise the digits show **`--`**. A **centered** **HH:MM** clock uses the same gray LCD face (from **`RT->GetTime`** when available; otherwise placeholder digits). Battery and clock values are **refreshed about every 45 seconds** to limit firmware calls and avoid HUD flicker; the HUD is only repainted when the document does a **full** clear (help, font change, etc.), on that timer, or when a **save/load** banner appears or clears. File status text uses the built-in simple font on the left of the status row.
+A **centered** **HH:MM** readout uses a fixed **7-segment** style (not the document font), gray LCD look. Time comes from UEFI **`RT->GetTime`** when the firmware provides it; otherwise **88:88**-style placeholders. The clock is **refetched about every 45 seconds**; the HUD repaints on that tick, on **full** document clears, or when a **save/load** banner appears or expires. File status uses the built-in simple font on the **left** of the status row.
+
+### Page memory model (`main.c`)
+
+- **`Doc.Grid[PAGE_ROWS][PAGE_COLS+1]`** — one page, space-padded rows, NUL after column 50.
+- **`TYPEWRITER_PAGE`** matches that grid shape for a future **multi-page** buffer (only one page is loaded in RAM today).
+- **Save** trims **trailing blank lines**; **load** fills the grid and places the caret after the last character.
 
 ## Source layout
 

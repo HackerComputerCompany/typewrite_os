@@ -181,8 +181,21 @@ static const UINT32 simple_font_offsets[] = {
     570, 575, 580, 585, 590, 595
 };
 
-#define MAX_LINES 100
-#define MAX_CHARS_PER_LINE 120
+/*
+ * One in-memory page: US Letter–style grid (~6.5" × ~9" printable at ~10 cpi × ~60 lines).
+ * Multi-page files: reserve TYPEWRITER_PAGE slots later; only index 0 is loaded today.
+ */
+#define PAGE_COLS 50
+#define PAGE_ROWS 60
+#define PAGE_CELLS (PAGE_COLS * PAGE_ROWS)
+
+/* Logical ~96 DPI for 1" margins when GOP gives no physical size. */
+#define FONT_ASSUMED_DPI 96
+#define PAGE_MARGIN_INCH_NUM 1
+#define PAGE_MARGIN_INCH_DEN 1
+
+#define OFF_PAGE_COLOR RGB(6, 6, 8)
+
 #define LEFT_MARGIN 20
 #define RIGHT_MARGIN 24
 #define TOP_MARGIN 30
@@ -203,12 +216,18 @@ typedef struct {
 } FRAMEBUFFER;
 
 typedef struct {
-    CHAR16 Text[MAX_LINES][MAX_CHARS_PER_LINE];
-    UINT32 LineCount;
-    UINT32 CursorX;
-    UINT32 CursorY;
+    CHAR16 Grid[PAGE_ROWS][PAGE_COLS + 1];
+    UINT32 CursorCol;
+    UINT32 CursorRow;
+    UINT32 ScrollYPx;
     BOOLEAN Modified;
 } DOCUMENT;
+
+typedef struct {
+    CHAR16 Cell[PAGE_ROWS][PAGE_COLS + 1];
+} TYPEWRITER_PAGE;
+
+/* Multi-page: extend with static TYPEWRITER_PAGE LoadedPages[N] and memcpy active page <-> Doc.Grid. */
 
 static EFI_GRAPHICS_OUTPUT_PROTOCOL *Gop;
 static EFI_HANDLE BootImageHandle;
@@ -257,7 +276,11 @@ static const UINT32 COLORS[] = {
 };
 
 static UINT32 CurrentBgColor = 1;
-static UINT32 FontSize = 1;
+/* Effective scale = FontScaleTwice / 2  (2 = 1.0×, 3 = 1.5×, …, 12 = 6.0×). */
+static UINT32 FontScaleTwice = 2;
+
+#define FONT_SZ_MUL(v) ((UINT32)(((UINTN)(v) * (UINTN)FontScaleTwice) / 2))
+#define FONT_PIXEL_KERN() (FONT_SZ_MUL(1) ? FONT_SZ_MUL(1) : 1)
 
 typedef enum {
     CURSOR_BAR = 0,
@@ -288,7 +311,6 @@ static BOOLEAN CursorShouldDrawThisFrame(VOID) {
 
 static DOCUMENT Doc;
 static BOOLEAN Running = TRUE;
-static UINT32 WrapPixelWidth = 800;
 static CHAR16 KeyDbgLines[KEY_DBG_LINES][KEY_DBG_COLS];
 
 /* Repaint: full screen vs horizontal strips for changed document lines only. */
@@ -296,8 +318,20 @@ static BOOLEAN RepaintFull = TRUE;
 static UINT32 DirtyLineTop = 1;
 static UINT32 DirtyLineBottom = 0; /* invalid until MarkDirtyRange (Top <= Bottom). */
 static UINT32 LastPaintedLineCount = 0;
-/* Right edge (x) last cleared+painted per line — avoids full-width line clears. */
-static UINT32 LastLinePaintedRight[MAX_LINES];
+/* Right edge (screen x) last cleared+painted per row — avoids over-clearing. */
+static UINT32 LastLinePaintedRight[PAGE_ROWS];
+
+/* Page layout (recomputed from GOP + font; document uses fixed column pitch). */
+static UINT32 G_docViewportBot = 600;
+static UINT32 G_pageMarginPx = 96;
+static UINT32 G_pageColPitch = 8;
+static UINT32 G_lineStep = 16;
+static UINT32 G_pagePaperX = 0;
+static UINT32 G_pagePaperY = 0;
+static UINT32 G_pageTotalW = 0;
+static UINT32 G_pageTotalH = 0;
+static UINT32 G_pageContentX0 = 0;
+static UINT32 G_pageContentY0 = 0;
 /* Blinking cursor: repaint only the cursor band, not the whole line. */
 static BOOLEAN CursorBlinkRedraw = FALSE;
 
@@ -305,33 +339,14 @@ static BOOLEAN CursorBlinkRedraw = FALSE;
 /* Word space advance multiplier (advance for ' ' is this × normal font advance). */
 #define SPACE_ADVANCE_MULT 3
 
-#define SCELL(_fb, _x, _y, _c) DrawRect((_fb), (_x), (_y), FontSize, FontSize, (_c))
+#define SCELL(_fb, _x, _y, _c) DrawRect((_fb), (_x), (_y), FONT_PIXEL_KERN(), FONT_PIXEL_KERN(), (_c))
 
 static UINT32 GlyphAdvance(CHAR16 ch);
+static UINT32 LineAdvance(VOID);
 
 static VOID MarkFullRepaint(VOID) {
     RepaintFull = TRUE;
     SetMem(LastLinePaintedRight, sizeof(LastLinePaintedRight), 0);
-}
-
-/*
- * Text wraps when LinePixelWidth exceeds this. Must track GOP width minus margins;
- * the old guard (width > margin + 80) left the default 800px wrap on many panels, so
- * lines never broke. Use saturating margin math (no UINT32 underflow).
- */
-static VOID UpdateWrapPixelWidthFromFb(const FRAMEBUFFER *fb) {
-    UINT32 margin = LEFT_MARGIN + RIGHT_MARGIN;
-    UINT32 w;
-
-    if (fb->Width > margin)
-        w = fb->Width - margin;
-    else if (fb->Width > 16)
-        w = fb->Width - 8;
-    else
-        w = 48;
-    if (w < 48)
-        w = 48;
-    WrapPixelWidth = w;
 }
 
 static VOID MarkDirtyRange(UINT32 top, UINT32 bot) {
@@ -353,153 +368,119 @@ static VOID MarkDirtyRange(UINT32 top, UINT32 bot) {
     }
 }
 
-static UINT32 LineLen(const CHAR16 *s) {
-    UINT32 n = 0;
-    while (n < MAX_CHARS_PER_LINE && s[n])
-        n++;
-    return n;
+static UINT32 GridRowLastUsedCol(const CHAR16 *row) {
+    UINT32 c;
+    UINT32 last = 0;
+
+    for (c = 0; c < PAGE_COLS; c++) {
+        if (row[c] != L' ' && row[c] != 0)
+            last = c + 1;
+    }
+    return last;
 }
 
-static UINT32 LinePixelWidth(const CHAR16 *line) {
-    UINT32 w = 0;
-    for (UINT32 i = 0; i < MAX_CHARS_PER_LINE && line[i]; i++)
-        w += GlyphAdvance(line[i]);
-    return w;
-}
-
-static VOID PrependToLine(CHAR16 *line, const CHAR16 *prefix) {
-    UINT32 pl = LineLen(prefix);
-    UINT32 ol = LineLen(line);
-    if (pl + ol >= MAX_CHARS_PER_LINE - 1)
-        return;
-    CHAR16 buf[MAX_CHARS_PER_LINE];
-    CopyMem(buf, (VOID *)(UINTN)prefix, pl * sizeof(CHAR16));
-    CopyMem(buf + pl, line, (ol + 1) * sizeof(CHAR16));
-    CopyMem(line, buf, (pl + ol + 1) * sizeof(CHAR16));
-}
-
-/*
- * One wrap split from line L into L+1. No recursion — deep recursive wraps blew the
- * UEFI stack (~128KB typical) and could reset the machine.
- */
-static BOOLEAN SplitOverflowingLineOnce(UINT32 L) {
-    UINT32 len;
-    UINT32 i;
+static UINT32 ComputePageColPitch(VOID) {
+    UINT32 m = GlyphAdvance(L'M');
     UINT32 w;
-    UINT32 lastSpace;
-    UINT32 overflowIdx;
-    UINT32 breakStart;
-    UINT32 oldCx;
-    UINT32 oldCy;
-    CHAR16 tail[MAX_CHARS_PER_LINE];
-    UINT32 t;
-    CHAR16 *line;
+    CHAR16 ch;
 
-    if (L >= MAX_LINES - 1 || WrapPixelWidth < 48)
-        return FALSE;
-    line = Doc.Text[L];
-    if (LinePixelWidth(line) <= WrapPixelWidth)
-        return FALSE;
-
-    len = LineLen(line);
-    if (len == 0)
-        return FALSE;
-
-    w = 0;
-    lastSpace = (UINT32)-1;
-    overflowIdx = len;
-    for (i = 0; line[i] && i < MAX_CHARS_PER_LINE; i++) {
-        UINT32 adv = GlyphAdvance(line[i]);
-
-        if (line[i] == L' ')
-            lastSpace = i;
-        if (w + adv > WrapPixelWidth) {
-            overflowIdx = i;
-            break;
-        }
-        w += adv;
+    w = GlyphAdvance(L'W');
+    if (w > m)
+        m = w;
+    w = GlyphAdvance(L'm');
+    if (w > m)
+        m = w;
+    for (ch = L'0'; ch <= L'9'; ch++) {
+        w = GlyphAdvance(ch);
+        if (w > m)
+            m = w;
     }
-
-    if (overflowIdx >= len)
-        return FALSE;
-
-    if (lastSpace != (UINT32)-1 && lastSpace < overflowIdx && lastSpace > 0) {
-        breakStart = lastSpace + 1;
-        while (line[breakStart] == L' ')
-            breakStart++;
-    } else {
-        w = 0;
-        breakStart = 0;
-        for (i = 0; line[i] && i < MAX_CHARS_PER_LINE; i++) {
-            UINT32 adv = GlyphAdvance(line[i]);
-
-            if (w + adv > WrapPixelWidth)
-                break;
-            w += adv;
-            breakStart = i + 1;
-        }
-        if (breakStart == 0 && line[0])
-            breakStart = 1;
-    }
-
-    if (breakStart >= len)
-        return FALSE;
-
-    oldCx = Doc.CursorX;
-    oldCy = Doc.CursorY;
-
-    t = 0;
-    for (i = breakStart; line[i] && t < MAX_CHARS_PER_LINE - 1; i++)
-        tail[t++] = line[i];
-    tail[t] = 0;
-    line[breakStart] = 0;
-
-    while (LineLen(line) > 0) {
-        UINT32 u = LineLen(line);
-
-        if (u > 0 && line[u - 1] == L' ')
-            line[u - 1] = 0;
-        else
-            break;
-    }
-
-    if (Doc.Text[L + 1][0] == 0) {
-        StrCpy(Doc.Text[L + 1], tail);
-    } else {
-        PrependToLine(Doc.Text[L + 1], tail);
-    }
-
-    if (Doc.LineCount < L + 2)
-        Doc.LineCount = L + 2;
-
-    if (oldCy == L && oldCx >= breakStart) {
-        Doc.CursorY = L + 1;
-        Doc.CursorX = oldCx - breakStart;
-    }
-
-    return TRUE;
+    w = GlyphAdvance(L'n');
+    if (w > m)
+        m = w;
+    if (m < FONT_PIXEL_KERN())
+        m = FONT_PIXEL_KERN();
+    return m;
 }
 
-static VOID ApplyWordWrap(UINT32 startL) {
-    UINT32 rounds = 0;
-    const UINT32 maxRounds = MAX_LINES * MAX_CHARS_PER_LINE * 4;
+static VOID UpdatePageLayoutFromFb(const FRAMEBUFFER *fb) {
+    UINT32 inch;
+    UINT32 contentW;
+    UINT32 contentH;
 
-    while (rounds++ < maxRounds) {
-        UINT32 L;
+    G_docViewportBot = (fb->Height > LCD_STATUS_ROW_H + LCD_STATUS_MARGIN_BOT + 4)
+                           ? fb->Height - LCD_STATUS_ROW_H - LCD_STATUS_MARGIN_BOT
+                           : fb->Height;
 
-        for (L = startL; L < MAX_LINES - 1; L++) {
-            if (LinePixelWidth(Doc.Text[L]) > WrapPixelWidth)
-                break;
-        }
-        if (L >= MAX_LINES - 1)
-            return;
-        if (!SplitOverflowingLineOnce(L))
-            return;
+    inch = (FONT_ASSUMED_DPI * PAGE_MARGIN_INCH_NUM) / PAGE_MARGIN_INCH_DEN;
+    if (inch > fb->Width / 6)
+        inch = fb->Width / 6;
+    if (inch > G_docViewportBot / 6)
+        inch = G_docViewportBot / 6;
+    if (inch < 16)
+        inch = 16;
+    G_pageMarginPx = inch;
+
+    G_pageColPitch = ComputePageColPitch();
+    G_lineStep = LineAdvance();
+
+    contentW = PAGE_COLS * G_pageColPitch;
+    contentH = PAGE_ROWS * G_lineStep;
+    G_pageTotalW = 2 * G_pageMarginPx + contentW;
+    G_pageTotalH = 2 * G_pageMarginPx + contentH;
+
+    G_pagePaperX = (fb->Width > G_pageTotalW) ? (fb->Width - G_pageTotalW) / 2 : 0;
+    G_pagePaperY = 0;
+
+    G_pageContentX0 = G_pagePaperX + G_pageMarginPx;
+    G_pageContentY0 = G_pagePaperY + G_pageMarginPx;
+}
+
+static INT32 RowTextScreenY(UINT32 rowIdx) {
+    return (INT32)G_pageContentY0 + (INT32)(rowIdx * G_lineStep) - (INT32)Doc.ScrollYPx;
+}
+
+static UINT32 ContentXForCol(UINT32 col) {
+    return G_pageContentX0 + col * G_pageColPitch;
+}
+
+static UINT32 GridRowPaintRightScreenX(const CHAR16 *row) {
+    (void)row;
+    return G_pageContentX0 + PAGE_COLS * G_pageColPitch;
+}
+
+static VOID EnsureCursorVisibleScroll(const FRAMEBUFFER *fb) {
+    UINT32 cy = G_pageContentY0 + Doc.CursorRow * G_lineStep;
+    UINT32 viewBot = G_docViewportBot;
+    UINT32 maxScroll;
+
+    if (G_pageTotalH <= viewBot) {
+        Doc.ScrollYPx = 0;
+        return;
+    }
+    maxScroll = G_pageTotalH - viewBot;
+    if (cy < Doc.ScrollYPx)
+        Doc.ScrollYPx = cy;
+    if (cy + G_lineStep > Doc.ScrollYPx + viewBot)
+        Doc.ScrollYPx = cy + G_lineStep - viewBot;
+    if (Doc.ScrollYPx > maxScroll)
+        Doc.ScrollYPx = maxScroll;
+    (void)fb;
+}
+
+static VOID InitDocumentGridSpaces(VOID) {
+    UINT32 r;
+    UINT32 c;
+
+    for (r = 0; r < PAGE_ROWS; r++) {
+        for (c = 0; c < PAGE_COLS; c++)
+            Doc.Grid[r][c] = L' ';
+        Doc.Grid[r][PAGE_COLS] = 0;
     }
 }
 
+/* Pixel/word wrap removed; font changes only need a full layout pass. */
 static VOID ReflowAllLines(VOID) {
-    ApplyWordWrap(0);
 }
 
 /* GOP front buffer (hardware). When non-NULL, fb->PixelData points at a Pool back buffer. */
@@ -625,11 +606,11 @@ EFI_STATUS DrawCharSimple(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 ch, UINT32
     
     /* simple_font_data: 5 bytes per glyph, one byte per COLUMN, bit 0 = top row */
     for (UINT32 row = 0; row < SIMPLE_FONT_HEIGHT; row++) {
-        UINT32 dy = y + row * FontSize;
+        UINT32 dy = y + row * FONT_PIXEL_KERN();
         if (dy >= fb->Height)
             break;
         for (UINT32 col = 0; col < SIMPLE_FONT_WIDTH; col++) {
-            UINT32 dx = x + col * FontSize;
+            UINT32 dx = x + col * FONT_PIXEL_KERN();
             if (dx >= fb->Width)
                 continue;
             UINT8 colBits = simple_font_data[offset + col];
@@ -670,7 +651,7 @@ EFI_STATUS DrawCharBitmapFont(FRAMEBUFFER *fb, UINT32 x, UINT32 baselineY, CHAR1
     UINT32 bmpTop = F->bitmap_top[charIndex];
 
     for (UINT32 py = 0; py < gh; py++) {
-        INT32 dy = (INT32)baselineY - (INT32)(bmpTop * FontSize) + (INT32)(py * FontSize);
+        INT32 dy = (INT32)baselineY - (INT32)FONT_SZ_MUL(bmpTop) + (INT32)FONT_SZ_MUL(py);
         if (dy < 0 || (UINT32)dy >= fb->Height)
             continue;
         UINT32 rowOff = offset + py * rowB;
@@ -680,7 +661,7 @@ EFI_STATUS DrawCharBitmapFont(FRAMEBUFFER *fb, UINT32 x, UINT32 baselineY, CHAR1
                 UINT32 px = byteIdx * 8 + bit;
                 if (px >= gw)
                     break;
-                UINT32 dx = x + px * FontSize;
+                UINT32 dx = x + px * FONT_PIXEL_KERN();
                 if (dx >= fb->Width)
                     continue;
                 if (byte & (1u << bit)) {
@@ -718,7 +699,7 @@ static UINT32 GlyphAdvanceBitmap(CHAR16 ch, const BitmapFont *F) {
     }
     if (ch == L' ')
         base *= SPACE_ADVANCE_MULT;
-    return base * FontSize;
+    return FONT_SZ_MUL(base);
 }
 
 static UINT32 GlyphAdvance(CHAR16 ch) {
@@ -730,11 +711,11 @@ static UINT32 GlyphAdvance(CHAR16 ch) {
             base = CHAR_GAP;
         if (ch == L' ')
             base *= SPACE_ADVANCE_MULT;
-        return base * FontSize;
+        return FONT_SZ_MUL(base);
     }
     if (CurrentFontKind < FONT_SIMPLE)
         return GlyphAdvanceBitmap(ch, &gBitmapFonts[CurrentFontKind]);
-    return CHAR_GAP * FontSize;
+    return FONT_SZ_MUL(CHAR_GAP);
 }
 
 static UINT32 ActiveFontLineHeight(VOID) {
@@ -780,34 +761,28 @@ static UINT32 GlyphBitmapHeight(CHAR16 ch) {
 }
 
 static UINT32 LineAdvance(VOID) {
-    UINT32 box = ActiveFontLineHeight() * FontSize;
-    UINT32 leading = box / 4 + FontSize * 4;
+    UINT32 box = FONT_SZ_MUL(ActiveFontLineHeight());
+    UINT32 leading = box / 4 + FONT_SZ_MUL(4);
+
     return box + leading;
 }
 
-static UINT32 CursorPixelX(CHAR16 *line, UINT32 col) {
-    UINT32 px = LEFT_MARGIN;
-    for (UINT32 i = 0; i < col && i < MAX_CHARS_PER_LINE; i++) {
-        CHAR16 c = line[i];
-        if (!c)
-            break;
-        px += GlyphAdvance(c);
-    }
-    return px;
+static UINT32 DocCursorPixelX(VOID) {
+    return ContentXForCol(Doc.CursorCol);
 }
 
 EFI_STATUS DrawString(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 *str, UINT32 fgColor, UINT32 bgColor) {
     if (!str) return EFI_SUCCESS;
     UINT32 posX = x;
-    UINT32 lineBox = ActiveFontLineHeight() * FontSize;
+    UINT32 lineBox = FONT_SZ_MUL(ActiveFontLineHeight());
     while (*str) {
         CHAR16 c = *str;
         if (CurrentFontKind == FONT_SIMPLE) {
             UINT32 gh = GlyphBitmapHeight(c);
-            UINT32 yDraw = y + lineBox - gh * FontSize;
+            UINT32 yDraw = y + lineBox - FONT_SZ_MUL(gh);
             DrawChar(fb, posX, yDraw, c, fgColor, bgColor);
         } else {
-            UINT32 baselineY = y + gBitmapFonts[CurrentFontKind].max_top * FontSize;
+            UINT32 baselineY = y + FONT_SZ_MUL(gBitmapFonts[CurrentFontKind].max_top);
             DrawChar(fb, posX, baselineY, c, fgColor, bgColor);
         }
         posX += GlyphAdvance(c);
@@ -817,77 +792,124 @@ EFI_STATUS DrawString(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 *str, UINT32 f
 }
 
 static VOID DrawCharOnDocLine(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 c, UINT32 fgColor, UINT32 bgColor) {
-    UINT32 lineBox = ActiveFontLineHeight() * FontSize;
+    UINT32 lineBox = FONT_SZ_MUL(ActiveFontLineHeight());
 
     if (CurrentFontKind == FONT_SIMPLE) {
         UINT32 gh = GlyphBitmapHeight(c);
-        UINT32 yDraw = y + lineBox - gh * FontSize;
+        UINT32 yDraw = y + lineBox - FONT_SZ_MUL(gh);
 
         DrawChar(fb, x, yDraw, c, fgColor, bgColor);
     } else {
-        UINT32 baselineY = y + gBitmapFonts[CurrentFontKind].max_top * FontSize;
+        UINT32 baselineY = y + FONT_SZ_MUL(gBitmapFonts[CurrentFontKind].max_top);
 
         DrawChar(fb, x, baselineY, c, fgColor, bgColor);
     }
 }
 
 static UINT32 CursorBarThickness(VOID) {
-    UINT32 t = FontSize;
+    UINT32 t = FONT_PIXEL_KERN();
 
     return t < 1 ? 1 : t;
 }
 
-static UINT32 CursorGlyphWidthOnLine(CHAR16 *ln) {
-    UINT32 gw;
+static UINT32 CursorGlyphWidthOnLine(const VOID *unused) {
+    UINT32 gw = G_pageColPitch;
 
-    if (Doc.CursorX < MAX_CHARS_PER_LINE && ln[Doc.CursorX] != 0)
-        gw = GlyphAdvance(ln[Doc.CursorX]);
-    else
-        gw = GlyphAdvance(L' ');
-    if (gw < (UINT32)FontSize)
-        gw = FontSize;
+    (void)unused;
+    if (gw < FONT_PIXEL_KERN())
+        gw = FONT_PIXEL_KERN();
     return gw;
 }
 
-/* Right x of cursor bar/block on this line (0 if cursor not on line or help hides doc). */
-static UINT32 LineCursorRightEdgePx(CHAR16 *ln, UINT32 lineIdx) {
+/* Right x of cursor bar/block on this row (0 if cursor not on row or help hides doc). */
+static UINT32 LineCursorRightEdgePx(const CHAR16 *ln, UINT32 rowIdx) {
     UINT32 cx;
     UINT32 cw;
 
-    if (Doc.CursorY != lineIdx || ShowHelp)
+    if (Doc.CursorRow != rowIdx || ShowHelp)
         return 0;
-    cx = CursorPixelX(ln, Doc.CursorX);
+    cx = DocCursorPixelX();
     if (CursorMode == CURSOR_BAR || CursorMode == CURSOR_BAR_BLINK)
         cw = CursorBarThickness();
     else
-        cw = CursorGlyphWidthOnLine(ln);
+        cw = CursorGlyphWidthOnLine(NULL);
     return cx + cw;
 }
 
-static UINT32 LinePaintRightX(const FRAMEBUFFER *fb, CHAR16 *ln, UINT32 lineIdx) {
-    UINT32 r = LEFT_MARGIN + LinePixelWidth(ln);
-    UINT32 cr = LineCursorRightEdgePx(ln, lineIdx);
+static UINT32 LinePaintRightX(const FRAMEBUFFER *fb, const CHAR16 *ln, UINT32 rowIdx) {
+    UINT32 r = GridRowPaintRightScreenX(ln);
+    UINT32 cr = LineCursorRightEdgePx(ln, rowIdx);
 
     if (cr > r)
         r = cr;
-    r += FontSize * 2;
+    r += FONT_SZ_MUL(2);
     if (r > fb->Width)
         r = fb->Width;
+    (void)ln;
     return r;
 }
 
+static VOID DrawGridRowIfVisible(FRAMEBUFFER *fb, UINT32 r, UINT32 fg, UINT32 bg) {
+    INT32 sy = RowTextScreenY(r);
+    UINT32 yu;
+    UINT32 px;
+    UINT32 i;
+    CHAR16 *ln = Doc.Grid[r];
+    UINT32 lineBodyH = FONT_SZ_MUL(ActiveFontLineHeight());
+
+    if (sy >= (INT32)G_docViewportBot || sy + (INT32)lineBodyH <= 0)
+        return;
+    yu = (UINT32)sy;
+    px = G_pageContentX0;
+    for (i = 0; i < PAGE_COLS; i++) {
+        CHAR16 ch = ln[i] ? ln[i] : L' ';
+
+        DrawCharOnDocLine(fb, px, yu, ch, fg, bg);
+        px += G_pageColPitch;
+    }
+}
+
+static VOID DrawClippedPaperFill(FRAMEBUFFER *fb, UINT32 paperBg, UINT32 clipBot) {
+    INT32 pTop = (INT32)G_pagePaperY - (INT32)Doc.ScrollYPx;
+    INT32 pBot = pTop + (INT32)G_pageTotalH;
+    INT32 vb = (INT32)clipBot;
+    UINT32 y0;
+    UINT32 y1;
+    UINT32 x0;
+    UINT32 x1;
+
+    if (pBot <= 0 || pTop >= vb)
+        return;
+    y0 = (pTop > 0) ? (UINT32)pTop : 0;
+    y1 = (pBot < vb) ? (UINT32)pBot : (UINT32)vb;
+    if (y1 <= y0)
+        return;
+    x0 = G_pagePaperX;
+    if (x0 >= fb->Width)
+        return;
+    x1 = G_pagePaperX + G_pageTotalW;
+    if (x1 > fb->Width)
+        x1 = fb->Width;
+    if (x1 <= x0)
+        return;
+    DrawRect(fb, x0, y0, x1 - x0, y1 - y0, paperBg);
+}
+
 static VOID RepaintDocLineCursorBand(FRAMEBUFFER *fb, UINT32 line, UINT32 bgColor, UINT32 fgColor) {
-    CHAR16 *ln = Doc.Text[line];
-    UINT32 lineStep = LineAdvance();
-    UINT32 y = TOP_MARGIN + line * lineStep;
-    UINT32 lineBodyH = ActiveFontLineHeight() * FontSize;
-    UINT32 cx = CursorPixelX(ln, Doc.CursorX);
+    CHAR16 *ln = Doc.Grid[line];
+    INT32 sy = RowTextScreenY(line);
+    UINT32 lineBodyH = FONT_SZ_MUL(ActiveFontLineHeight());
+    UINT32 cx = DocCursorPixelX();
     UINT32 cw;
+    UINT32 yu;
+
+    if (sy >= (INT32)G_docViewportBot || sy + (INT32)lineBodyH <= 0)
+        return;
 
     if (CursorMode == CURSOR_BAR || CursorMode == CURSOR_BAR_BLINK)
         cw = CursorBarThickness();
     else
-        cw = CursorGlyphWidthOnLine(ln);
+        cw = CursorGlyphWidthOnLine(NULL);
 
     {
         UINT32 bandL = cx;
@@ -896,12 +918,13 @@ static VOID RepaintDocLineCursorBand(FRAMEBUFFER *fb, UINT32 line, UINT32 bgColo
         UINT32 drawR = bandR;
         UINT32 firstCol = (UINT32)-1;
         UINT32 lastCol = 0;
-        UINT32 px = LEFT_MARGIN;
+        UINT32 px = G_pageContentX0;
+        UINT32 i;
+        CHAR16 ch;
 
-        for (UINT32 i = 0; i < MAX_CHARS_PER_LINE && ln[i]; i++) {
-            UINT32 adv = GlyphAdvance(ln[i]);
+        for (i = 0; i < PAGE_COLS; i++) {
             UINT32 gL = px;
-            UINT32 gR = px + adv;
+            UINT32 gR = px + G_pageColPitch;
 
             if (gR > bandL && gL < bandR) {
                 if (firstCol == (UINT32)-1)
@@ -912,24 +935,28 @@ static VOID RepaintDocLineCursorBand(FRAMEBUFFER *fb, UINT32 line, UINT32 bgColo
                 if (gR > drawR)
                     drawR = gR;
             }
-            px += adv;
+            px += G_pageColPitch;
         }
         if (drawL >= fb->Width)
             return;
         if (drawR > fb->Width)
             drawR = fb->Width;
-        DrawRect(fb, drawL, y, drawR - drawL, lineBodyH, bgColor);
+        yu = (UINT32)sy;
+        DrawRect(fb, drawL, yu, drawR - drawL, lineBodyH, bgColor);
         if (firstCol != (UINT32)-1) {
-            px = CursorPixelX(ln, firstCol);
-            for (UINT32 i = firstCol; i <= lastCol && i < MAX_CHARS_PER_LINE && ln[i]; i++) {
-                DrawCharOnDocLine(fb, px, y, ln[i], fgColor, bgColor);
-                px += GlyphAdvance(ln[i]);
+            px = ContentXForCol(firstCol);
+            for (i = firstCol; i <= lastCol && i < PAGE_COLS; i++) {
+                ch = ln[i] ? ln[i] : L' ';
+                DrawCharOnDocLine(fb, px, yu, ch, fgColor, bgColor);
+                px += G_pageColPitch;
             }
         }
     }
 
-    if (CursorShouldDrawThisFrame())
-        DrawRect(fb, cx, y, cw, lineBodyH, fgColor);
+    if (CursorShouldDrawThisFrame()) {
+        yu = (UINT32)sy;
+        DrawRect(fb, cx, yu, cw, lineBodyH, fgColor);
+    }
 }
 
 static VOID DrawHelpOverlay(FRAMEBUFFER *fb) {
@@ -942,8 +969,8 @@ static VOID DrawHelpOverlay(FRAMEBUFFER *fb) {
         L"F2   Cycle font (9): Virgil, Inter, Special Elite,",
         L"     Courier Prime, VT323, Press Start 2P,",
         L"     IBM Plex Mono, Share Tech Mono, Simple",
-        L"F3   Increase font size (scale)",
-        L"F6   Decrease font size (scale)",
+        L"F3   Increase font scale (half steps, 1.0×–6.0×)",
+        L"F6   Decrease font scale",
         L"F4   Cycle background color",
         L"F5   Cycle cursor (default: blinking block)",
         L"F7   Toggle key debug (scan/unicode log)",
@@ -953,8 +980,8 @@ static VOID DrawHelpOverlay(FRAMEBUFFER *fb) {
     };
     UINT32 n = sizeof(helpLines) / sizeof(helpLines[0]);
     UINT32 step = LineAdvance();
-    UINT32 margin = FontSize * 6;
-    UINT32 inner = FontSize * 5;
+    UINT32 margin = FONT_SZ_MUL(6);
+    UINT32 inner = FONT_SZ_MUL(5);
     UINT32 maxTw = 0;
     UINT32 i;
 
@@ -1085,10 +1112,10 @@ static VOID RunSplashScreen(FRAMEBUFFER *fb) {
 
 VOID InitDocument(VOID) {
     ZeroMem(&Doc, sizeof(Doc));
-    Doc.LineCount = 1;
-    Doc.CursorX = 0;
-    Doc.CursorY = 0;
-    Doc.Text[0][0] = 0;
+    InitDocumentGridSpaces();
+    Doc.CursorCol = 0;
+    Doc.CursorRow = 0;
+    Doc.ScrollYPx = 0;
     Doc.Modified = TRUE;
     ZeroMem(KeyDbgLines, sizeof(KeyDbgLines));
     CursorBlinkRedraw = FALSE;
@@ -1247,12 +1274,12 @@ static VOID DrawCasioStatusHud(FRAMEBUFFER *fb, UINT32 hudY, UINT32 docBg) {
         UINT32 by = hudY + 4;
 
         saveFont = CurrentFontKind;
-        saveFs = FontSize;
+        saveFs = FontScaleTwice;
         CurrentFontKind = FONT_SIMPLE;
-        FontSize = 1;
+        FontScaleTwice = 2;
         DrawString(fb, bx, by, FileOpBanner, segOn, face);
         CurrentFontKind = saveFont;
-        FontSize = saveFs;
+        FontScaleTwice = saveFs;
     }
 }
 
@@ -1295,7 +1322,7 @@ static EFI_STATUS TypewriterSaveFile(EFI_HANDLE img) {
     EFI_FILE *root = NULL;
     EFI_FILE *f = NULL;
     EFI_STATUS st;
-    UINTN cap = (UINTN)MAX_LINES * MAX_CHARS_PER_LINE * 4 + MAX_LINES * 2 + 64;
+    UINTN cap = (UINTN)PAGE_ROWS * PAGE_COLS * 4 + PAGE_ROWS * 2 + 64;
     UINT8 *buf = NULL;
     UINTN used = 0;
     UINT32 L;
@@ -1330,17 +1357,27 @@ static EFI_STATUS TypewriterSaveFile(EFI_HANDLE img) {
         return EFI_OUT_OF_RESOURCES;
     }
 
-    for (L = 0; L < Doc.LineCount && L < MAX_LINES; L++) {
-        p = Doc.Text[L];
-        while (*p && used + 4 < cap) {
-            UINTN n = Utf8WriteChar(*p++, buf + used, cap - used);
+    {
+        UINT32 lastRow = PAGE_ROWS;
 
-            if (n == 0)
-                break;
-            used += n;
+        while (lastRow > 0 && GridRowLastUsedCol(Doc.Grid[lastRow - 1]) == 0)
+            lastRow--;
+
+        for (L = 0; L < lastRow; L++) {
+            UINT32 c;
+            UINT32 last = GridRowLastUsedCol(Doc.Grid[L]);
+
+            p = Doc.Grid[L];
+            for (c = 0; c < last && used + 4 < cap; c++) {
+                UINTN n = Utf8WriteChar(p[c], buf + used, cap - used);
+
+                if (n == 0)
+                    break;
+                used += n;
+            }
+            if (used + 1 < cap)
+                buf[used++] = '\n';
         }
-        if (used + 1 < cap)
-            buf[used++] = '\n';
     }
 
     {
@@ -1361,19 +1398,20 @@ static VOID TypewriterLoadBytesIntoDoc(const UINT8 *data, UINTN len) {
     UINT32 line = 0;
     UINT32 col = 0;
     UINTN i = 0;
+    UINT32 cpad;
 
     if (len >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF)
         i = 3;
 
     ZeroMem(&Doc, sizeof(Doc));
+    InitDocumentGridSpaces();
     Doc.Modified = TRUE;
-    Doc.LineCount = 1;
-    Doc.CursorX = 0;
-    Doc.CursorY = 0;
-    Doc.Text[0][0] = 0;
+    Doc.CursorCol = 0;
+    Doc.CursorRow = 0;
+    Doc.ScrollYPx = 0;
     ZeroMem(KeyDbgLines, sizeof(KeyDbgLines));
 
-    while (i < len && line < MAX_LINES) {
+    while (i < len && line < PAGE_ROWS) {
         UINT8 b0 = data[i];
         CHAR16 c = 0;
         UINTN adv = 1;
@@ -1397,27 +1435,33 @@ static VOID TypewriterLoadBytesIntoDoc(const UINT8 *data, UINTN len) {
         if (c == L'\n' || c == L'\r') {
             if (c == L'\r' && i < len && data[i] == '\n')
                 i++;
-            Doc.Text[line][col] = 0;
+            for (cpad = col; cpad < PAGE_COLS; cpad++)
+                Doc.Grid[line][cpad] = L' ';
+            Doc.Grid[line][PAGE_COLS] = 0;
             line++;
             col = 0;
-            if (line >= MAX_LINES)
+            if (line >= PAGE_ROWS)
                 break;
-            Doc.Text[line][0] = 0;
             continue;
         }
 
-        if (col < MAX_CHARS_PER_LINE - 1)
-            Doc.Text[line][col++] = c;
+        if (col < PAGE_COLS)
+            Doc.Grid[line][col++] = c;
     }
 
-    Doc.Text[line][col] = 0;
-    Doc.LineCount = (line < MAX_LINES) ? line + 1 : MAX_LINES;
+    if (line < PAGE_ROWS) {
+        for (cpad = col; cpad < PAGE_COLS; cpad++)
+            Doc.Grid[line][cpad] = L' ';
+        Doc.Grid[line][PAGE_COLS] = 0;
+    }
+
     ReflowAllLines();
     {
-        UINT32 ly = (Doc.LineCount > 0) ? Doc.LineCount - 1 : 0;
+        UINT32 ly = (line < PAGE_ROWS) ? line : PAGE_ROWS - 1;
+        UINT32 lastCol = GridRowLastUsedCol(Doc.Grid[ly]);
 
-        Doc.CursorY = ly;
-        Doc.CursorX = LineLen(Doc.Text[ly]);
+        Doc.CursorRow = ly;
+        Doc.CursorCol = (lastCol < PAGE_COLS) ? lastCol : PAGE_COLS - 1;
     }
     MarkFullRepaint();
 }
@@ -1478,7 +1522,7 @@ static VOID DrawKeyDebugOverlay(FRAMEBUFFER *fb) {
     UINT32 bg = RGB(28, 32, 40);
     UINT32 fg = RGB(230, 210, 80);
     UINT32 hdr = RGB(255, 245, 200);
-    UINT32 row = ActiveFontLineHeight() * FontSize + FontSize * 2;
+    UINT32 row = FONT_SZ_MUL(ActiveFontLineHeight()) + FONT_SZ_MUL(2);
     UINT32 panelH = row * (KEY_DBG_LINES + 2) + 40;
     UINT32 y0 = (panelH + 24 < fb->Height) ? fb->Height - panelH - 24 : TOP_MARGIN;
     DrawRect(fb, 4, y0 - 4, fb->Width - 8, panelH, bg);
@@ -1492,16 +1536,17 @@ static VOID DrawKeyDebugOverlay(FRAMEBUFFER *fb) {
 }
 
 EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
-    UpdateWrapPixelWidthFromFb(fb);
-
     UINT32 bgColor = COLORS[CurrentBgColor];
     UINT32 fgColor = (CurrentBgColor == 1) ? RGB(30, 30, 30) : RGB(240, 240, 230);
-    UINT32 lineStep = LineAdvance();
     UINT32 prevPainted = LastPaintedLineCount;
     UINT32 hudY = (fb->Height > LCD_STATUS_ROW_H + LCD_STATUS_MARGIN_BOT)
                       ? (fb->Height - LCD_STATUS_ROW_H - LCD_STATUS_MARGIN_BOT)
                       : 0;
     BOOLEAN clearedAllForHud = FALSE;
+    UINT32 lineBodyH = FONT_SZ_MUL(ActiveFontLineHeight());
+
+    UpdatePageLayoutFromFb(fb);
+    EnsureCursorVisibleScroll(fb);
 
     /*
      * docDirty: repaint document + cursor. Otherwise only overlays (e.g. F7 log
@@ -1515,80 +1560,62 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
     if (docDirty) {
         clearedAllForHud = RepaintFull || ShowHelp;
         if (RepaintFull || ShowHelp) {
-            ClearScreen(fb, bgColor);
-            for (UINT32 line = 0; line < Doc.LineCount; line++) {
-                UINT32 y = TOP_MARGIN + line * lineStep;
-
-                DrawString(fb, LEFT_MARGIN, y, Doc.Text[line], fgColor, bgColor);
-                if (line < MAX_LINES)
-                    LastLinePaintedRight[line] = LinePaintRightX(fb, Doc.Text[line], line);
+            DrawRect(fb, 0, 0, fb->Width, fb->Height, OFF_PAGE_COLOR);
+            if (hudY < fb->Height)
+                DrawRect(fb, 0, hudY, fb->Width, fb->Height - hudY, bgColor);
+            DrawClippedPaperFill(fb, bgColor, G_docViewportBot);
+            for (UINT32 line = 0; line < PAGE_ROWS; line++) {
+                DrawGridRowIfVisible(fb, line, fgColor, bgColor);
+                LastLinePaintedRight[line] = LinePaintRightX(fb, Doc.Grid[line], line);
             }
             RepaintFull = FALSE;
         } else {
             UINT32 top = DirtyLineTop;
             UINT32 bot = DirtyLineBottom;
 
-            if (bot >= Doc.LineCount)
-                bot = (Doc.LineCount > 0) ? Doc.LineCount - 1 : 0;
-            /* Only clear the typographic line body (cap height box), not the full
-             * LineAdvance() band — rewriting the inter-line leading every keystroke
-             * made visible tearing/flicker on some GOP scanouts. */
-            UINT32 lineBodyH = ActiveFontLineHeight() * FontSize;
+            if (bot >= PAGE_ROWS)
+                bot = PAGE_ROWS - 1;
 
             for (UINT32 line = top; line <= bot; line++) {
-                UINT32 y = TOP_MARGIN + line * lineStep;
+                INT32 sy = RowTextScreenY(line);
                 UINT32 clearR;
-                CHAR16 *ln;
+                CHAR16 *ln = Doc.Grid[line];
+                UINT32 yu;
 
-                if (y >= fb->Height)
-                    break;
-                if (line >= Doc.LineCount)
+                if (sy >= (INT32)G_docViewportBot || sy + (INT32)lineBodyH <= 0)
                     continue;
-                ln = Doc.Text[line];
+                yu = (UINT32)sy;
                 clearR = LinePaintRightX(fb, ln, line);
-                if (line < MAX_LINES && LastLinePaintedRight[line] > clearR)
+                if (line < PAGE_ROWS && LastLinePaintedRight[line] > clearR)
                     clearR = LastLinePaintedRight[line];
-                DrawRect(fb, LEFT_MARGIN, y, clearR - LEFT_MARGIN, lineBodyH, bgColor);
-                DrawString(fb, LEFT_MARGIN, y, ln, fgColor, bgColor);
-                if (line < MAX_LINES)
+                DrawRect(fb, G_pageContentX0, yu, clearR - G_pageContentX0, lineBodyH, bgColor);
+                DrawGridRowIfVisible(fb, line, fgColor, bgColor);
+                if (line < PAGE_ROWS)
                     LastLinePaintedRight[line] = LinePaintRightX(fb, ln, line);
             }
-            if (prevPainted > Doc.LineCount) {
-                for (UINT32 line = Doc.LineCount; line < prevPainted; line++) {
-                    UINT32 y = TOP_MARGIN + line * lineStep;
-                    UINT32 clearR;
-
-                    if (y >= fb->Height)
-                        break;
-                    clearR = (line < MAX_LINES && LastLinePaintedRight[line] > LEFT_MARGIN)
-                                 ? LastLinePaintedRight[line]
-                                 : LEFT_MARGIN + FontSize * 24;
-                    if (clearR > fb->Width)
-                        clearR = fb->Width;
-                    DrawRect(fb, LEFT_MARGIN, y, clearR - LEFT_MARGIN, lineBodyH, bgColor);
-                    if (line < MAX_LINES)
-                        LastLinePaintedRight[line] = LEFT_MARGIN;
-                }
-            }
+            (void)prevPainted;
         }
         if (CursorShouldDrawThisFrame() && !ShowHelp) {
-            UINT32 y = TOP_MARGIN + Doc.CursorY * lineStep;
-            UINT32 lineBox = ActiveFontLineHeight() * FontSize;
-            CHAR16 *ln = Doc.Text[Doc.CursorY];
-            UINT32 cx = CursorPixelX(ln, Doc.CursorX);
-            UINT32 cwBar = CursorBarThickness();
+            INT32 csy = RowTextScreenY(Doc.CursorRow);
 
-            if (CursorMode == CURSOR_BAR || CursorMode == CURSOR_BAR_BLINK)
-                DrawRect(fb, cx, y, cwBar, lineBox, fgColor);
-            else if (CursorMode == CURSOR_BLOCK || CursorMode == CURSOR_BLOCK_BLINK)
-                DrawRect(fb, cx, y, CursorGlyphWidthOnLine(ln), lineBox, fgColor);
+            if (csy < (INT32)G_docViewportBot && csy + (INT32)lineBodyH > 0) {
+                UINT32 yu = (UINT32)csy;
+                UINT32 cx = DocCursorPixelX();
+                UINT32 cwBar = CursorBarThickness();
+                UINT32 lineBox = lineBodyH;
+
+                if (CursorMode == CURSOR_BAR || CursorMode == CURSOR_BAR_BLINK)
+                    DrawRect(fb, cx, yu, cwBar, lineBox, fgColor);
+                else if (CursorMode == CURSOR_BLOCK || CursorMode == CURSOR_BLOCK_BLINK)
+                    DrawRect(fb, cx, yu, CursorGlyphWidthOnLine(NULL), lineBox, fgColor);
+            }
         }
         DirtyLineTop = 1;
         DirtyLineBottom = 0;
-        LastPaintedLineCount = Doc.LineCount;
+        LastPaintedLineCount = PAGE_ROWS;
         CursorBlinkRedraw = FALSE;
     } else if (cursorBlinkOnly) {
-        RepaintDocLineCursorBand(fb, Doc.CursorY, bgColor, fgColor);
+        RepaintDocLineCursorBand(fb, Doc.CursorRow, bgColor, fgColor);
         CursorBlinkRedraw = FALSE;
     }
 
@@ -1645,9 +1672,9 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
                 MarkFullRepaint();
                 Doc.Modified = TRUE;
                 break;
-            case SCAN_F3:  /* Increase font / scale */
-                if (FontSize < 6)
-                    FontSize++;
+            case SCAN_F3:  /* Increase font / scale (half steps: 1.0 … 6.0×) */
+                if (FontScaleTwice < 12)
+                    FontScaleTwice++;
                 ReflowAllLines();
                 MarkFullRepaint();
                 Doc.Modified = TRUE;
@@ -1661,12 +1688,12 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
                 CursorMode = (CursorMode + 1) % CURSOR_MODE_NUM;
                 CursorBlinkAccumUs = 0;
                 CursorBlinkPhase = TRUE;
-                MarkDirtyRange(Doc.CursorY, Doc.CursorY);
+                MarkDirtyRange(Doc.CursorRow, Doc.CursorRow);
                 Doc.Modified = TRUE;
                 break;
             case SCAN_F6:  /* Decrease font / scale */
-                if (FontSize > 1)
-                    FontSize--;
+                if (FontScaleTwice > 2)
+                    FontScaleTwice--;
                 ReflowAllLines();
                 MarkFullRepaint();
                 Doc.Modified = TRUE;
@@ -1704,42 +1731,52 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
     }
     
     if (key->UnicodeChar == 0x08) {  /* Backspace */
-        if (Doc.CursorX > 0) {
-            Doc.CursorX--;
-            Doc.Text[Doc.CursorY][Doc.CursorX] = 0;
-            MarkDirtyRange(Doc.CursorY, Doc.CursorY);
+        if (Doc.CursorCol > 0) {
+            Doc.CursorCol--;
+            Doc.Grid[Doc.CursorRow][Doc.CursorCol] = L' ';
+            Doc.Grid[Doc.CursorRow][PAGE_COLS] = 0;
+            MarkDirtyRange(Doc.CursorRow, Doc.CursorRow);
+            Doc.Modified = TRUE;
+        } else if (Doc.CursorRow > 0) {
+            Doc.CursorRow--;
+            Doc.CursorCol = PAGE_COLS - 1;
+            Doc.Grid[Doc.CursorRow][Doc.CursorCol] = L' ';
+            Doc.Grid[Doc.CursorRow][PAGE_COLS] = 0;
+            MarkDirtyRange(Doc.CursorRow, Doc.CursorRow + 1);
             Doc.Modified = TRUE;
         }
         return EFI_SUCCESS;
     }
     
     if (key->UnicodeChar == 0x09) {  /* Tab */
-        UINT32 ly = Doc.CursorY;
-        for (INT32 i = 0; i < 4; i++) {
-            if (Doc.CursorX < MAX_CHARS_PER_LINE - 1) {
-                Doc.Text[Doc.CursorY][Doc.CursorX++] = ' ';
-            }
+        UINT32 r0 = Doc.CursorRow;
+        UINT32 r1 = Doc.CursorRow;
+        INT32 k;
+
+        for (k = 0; k < 4; k++) {
+            Doc.Grid[Doc.CursorRow][Doc.CursorCol] = L' ';
+            if (Doc.CursorCol < PAGE_COLS - 1)
+                Doc.CursorCol++;
+            else if (Doc.CursorRow < PAGE_ROWS - 1) {
+                Doc.CursorRow++;
+                Doc.CursorCol = 0;
+                r1 = Doc.CursorRow;
+            } else
+                break;
         }
-        Doc.Text[Doc.CursorY][Doc.CursorX] = 0;
-        ApplyWordWrap(ly);
-        MarkDirtyRange(ly, Doc.LineCount - 1);
+        Doc.Grid[Doc.CursorRow][PAGE_COLS] = 0;
+        MarkDirtyRange(r0, r1);
         Doc.Modified = TRUE;
         return EFI_SUCCESS;
     }
     
     if (key->UnicodeChar == 0x0D || key->UnicodeChar == 0x0A) {  /* Enter */
-        if (Doc.CursorY < MAX_LINES - 1) {
-            UINT32 oldCy = Doc.CursorY;
-            UINT32 oldLC = Doc.LineCount;
-            Doc.CursorY++;
-            Doc.CursorX = 0;
-            Doc.LineCount = Doc.CursorY + 1;
-            Doc.Text[Doc.CursorY][0] = 0;
-            {
-                UINT32 newLC = Doc.LineCount;
-                UINT32 mx = oldLC > newLC ? oldLC : newLC;
-                MarkDirtyRange(oldCy, mx - 1);
-            }
+        if (Doc.CursorRow < PAGE_ROWS - 1) {
+            UINT32 oldCy = Doc.CursorRow;
+
+            Doc.CursorRow++;
+            Doc.CursorCol = 0;
+            MarkDirtyRange(oldCy, Doc.CursorRow);
             Doc.Modified = TRUE;
         }
         return EFI_SUCCESS;
@@ -1747,14 +1784,22 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
     
     /* Printable BMP (not DEL); Latin/typical layouts need code points > 127 */
     if (key->UnicodeChar >= 32 && key->UnicodeChar != 0x7F) {
-        if (Doc.CursorX < MAX_CHARS_PER_LINE - 1) {
-            UINT32 ly = Doc.CursorY;
-            Doc.Text[Doc.CursorY][Doc.CursorX++] = key->UnicodeChar;
-            Doc.Text[Doc.CursorY][Doc.CursorX] = 0;
-            ApplyWordWrap(ly);
-            MarkDirtyRange(ly, Doc.LineCount - 1);
-            Doc.Modified = TRUE;
+        UINT32 r0 = Doc.CursorRow;
+        UINT32 r1 = Doc.CursorRow;
+
+        Doc.Grid[Doc.CursorRow][Doc.CursorCol] = key->UnicodeChar;
+        if (Doc.CursorCol < PAGE_COLS - 1)
+            Doc.CursorCol++;
+        else if (Doc.CursorRow < PAGE_ROWS - 1) {
+            Doc.CursorRow++;
+            Doc.CursorCol = 0;
+            r1 = Doc.CursorRow;
         }
+        Doc.Grid[r0][PAGE_COLS] = 0;
+        if (r1 != r0)
+            Doc.Grid[r1][PAGE_COLS] = 0;
+        MarkDirtyRange(r0, r1);
+        Doc.Modified = TRUE;
     }
 
     return EFI_SUCCESS;
@@ -1847,7 +1892,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         }
     }
 
-    UpdateWrapPixelWidthFromFb(&fb);
+    UpdatePageLayoutFromFb(&fb);
     RunSplashScreen(&fb);
     CursorBlinkPhase = TRUE;
     CursorBlinkAccumUs = 0;
@@ -1911,7 +1956,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         }
     }
     
-    Print(L"Typewriter exited. Lines: %d\n", Doc.LineCount);
+    Print(L"Typewriter exited. Page rows: %u cols: %u\n", PAGE_ROWS, PAGE_COLS);
     
     return EFI_SUCCESS;
 }
