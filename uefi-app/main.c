@@ -28,6 +28,8 @@ typedef struct {
     UINT32 Height;
     UINT32 Pitch;
     UINT8  *PixelData;
+    UINT32 RedMask;
+    EFI_GRAPHICS_PIXEL_FORMAT PixelFormat;
 } FRAMEBUFFER;
 
 typedef struct {
@@ -65,9 +67,15 @@ static BOOLEAN Running = TRUE;
 
 EFI_STATUS DrawPixel(FRAMEBUFFER *fb, UINT32 x, UINT32 y, UINT32 color) {
     if (x >= fb->Width || y >= fb->Height) return EFI_SUCCESS;
-    UINT8 *pixel = fb->PixelData + y * fb->Pitch + x * 4;
-    *(UINT32*)pixel = color | 0xFF000000;
-    return EFI_SUCCESS;
+    
+    // Use GOP Blt for reliable rendering
+    EFI_GRAPHICS_OUTPUT_BLT_PIXEL pixel;
+    pixel.Red = (color >> 0) & 0xFF;
+    pixel.Green = (color >> 8) & 0xFF;
+    pixel.Blue = (color >> 16) & 0xFF;
+    pixel.Reserved = 0;
+    
+    return Gop->Blt(Gop, &pixel, EfiBltVideoToVideo, x, y, x, y, 1, 1, 0);
 }
 
 EFI_STATUS DrawRect(FRAMEBUFFER *fb, UINT32 x, UINT32 y, UINT32 w, UINT32 h, UINT32 color) {
@@ -153,8 +161,14 @@ EFI_STATUS DrawString(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 *str, UINT32 f
 }
 
 EFI_STATUS ClearScreen(FRAMEBUFFER *fb, UINT32 bgColor) {
-    DrawRect(fb, 0, 0, fb->Width, fb->Height, bgColor);
-    return EFI_SUCCESS;
+    // Use GOP Blt to fill screen
+    EFI_GRAPHICS_OUTPUT_BLT_PIXEL color;
+    color.Red = (bgColor >> 0) & 0xFF;
+    color.Green = (bgColor >> 8) & 0xFF;
+    color.Blue = (bgColor >> 16) & 0xFF;
+    color.Reserved = 0;
+    
+    return Gop->Blt(Gop, &color, EfiBltVideoFill, 0, 0, 0, 0, fb->Width, fb->Height, 0);
 }
 
 VOID InitDocument(VOID) {
@@ -274,11 +288,32 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         return status;
     }
     
+    // Set the video mode to ensure it's initialized
+    status = uefi_call_wrapper(Gop->SetMode, 1, Gop, Gop->Mode->Mode);
+    if (EFI_ERROR(status)) {
+        Print(L"Warning: SetMode failed (status=%r)\n", status);
+    }
+    
     FRAMEBUFFER fb;
     fb.Width = Gop->Mode->Info->HorizontalResolution;
     fb.Height = Gop->Mode->Info->VerticalResolution;
     fb.Pitch = Gop->Mode->Info->PixelsPerScanLine * 4;
     fb.PixelData = (UINT8*)(UINTN)Gop->Mode->FrameBufferBase;
+    
+    // Detect pixel format from GOP
+    fb.PixelFormat = Gop->Mode->Info->PixelFormat;
+    if (fb.PixelFormat == PixelBlueGreenRedReserved8BitPerColor) {
+        fb.RedMask = 0xFF;  // BGR format
+    } else if (fb.PixelFormat == PixelRedGreenBlueReserved8BitPerColor) {
+        fb.RedMask = 0xFF0000;  // RGB format
+    } else if (fb.PixelFormat == PixelBitMask) {
+        fb.RedMask = Gop->Mode->Info->PixelInformation.RedMask;
+    } else {
+        // Default to BGR
+        fb.RedMask = 0xFF;
+    }
+    
+    Print(L"Pixel format: %d\n", fb.PixelFormat);
     
     Print(L"Resolution: %dx%d\n", fb.Width, fb.Height);
     
