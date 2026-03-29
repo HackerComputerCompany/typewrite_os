@@ -56,9 +56,10 @@ struct _EFI_BATTERY_CHARGING_PROTOCOL {
 
 #define TYPEWRITER_DOC_FILENAME L"Typewriter.txt"
 #define DOC_FILE_MAX_BYTES      (128 * 1024)
-#define BATTERY_LCD_STRIP_H     54
-#define BATTERY_LCD_MARGIN_BOT  6
-#define FILE_OP_BANNER_TICKS    120
+#define LCD_STATUS_ROW_H        34
+#define LCD_STATUS_MARGIN_BOT   6
+#define STATUS_REFRESH_US       (45U * 1000000U)
+#define FILE_BANNER_HOLD_US     (4500000U)
 
 static UINT32 StringPixelWidthChars(const CHAR16 *s);
 
@@ -243,7 +244,16 @@ static EFI_GRAPHICS_OUTPUT_PROTOCOL *Gop;
 static EFI_BATTERY_CHARGING_PROTOCOL *BattChargeProto;
 static EFI_HANDLE BootImageHandle;
 static CHAR16 FileOpBanner[96];
-static UINT32 FileOpBannerTtl = 0;
+static UINT32 FileOpBannerRemainUs = 0;
+static BOOLEAN HudNeedPaint = FALSE;
+
+/* Cached status (updated only every STATUS_REFRESH_US to limit firmware calls + flicker). */
+static UINT32 CachedBattSoc = 0;
+static BOOLEAN CachedBattValid = FALSE;
+static BOOLEAN CachedBattAc = FALSE;
+static UINT8 CachedClockH = 0;
+static UINT8 CachedClockM = 0;
+static BOOLEAN CachedClockOk = FALSE;
 
 typedef enum {
     FONT_VIRGIL = 0,
@@ -990,69 +1000,197 @@ static VOID BattSample(UINT32 *soc, BOOLEAN *haveSoc, BOOLEAN *onAc) {
     }
 }
 
-static VOID DrawBatteryLcdStrip(FRAMEBUFFER *fb) {
-    UINT32 bezel = RGB(48, 50, 56);
-    UINT32 lcdBg = RGB(14, 28, 22);
-    UINT32 segOn = RGB(90, 255, 130);
-    UINT32 segDim = RGB(18, 40, 28);
-    UINT32 label = RGB(190, 240, 200);
-    UINT32 y0 = fb->Height - BATTERY_LCD_STRIP_H - BATTERY_LCD_MARGIN_BOT;
-    UINT32 soc, i;
-    BOOLEAN haveSoc, onAc;
-    CHAR16 pctBuf[32];
-    UINT32 barX, barY, barW, segTotalW, segW, nSeg = 20, filledSegs;
-    UINT32 txtX;
+static VOID RefreshStatusCache(VOID) {
+    EFI_TIME tm;
+    EFI_STATUS st;
 
-    if (fb->Height < TOP_MARGIN + BATTERY_LCD_STRIP_H + BATTERY_LCD_MARGIN_BOT + 24)
+    BattSample(&CachedBattSoc, &CachedBattValid, &CachedBattAc);
+
+    CachedClockOk = FALSE;
+    if (RT != NULL && RT->GetTime != NULL) {
+        st = uefi_call_wrapper(RT->GetTime, 2, &tm, NULL);
+        if (!EFI_ERROR(st)) {
+            CachedClockH = tm.Hour;
+            CachedClockM = tm.Minute;
+            CachedClockOk = TRUE;
+        }
+    }
+}
+
+/* 7-segment patterns (a..g, standard GFEDCBA-style bit order used below). */
+#define LCD7_A 0x01
+#define LCD7_B 0x02
+#define LCD7_C 0x04
+#define LCD7_D 0x08
+#define LCD7_E 0x10
+#define LCD7_F 0x20
+#define LCD7_G 0x40
+
+static const UINT8 LCD7_DIGITS[10] = {
+    LCD7_A | LCD7_B | LCD7_C | LCD7_D | LCD7_E | LCD7_F,
+    LCD7_B | LCD7_C,
+    LCD7_A | LCD7_B | LCD7_G | LCD7_E | LCD7_D,
+    LCD7_A | LCD7_B | LCD7_G | LCD7_C | LCD7_D,
+    LCD7_F | LCD7_G | LCD7_B | LCD7_C,
+    LCD7_A | LCD7_F | LCD7_G | LCD7_C | LCD7_D,
+    LCD7_A | LCD7_F | LCD7_E | LCD7_D | LCD7_C | LCD7_G,
+    LCD7_A | LCD7_B | LCD7_C,
+    LCD7_A | LCD7_B | LCD7_C | LCD7_D | LCD7_E | LCD7_F | LCD7_G,
+    LCD7_A | LCD7_F | LCD7_G | LCD7_C | LCD7_D,
+};
+
+static VOID LcdDraw7SegDigit(FRAMEBUFFER *fb, UINT32 x, UINT32 y, UINT32 cw, UINT32 ch, UINT32 digit,
+                             UINT32 onC, UINT32 offC) {
+    UINT32 th = ch / 9 + 2;
+
+    UINT32 mw, mh;
+    UINT8 segs;
+
+    if (th > ch / 4)
+        th = ch / 4;
+    if (th < 2)
+        th = 2;
+    mw = cw - 2 * th;
+    if (mw < 4)
+        mw = 4;
+    mh = (ch - 3 * th) / 2;
+    if (mh < 3)
+        mh = 3;
+
+    if (digit == 10) {
+        DrawRect(fb, x + th, y, mw, th, offC);
+        DrawRect(fb, x + cw - th, y + th, th, mh, offC);
+        DrawRect(fb, x + cw - th, y + th + mh + th, th, mh, offC);
+        DrawRect(fb, x + th, y + ch - th, mw, th, offC);
+        DrawRect(fb, x, y + th + mh + th, th, mh, offC);
+        DrawRect(fb, x, y + th, th, mh, offC);
+        DrawRect(fb, x + th, y + th + mh, mw, th, onC);
+        return;
+    }
+    if (digit == 11) {
+        DrawRect(fb, x + th, y, mw, th, offC);
+        DrawRect(fb, x + cw - th, y + th, th, mh, offC);
+        DrawRect(fb, x + cw - th, y + th + mh + th, th, mh, offC);
+        DrawRect(fb, x + th, y + ch - th, mw, th, offC);
+        DrawRect(fb, x, y + th + mh + th, th, mh, offC);
+        DrawRect(fb, x, y + th, th, mh, offC);
+        DrawRect(fb, x + th, y + th + mh, mw, th, offC);
+        return;
+    }
+
+    segs = (digit < 10) ? LCD7_DIGITS[digit] : 0;
+
+    DrawRect(fb, x + th, y, mw, th, (segs & LCD7_A) ? onC : offC);
+    DrawRect(fb, x + cw - th, y + th, th, mh, (segs & LCD7_B) ? onC : offC);
+    DrawRect(fb, x + cw - th, y + th + mh + th, th, mh, (segs & LCD7_C) ? onC : offC);
+    DrawRect(fb, x + th, y + ch - th, mw, th, (segs & LCD7_D) ? onC : offC);
+    DrawRect(fb, x, y + th + mh + th, th, mh, (segs & LCD7_E) ? onC : offC);
+    DrawRect(fb, x, y + th, th, mh, (segs & LCD7_F) ? onC : offC);
+    DrawRect(fb, x + th, y + th + mh, mw, th, (segs & LCD7_G) ? onC : offC);
+}
+
+static VOID LcdDrawColon(FRAMEBUFFER *fb, UINT32 x, UINT32 y, UINT32 ch, UINT32 onC) {
+    UINT32 d = ch / 6;
+
+    if (d < 2)
+        d = 2;
+    DrawRect(fb, x, y + ch / 3 - d / 2, d, d, onC);
+    DrawRect(fb, x, y + 2 * ch / 3 - d / 2, d, d, onC);
+}
+
+/* Gray face, black “on” segments, slightly darker gray “off” segments (90s LCD). */
+static VOID DrawCasioStatusHud(FRAMEBUFFER *fb, UINT32 hudY, UINT32 docBg) {
+    UINT32 face = RGB(168, 172, 158);
+    UINT32 frame = RGB(72, 74, 70);
+    UINT32 segOff = RGB(130, 134, 122);
+    UINT32 segOn = RGB(12, 14, 10);
+    UINT32 cw = 15;
+    UINT32 ch = 26;
+    UINT32 gap = 3;
+    UINT32 clockW = 4 * cw + gap * 2 + 6;
+    UINT32 clockH = ch + 8;
+    UINT32 clockX = (fb->Width > clockW) ? (fb->Width - clockW) / 2 : 4;
+    UINT32 battW = 3 * cw + 36;
+    UINT32 battH = ch + 8;
+    UINT32 battX = (fb->Width > battW + 10) ? fb->Width - battW - 10 : 4;
+    UINT32 h1, h2, m1, m2;
+    UINT32 p1, p2, p3;
+    FONT_KIND saveFont;
+    UINT32 saveFs;
+
+    if (fb->Height < hudY + LCD_STATUS_ROW_H + 8)
         return;
 
-    BattSample(&soc, &haveSoc, &onAc);
+    DrawRect(fb, clockX - 3, hudY, clockW + 6, clockH, docBg);
+    DrawRect(fb, battX - 3, hudY, battW + 6, battH, docBg);
 
-    DrawRect(fb, 0, y0, fb->Width, BATTERY_LCD_STRIP_H, bezel);
-    DrawRect(fb, 5, y0 + 4, fb->Width - 10, BATTERY_LCD_STRIP_H - 8, lcdBg);
+    DrawRect(fb, clockX - 3, hudY, clockW + 6, clockH, frame);
+    DrawRect(fb, clockX - 1, hudY + 2, clockW + 2, clockH - 4, face);
+    DrawRect(fb, battX - 3, hudY, battW + 6, battH, frame);
+    DrawRect(fb, battX - 1, hudY + 2, battW + 2, battH - 4, face);
 
-    barX = 14;
-    barY = y0 + 16;
-    barW = fb->Width - 220;
-    if (barW < 120)
-        barW = 120;
-    segTotalW = barW;
-    segW = (segTotalW - (nSeg - 1) * 2) / nSeg;
-    if (segW < 4)
-        segW = 4;
-
-    filledSegs = haveSoc ? (soc * nSeg + 99) / 100 : 0;
-    if (filledSegs > nSeg)
-        filledSegs = nSeg;
-
-    for (i = 0; i < nSeg; i++) {
-        UINT32 sx = barX + i * (segW + 2);
-        UINT32 fillC = (i < filledSegs) ? segOn : segDim;
-
-        DrawRect(fb, sx, barY, segW, 12, fillC);
+    if (CachedClockOk) {
+        h1 = CachedClockH / 10;
+        h2 = CachedClockH % 10;
+        m1 = CachedClockM / 10;
+        m2 = CachedClockM % 10;
+    } else {
+        h1 = h2 = m1 = m2 = 8;
     }
 
-    DrawString(fb, barX, y0 + 4, L"BATT", label, lcdBg);
-    if (haveSoc)
-        UnicodeSPrint(pctBuf, sizeof(pctBuf), L"%u%%", soc);
-    else
-        StrCpy(pctBuf, L"--%");
-    if (onAc) {
-        StrCat(pctBuf, L" AC");
-    } else if (haveSoc && soc < 100) {
-        StrCat(pctBuf, L" DC");
+    {
+        UINT32 cy = hudY + 5;
+        UINT32 cx = clockX + 5;
+
+        LcdDraw7SegDigit(fb, cx, cy, cw, ch, h1, segOn, segOff);
+        cx += cw + gap;
+        LcdDraw7SegDigit(fb, cx, cy, cw, ch, h2, segOn, segOff);
+        cx += cw + gap;
+        LcdDrawColon(fb, cx + 1, cy, ch, segOn);
+        cx += 6;
+        LcdDraw7SegDigit(fb, cx, cy, cw, ch, m1, segOn, segOff);
+        cx += cw + gap;
+        LcdDraw7SegDigit(fb, cx, cy, cw, ch, m2, segOn, segOff);
     }
 
-    txtX = fb->Width - 14 - StringPixelWidthChars(pctBuf);
-    if (txtX < barX + segTotalW + 10)
-        txtX = barX + segTotalW + 10;
-    DrawString(fb, txtX, y0 + 8, pctBuf, label, lcdBg);
+    if (CachedBattValid) {
+        p1 = CachedBattSoc / 100;
+        p2 = (CachedBattSoc / 10) % 10;
+        p3 = CachedBattSoc % 10;
+    } else {
+        p1 = 10;
+        p2 = 10;
+        p3 = 11;
+    }
 
-    if (FileOpBannerTtl > 0 && FileOpBanner[0] && y0 + 36 + FontSize * 8 < fb->Height) {
-        UINT32 bw = StringPixelWidthChars(FileOpBanner);
-        UINT32 mx = (fb->Width > bw + 8) ? (fb->Width - bw) / 2 : 6;
+    {
+        UINT32 by = hudY + 5;
+        UINT32 bx = battX + 6;
 
-        DrawString(fb, mx, y0 + 32, FileOpBanner, RGB(255, 210, 90), lcdBg);
+        LcdDraw7SegDigit(fb, bx, by, cw, ch, p1, segOn, segOff);
+        bx += cw + gap;
+        LcdDraw7SegDigit(fb, bx, by, cw, ch, p2, segOn, segOff);
+        bx += cw + gap;
+        LcdDraw7SegDigit(fb, bx, by, cw, ch, p3, segOn, segOff);
+        bx += cw + 5;
+        DrawRect(fb, bx, by + 2, 2, ch - 10, segOn);
+        DrawRect(fb, bx + 5, by + 4, 5, 2, segOn);
+        DrawRect(fb, bx + 3, by + ch - 8, 6, 2, segOn);
+        if (CachedBattAc)
+            DrawRect(fb, battX + battW - 18, by + 4, 7, 7, segOn);
+    }
+
+    if (FileOpBannerRemainUs > 0 && FileOpBanner[0]) {
+        UINT32 bx = 10;
+        UINT32 by = hudY + 4;
+
+        saveFont = CurrentFontKind;
+        saveFs = FontSize;
+        CurrentFontKind = FONT_SIMPLE;
+        FontSize = 1;
+        DrawString(fb, bx, by, FileOpBanner, segOn, face);
+        CurrentFontKind = saveFont;
+        FontSize = saveFs;
     }
 }
 
@@ -1079,12 +1217,14 @@ static UINTN Utf8WriteChar(CHAR16 c, UINT8 *dst, UINTN left) {
 
 static VOID FileOpSetBannerOk(const CHAR16 *msg) {
     StrCpy(FileOpBanner, msg);
-    FileOpBannerTtl = FILE_OP_BANNER_TICKS;
+    FileOpBannerRemainUs = FILE_BANNER_HOLD_US;
+    HudNeedPaint = TRUE;
 }
 
 static VOID FileOpSetBannerErr(const CHAR16 *msg, EFI_STATUS st) {
     UnicodeSPrint(FileOpBanner, sizeof(FileOpBanner), L"%s  (%lx)", msg, (UINTN)st);
-    FileOpBannerTtl = FILE_OP_BANNER_TICKS;
+    FileOpBannerRemainUs = FILE_BANNER_HOLD_US;
+    HudNeedPaint = TRUE;
 }
 
 static EFI_STATUS TypewriterSaveFile(EFI_HANDLE img) {
@@ -1292,6 +1432,10 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
     UINT32 fgColor = (CurrentBgColor == 1) ? RGB(30, 30, 30) : RGB(240, 240, 230);
     UINT32 lineStep = LineAdvance();
     UINT32 prevPainted = LastPaintedLineCount;
+    UINT32 hudY = (fb->Height > LCD_STATUS_ROW_H + LCD_STATUS_MARGIN_BOT)
+                      ? (fb->Height - LCD_STATUS_ROW_H - LCD_STATUS_MARGIN_BOT)
+                      : 0;
+    BOOLEAN clearedAllForHud = FALSE;
 
     /*
      * docDirty: repaint document + cursor. Otherwise only overlays (e.g. F7 log
@@ -1301,6 +1445,7 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
         RepaintFull || ShowHelp || (DirtyLineTop <= DirtyLineBottom);
 
     if (docDirty) {
+        clearedAllForHud = RepaintFull || ShowHelp;
         if (RepaintFull || ShowHelp) {
             ClearScreen(fb, bgColor);
             for (UINT32 line = 0; line < Doc.LineCount; line++) {
@@ -1411,8 +1556,17 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
         DrawString(fb, lx, ly, L"ESC  Close help; quit app when help is hidden", hf, hb);
     }
 
-    DrawBatteryLcdStrip(fb);
-    
+    {
+        BOOLEAN needHud = HudNeedPaint || clearedAllForHud;
+
+        if (needHud) {
+            if (!clearedAllForHud)
+                DrawRect(fb, 0, hudY, fb->Width, fb->Height - hudY, bgColor);
+            DrawCasioStatusHud(fb, hudY, bgColor);
+            HudNeedPaint = FALSE;
+        }
+    }
+
     FlipFramebuffer(fb);
     return EFI_SUCCESS;
 }
@@ -1658,10 +1812,12 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     CursorBlinkAccumUs = 0;
 
     InitDocument();
+    RefreshStatusCache();
+    HudNeedPaint = TRUE;
 
     while (Running) {
         KickFirmwareWatchdog();
-        if (Doc.Modified) {
+        if (Doc.Modified || HudNeedPaint) {
             RenderDocument(&fb);
             Doc.Modified = FALSE;
         }
@@ -1684,18 +1840,23 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         
         /* Idle longer when unchanged to avoid burning CPU; short delay after input */
         {
-            static UINT32 battPollUs = 0;
+            static UINT32 statusAccumUs = 0;
             UINT32 stallUs = EFI_ERROR(keyStatus) ? 50000 : 5000;
 
             uefi_call_wrapper(BS->Stall, 1, stallUs);
-            battPollUs += stallUs;
-            if (battPollUs >= 2000000) {
-                battPollUs = 0;
-                Doc.Modified = TRUE;
+            statusAccumUs += stallUs;
+            if (statusAccumUs >= STATUS_REFRESH_US) {
+                statusAccumUs = 0;
+                RefreshStatusCache();
+                HudNeedPaint = TRUE;
             }
-            if (FileOpBannerTtl > 0) {
-                FileOpBannerTtl--;
-                Doc.Modified = TRUE;
+            if (FileOpBannerRemainUs > 0) {
+                if (stallUs >= FileOpBannerRemainUs) {
+                    FileOpBannerRemainUs = 0;
+                    HudNeedPaint = TRUE;
+                } else {
+                    FileOpBannerRemainUs -= stallUs;
+                }
             }
             if (!ShowHelp && CursorWantsBlinkTimer()) {
                 CursorBlinkAccumUs += stallUs;
