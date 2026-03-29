@@ -612,6 +612,16 @@ EFI_STATUS DrawPixel(FRAMEBUFFER *fb, UINT32 x, UINT32 y, UINT32 color) {
     return EFI_SUCCESS;
 }
 
+static UINT32 PackFramebufferPixel32(const FRAMEBUFFER *fb, UINT32 color) {
+    UINT8 r = (color >> 0) & 0xFF;
+    UINT8 g = (color >> 8) & 0xFF;
+    UINT8 b = (color >> 16) & 0xFF;
+
+    if (fb->PixelFormat == PixelRedGreenBlueReserved8BitPerColor)
+        return (UINT32)r | ((UINT32)g << 8) | ((UINT32)b << 16);
+    return (UINT32)b | ((UINT32)g << 8) | ((UINT32)r << 16);
+}
+
 /*
  * Clamp before drawing. Without this, (y + h) or (x + w) UINT32 wrap can make
  * py < y + h true across a huge range and lock the machine for minutes — seen
@@ -634,10 +644,17 @@ EFI_STATUS DrawRect(FRAMEBUFFER *fb, UINT32 x, UINT32 y, UINT32 w, UINT32 h, UIN
     {
         UINT32 yEnd = y + h;
         UINT32 xEnd = x + w;
+        UINT32 packed = PackFramebufferPixel32(fb, color);
+        UINT32 py;
+        UINT32 px;
 
-        for (UINT32 py = y; py < yEnd; py++) {
-            for (UINT32 px = x; px < xEnd; px++)
-                DrawPixel(fb, px, py, color);
+        for (py = y; py < yEnd; py++) {
+            UINT8 *row = fb->PixelData + (UINTN)py * (UINTN)fb->Pitch;
+
+            if ((py & 63) == 0)
+                KickFirmwareWatchdog();
+            for (px = x; px < xEnd; px++)
+                *(UINT32 *)(VOID *)(row + (UINTN)px * 4) = packed;
         }
     }
     return EFI_SUCCESS;
@@ -1086,13 +1103,30 @@ static VOID DrawHelpOverlay(FRAMEBUFFER *fb) {
     }
 }
 
+/* Guard insane GOP dimensions (would make ClearScreen appear to hang forever). */
+#define CLEARSCREEN_MAX_WH 4096
+
 EFI_STATUS ClearScreen(FRAMEBUFFER *fb, UINT32 bgColor) {
-    /* Full-screen fill: long on large GOP modes; feed watchdog for picky firmware. */
-    for (UINT32 y = 0; y < fb->Height; y++) {
+    UINT32 wlim = fb->Width;
+    UINT32 hlim = fb->Height;
+    UINT32 packed;
+
+    if (wlim > CLEARSCREEN_MAX_WH)
+        wlim = CLEARSCREEN_MAX_WH;
+    if (hlim > CLEARSCREEN_MAX_WH)
+        hlim = CLEARSCREEN_MAX_WH;
+
+    packed = PackFramebufferPixel32(fb, bgColor);
+
+    for (UINT32 y = 0; y < hlim; y++) {
+        UINT8 *row = fb->PixelData + (UINTN)y * (UINTN)fb->Pitch;
+        UINT32 x;
+
         if ((y & 63) == 0)
             KickFirmwareWatchdog();
-        for (UINT32 x = 0; x < fb->Width; x++)
-            DrawPixel(fb, x, y, bgColor);
+        for (x = 0; x < wlim; x++) {
+            *(UINT32 *)(VOID *)(row + (UINTN)x * 4) = packed;
+        }
     }
     return EFI_SUCCESS;
 }
@@ -1154,49 +1188,44 @@ static VOID DrawSplashScreen(FRAMEBUFFER *fb) {
 }
 
 /*
- * OVMF/QEMU: ConIn->ReadKeyStroke sometimes returns EFI_SUCCESS with ScanCode/UnicodeChar
- * both zero forever; draining with while (!EFI_ERROR(...)) never terminates.
+ * OVMF/QEMU: calling ReadKeyStroke without a signaled WaitForKey can block forever or
+ * return garbage in a tight loop. Poll CheckEvent(WaitForKey) first; only then read.
  */
-#define SPLASH_KEY_DRAIN_MAX 256
-
-static VOID SplashDrainConIn(VOID) {
-    EFI_INPUT_KEY key;
-    UINTN i;
-    EFI_STATUS st;
-
-    for (i = 0; i < SPLASH_KEY_DRAIN_MAX; i++) {
-        st = uefi_call_wrapper(ST->ConIn->ReadKeyStroke, 2, ST->ConIn, &key);
-        if (EFI_ERROR(st))
-            return;
-        if (key.ScanCode == SCAN_NULL && key.UnicodeChar == 0)
-            return;
-    }
-}
-
 static VOID RunSplashScreen(FRAMEBUFFER *fb) {
     EFI_INPUT_KEY key;
-    UINT64 elapsed;
+    UINT64 elapsed = 0;
+    EFI_STATUS ev;
+    BOOLEAN canKey = FALSE;
+
+    if (ST != NULL && ST->ConIn != NULL && ST->ConIn->Reset != NULL)
+        (void)uefi_call_wrapper(ST->ConIn->Reset, 2, ST->ConIn, FALSE);
 
     DrawSplashScreen(fb);
     FlipFramebuffer(fb);
     KickFirmwareWatchdog();
 
-    SplashDrainConIn();
+    if (ST != NULL && ST->ConIn != NULL && BS != NULL && BS->CheckEvent != NULL &&
+        ST->ConIn->WaitForKey != NULL && ST->ConIn->ReadKeyStroke != NULL)
+        canKey = TRUE;
 
-    elapsed = 0;
     while (elapsed < (UINT64)SPLASH_TIMEOUT_US) {
-        EFI_STATUS ks = uefi_call_wrapper(ST->ConIn->ReadKeyStroke, 2, ST->ConIn, &key);
-
-        if (!EFI_ERROR(ks)) {
-            if (key.ScanCode != SCAN_NULL || key.UnicodeChar != 0)
+        if (canKey) {
+            ev = uefi_call_wrapper(BS->CheckEvent, 1, ST->ConIn->WaitForKey);
+            if (!EFI_ERROR(ev)) {
+                (void)uefi_call_wrapper(ST->ConIn->ReadKeyStroke, 2, ST->ConIn, &key);
                 break;
+            }
         }
         KickFirmwareWatchdog();
-        uefi_call_wrapper(BS->Stall, 1, 40000);
-        elapsed += 40000;
+        if (BS != NULL && BS->Stall != NULL)
+            uefi_call_wrapper(BS->Stall, 1, 50000);
+        else
+            break;
+        elapsed += 50000ULL;
     }
 
-    SplashDrainConIn();
+    if (ST != NULL && ST->ConIn != NULL && ST->ConIn->Reset != NULL)
+        (void)uefi_call_wrapper(ST->ConIn->Reset, 2, ST->ConIn, FALSE);
 }
 
 VOID InitDocument(VOID) {
