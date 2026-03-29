@@ -70,6 +70,7 @@ For QEMU, run [`../start-qemu.sh`](../start-qemu.sh) from the repo root (it copi
 - **QEMU + OVMF** with FAT payload under `fs/` (e.g. `startup.nsh`).
 - **GOP**: mode set, framebuffer base/pitch; large region fills verified on QEMU and some real hardware.
 - **Virgil / Helvetica** text: proportional bitmap stride matches `fonts/convert_font.py`; redraw coalescing when **`Doc.Modified`** (see [`../GRAPHICS_DEBUG.md`](../GRAPHICS_DEBUG.md) for pitch / framebuffer notes).
+- **Typing / wrap / Enter**: document repaint is **incremental** (full-width horizontal stripes for changed lines only), not a full-frame clear, to reduce flicker. Full clears still run for help, F2–F7, background change, and first paint.
 
 ### Open
 

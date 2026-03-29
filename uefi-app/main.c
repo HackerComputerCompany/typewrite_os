@@ -196,6 +196,12 @@ static BOOLEAN Running = TRUE;
 static UINT32 WrapPixelWidth = 800;
 static CHAR16 KeyDbgLines[KEY_DBG_LINES][KEY_DBG_COLS];
 
+/* Repaint: full screen vs horizontal strips for changed document lines only. */
+static BOOLEAN RepaintFull = TRUE;
+static UINT32 DirtyLineTop = 1;
+static UINT32 DirtyLineBottom = 0; /* invalid until MarkDirtyRange (Top <= Bottom). */
+static UINT32 LastPaintedLineCount = 0;
+
 #define CHAR_GAP 2
 /* Word space advance multiplier (advance for ' ' is this × normal font advance). */
 #define SPACE_ADVANCE_MULT 3
@@ -203,6 +209,29 @@ static CHAR16 KeyDbgLines[KEY_DBG_LINES][KEY_DBG_COLS];
 #define SCELL(_fb, _x, _y, _c) DrawRect((_fb), (_x), (_y), FontSize, FontSize, (_c))
 
 static UINT32 GlyphAdvance(CHAR16 ch);
+
+static VOID MarkFullRepaint(VOID) {
+    RepaintFull = TRUE;
+}
+
+static VOID MarkDirtyRange(UINT32 top, UINT32 bot) {
+    if (RepaintFull)
+        return;
+    if (top > bot) {
+        UINT32 t = top;
+        top = bot;
+        bot = t;
+    }
+    if (DirtyLineTop > DirtyLineBottom) {
+        DirtyLineTop = top;
+        DirtyLineBottom = bot;
+    } else {
+        if (top < DirtyLineTop)
+            DirtyLineTop = top;
+        if (bot > DirtyLineBottom)
+            DirtyLineBottom = bot;
+    }
+}
 
 static UINT32 LineLen(const CHAR16 *s) {
     UINT32 n = 0;
@@ -672,6 +701,10 @@ VOID InitDocument(VOID) {
     Doc.Text[0][0] = 0;
     Doc.Modified = TRUE;
     ZeroMem(KeyDbgLines, sizeof(KeyDbgLines));
+    MarkFullRepaint();
+    DirtyLineTop = 1;
+    DirtyLineBottom = 0;
+    LastPaintedLineCount = 0;
 }
 
 static VOID KeyDbgPush(const EFI_INPUT_KEY *k) {
@@ -703,28 +736,66 @@ static VOID DrawKeyDebugOverlay(FRAMEBUFFER *fb) {
 EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
     if (fb->Width > LEFT_MARGIN + RIGHT_MARGIN + 80)
         WrapPixelWidth = fb->Width - LEFT_MARGIN - RIGHT_MARGIN;
-    ClearScreen(fb, COLORS[CurrentBgColor]);
-    
+
+    UINT32 bgColor = COLORS[CurrentBgColor];
     UINT32 fgColor = (CurrentBgColor == 1) ? RGB(30, 30, 30) : RGB(240, 240, 230);
-    
     UINT32 lineStep = LineAdvance();
-    for (UINT32 line = 0; line < Doc.LineCount; line++) {
-        UINT32 y = TOP_MARGIN + line * lineStep;
-        DrawString(fb, LEFT_MARGIN, y, Doc.Text[line], fgColor, COLORS[CurrentBgColor]);
+    UINT32 prevPainted = LastPaintedLineCount;
+
+    /*
+     * docDirty: repaint document + cursor. Otherwise only overlays (e.g. F7 log
+     * refresh without re-clearing the frame).
+     */
+    BOOLEAN docDirty =
+        RepaintFull || ShowHelp || (DirtyLineTop <= DirtyLineBottom);
+
+    if (docDirty) {
+        if (RepaintFull || ShowHelp) {
+            ClearScreen(fb, bgColor);
+            for (UINT32 line = 0; line < Doc.LineCount; line++) {
+                UINT32 y = TOP_MARGIN + line * lineStep;
+                DrawString(fb, LEFT_MARGIN, y, Doc.Text[line], fgColor, bgColor);
+            }
+            RepaintFull = FALSE;
+        } else {
+            UINT32 top = DirtyLineTop;
+            UINT32 bot = DirtyLineBottom;
+            if (bot >= Doc.LineCount)
+                bot = (Doc.LineCount > 0) ? Doc.LineCount - 1 : 0;
+            UINT32 stripeW = fb->Width;
+            for (UINT32 line = top; line <= bot; line++) {
+                UINT32 y = TOP_MARGIN + line * lineStep;
+                if (y >= fb->Height)
+                    break;
+                DrawRect(fb, 0, y, stripeW, lineStep, bgColor);
+                if (line < Doc.LineCount)
+                    DrawString(fb, LEFT_MARGIN, y, Doc.Text[line], fgColor, bgColor);
+            }
+            if (prevPainted > Doc.LineCount) {
+                for (UINT32 line = Doc.LineCount; line < prevPainted; line++) {
+                    UINT32 y = TOP_MARGIN + line * lineStep;
+                    if (y >= fb->Height)
+                        break;
+                    DrawRect(fb, 0, y, stripeW, lineStep, bgColor);
+                }
+            }
+        }
+        if (ShowCursor && !ShowHelp) {
+            UINT32 cursorY = TOP_MARGIN + Doc.CursorY * lineStep;
+            UINT32 cursorX = CursorPixelX(Doc.Text[Doc.CursorY], Doc.CursorX);
+            UINT32 cw = FontSize * 2;
+            if (cw < 2)
+                cw = 2;
+            DrawRect(fb, cursorX, cursorY, cw, lineStep, fgColor);
+        }
+        DirtyLineTop = 1;
+        DirtyLineBottom = 0;
+        LastPaintedLineCount = Doc.LineCount;
     }
-    
-    if (ShowCursor) {
-        UINT32 cursorY = TOP_MARGIN + Doc.CursorY * lineStep;
-        UINT32 cursorX = CursorPixelX(Doc.Text[Doc.CursorY], Doc.CursorX);
-        UINT32 cw = FontSize * 2;
-        if (cw < 2)
-            cw = 2;
-        DrawRect(fb, cursorX, cursorY, cw, lineStep, fgColor);
-    }
-    
-    if (KeyDebugMode)
+
+    if (KeyDebugMode && !ShowHelp)
         DrawKeyDebugOverlay(fb);
-    
+
     if (ShowHelp) {
         UINT32 hf = RGB(28, 28, 32);
         UINT32 hb = RGB(230, 224, 210);
@@ -775,6 +846,7 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
         (key->ScanCode == SCAN_NULL && key->UnicodeChar == 0x001b)) {
         if (ShowHelp) {
             ShowHelp = FALSE;
+            MarkFullRepaint();
             Doc.Modified = TRUE;
             return EFI_SUCCESS;
         }
@@ -786,35 +858,42 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
         switch (key->ScanCode) {
             case 0x0B:  /* F1 - Help */
                 ShowHelp = !ShowHelp;
+                MarkFullRepaint();
                 Doc.Modified = TRUE;
                 break;
             case 0x0C:  /* F2 - Cycle font */
                 CurrentFontKind = (FONT_KIND)((CurrentFontKind + 1) % FONT_NUM);
                 ReflowAllLines();
+                MarkFullRepaint();
                 Doc.Modified = TRUE;
                 break;
             case 0x0D:  /* F3 - Increase font / scale */
                 if (FontSize < 6)
                     FontSize++;
                 ReflowAllLines();
+                MarkFullRepaint();
                 Doc.Modified = TRUE;
                 break;
             case 0x0E:  /* F4 - Cycle background */
                 CurrentBgColor = (CurrentBgColor + 1) % 10;
+                MarkFullRepaint();
                 Doc.Modified = TRUE;
                 break;
             case 0x0F:  /* F5 - Toggle cursor */
                 ShowCursor = !ShowCursor;
+                MarkFullRepaint();
                 Doc.Modified = TRUE;
                 break;
             case 0x10:  /* F6 - Decrease font / scale */
                 if (FontSize > 1)
                     FontSize--;
                 ReflowAllLines();
+                MarkFullRepaint();
                 Doc.Modified = TRUE;
                 break;
             case SCAN_F7:  /* F7 - Toggle key debug overlay + serial log */
                 KeyDebugMode = !KeyDebugMode;
+                MarkFullRepaint();
                 Doc.Modified = TRUE;
                 break;
         }
@@ -825,29 +904,39 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
         if (Doc.CursorX > 0) {
             Doc.CursorX--;
             Doc.Text[Doc.CursorY][Doc.CursorX] = 0;
+            MarkDirtyRange(Doc.CursorY, Doc.CursorY);
             Doc.Modified = TRUE;
         }
         return EFI_SUCCESS;
     }
     
     if (key->UnicodeChar == 0x09) {  /* Tab */
+        UINT32 ly = Doc.CursorY;
         for (INT32 i = 0; i < 4; i++) {
             if (Doc.CursorX < MAX_CHARS_PER_LINE - 1) {
                 Doc.Text[Doc.CursorY][Doc.CursorX++] = ' ';
             }
         }
         Doc.Text[Doc.CursorY][Doc.CursorX] = 0;
-        ApplyWordWrap(Doc.CursorY);
+        ApplyWordWrap(ly);
+        MarkDirtyRange(ly, Doc.LineCount - 1);
         Doc.Modified = TRUE;
         return EFI_SUCCESS;
     }
     
     if (key->UnicodeChar == 0x0D || key->UnicodeChar == 0x0A) {  /* Enter */
         if (Doc.CursorY < MAX_LINES - 1) {
+            UINT32 oldCy = Doc.CursorY;
+            UINT32 oldLC = Doc.LineCount;
             Doc.CursorY++;
             Doc.CursorX = 0;
             Doc.LineCount = Doc.CursorY + 1;
             Doc.Text[Doc.CursorY][0] = 0;
+            {
+                UINT32 newLC = Doc.LineCount;
+                UINT32 mx = oldLC > newLC ? oldLC : newLC;
+                MarkDirtyRange(oldCy, mx - 1);
+            }
             Doc.Modified = TRUE;
         }
         return EFI_SUCCESS;
@@ -855,9 +944,11 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
     
     if (key->UnicodeChar >= 32 && key->UnicodeChar < 127) {
         if (Doc.CursorX < MAX_CHARS_PER_LINE - 1) {
+            UINT32 ly = Doc.CursorY;
             Doc.Text[Doc.CursorY][Doc.CursorX++] = key->UnicodeChar;
             Doc.Text[Doc.CursorY][Doc.CursorX] = 0;
-            ApplyWordWrap(Doc.CursorY);
+            ApplyWordWrap(ly);
+            MarkDirtyRange(ly, Doc.LineCount - 1);
             Doc.Modified = TRUE;
         }
     }
