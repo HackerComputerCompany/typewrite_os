@@ -1,5 +1,8 @@
 # Makefile for Typewriter UEFI App
 # Using locally-built modern gnu-efi
+#
+# Default goal is `ship`: build, refresh fs/Typewriter.efi, commit+push uefi-app/
+# when there are staged changes. Use `make all` for compile only (no git).
 
 ARCH            = x86_64
 OBJS            = main.o
@@ -27,7 +30,24 @@ LDFLAGS         = -nostdlib --warn-common --no-undefined --fatal-warnings \
 # Link with .a files directly
 LIBS            = $(EFILIB)/libgnuefi.a $(LIB)/libefi.a
 
-.PHONY: all clean
+REPO_ROOT       := $(abspath $(CURDIR)/..)
+
+.PHONY: all clean ship
+
+.DEFAULT_GOAL   := ship
+
+# MSG="your message" optional; default commit subject below
+ship: all
+	@mkdir -p fs
+	@cp -f $(TARGET) fs/$(TARGET)
+	@cd $(REPO_ROOT) && \
+	git add -A -- uefi-app/ && \
+	if git diff --staged --quiet; then \
+		echo "uefi-app: nothing to commit (already synced)."; \
+	else \
+		git commit -m "$(if $(MSG),$(MSG),uefi-app: build $(TARGET))" && \
+		git push; \
+	fi
 
 all: $(TARGET)
 
