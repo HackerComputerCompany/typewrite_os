@@ -24,7 +24,7 @@ make    # default: build + ship (commit/push if uefi-app/ changed); make all = c
 
 Requirements:
 
-- **gnu-efi**: This `Makefile` expects a local tree at `/ironwolf4TB/data01/projects/gnu-efi` (`EFIDIR` in `uefi-app/Makefile`). Adjust `EFIDIR` if your layout differs.
+- **gnu-efi**: `uefi-app/Makefile` defaults `EFIDIR` to a **sibling** directory `../gnu-efi` (next to the repo). Override with `export EFIDIR=/path` or `make EFIDIR=/path all` if your clone lives elsewhere.
 - **gcc/ld/objutils** for `x86_64`, as documented in `BUILD_SYSTEM.md`.
 
 QEMU + OVMF: from repo root run **`./start-qemu.sh`** — it **builds** `uefi-app`, **syncs** `Typewriter.efi` → `uefi-app/fs/`, then launches QEMU. Use `./start-qemu.sh --help`; full options in [`BUILD_SYSTEM.md`](BUILD_SYSTEM.md#testing).

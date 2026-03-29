@@ -52,7 +52,7 @@ flowchart LR
 
 ## Build Requirements
 
-- **gnu-efi** 3.0.18+ (located at `/ironwolf4TB/data01/projects/gnu-efi`)
+- **gnu-efi** 3.0.18+ (clone beside the repo: `../gnu-efi` by default, or set `EFIDIR` — see `uefi-app/Makefile`)
 - **gcc** with x86_64 target
 - **binutils** 2.38+ (specifically ld and objcopy)
 - **QEMU** with OVMF firmware for testing

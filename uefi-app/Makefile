@@ -8,8 +8,11 @@ ARCH            = x86_64
 OBJS            = main.o
 TARGET          = Typewriter.efi
 
-# Use locally-built modern gnu-efi
-EFIDIR          = /ironwolf4TB/data01/projects/gnu-efi
+REPO_ROOT       := $(abspath $(CURDIR)/..)
+
+# gnu-efi tree (clone + `make` in gnu-efi). Default: sibling dir next to this repo,
+# e.g. .../projects/typewrite_os/../gnu-efi. Override: `EFIDIR=/path make all` or export EFIDIR.
+EFIDIR          ?= $(REPO_ROOT)/../gnu-efi
 EFIINC          = $(EFIDIR)/inc
 EFIINCS         = -I$(EFIINC) -I$(EFIINC)/$(ARCH) -I$(EFIINC)/protocol
 LIB             = $(EFIDIR)/$(ARCH)/lib
@@ -29,8 +32,6 @@ LDFLAGS         = -nostdlib --warn-common --no-undefined --fatal-warnings \
 
 # Link with .a files directly
 LIBS            = $(EFILIB)/libgnuefi.a $(LIB)/libefi.a
-
-REPO_ROOT       := $(abspath $(CURDIR)/..)
 
 .PHONY: all clean ship
 

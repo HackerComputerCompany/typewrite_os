@@ -21,7 +21,7 @@ cd uefi-app
 make
 ```
 
-Output: **`Typewriter.efi`**; default **`make`** also syncs **`fs/Typewriter.efi`** and **commits + pushes** when the tree changes (see [`uefi-app/README.md`](uefi-app/README.md)). Use **`make all`** for compile only. Adjust `EFIDIR` in `uefi-app/Makefile` if gnu-efi lives elsewhere on your machine.
+Output: **`Typewriter.efi`**; default **`make`** also syncs **`fs/Typewriter.efi`** and **commits + pushes** when the tree changes (see [`uefi-app/README.md`](uefi-app/README.md)). Use **`make all`** for compile only. **`EFIDIR`** defaults to **`../gnu-efi`** (sibling of this repo); override with `export EFIDIR=...` or `make EFIDIR=... all` if needed.
 
 ## Run in QEMU
 

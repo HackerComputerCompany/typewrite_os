@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Build Typewriter.efi (optional) and write it to a USB stick as a bootable UEFI app.
 # Wraps install-uefi-app.sh (GPT + FAT32 + bootx64.efi).
+#
+# Build needs a built gnu-efi tree; uefi-app/Makefile defaults EFIDIR to ../gnu-efi
+# (sibling of this repo). Override: export EFIDIR=/path/to/gnu-efi
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,6 +28,8 @@ Examples:
   $(basename "$0") --no-build /dev/sdc
 
 WARNING: The target disk is fully erased. Use lsblk(8) to pick the correct device.
+
+Build: clone/build gnu-efi, or set EFIDIR if it is not beside this repo (see uefi-app/Makefile).
 EOF
 }
 
