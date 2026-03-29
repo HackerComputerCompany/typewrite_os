@@ -67,15 +67,19 @@ static BOOLEAN Running = TRUE;
 
 EFI_STATUS DrawPixel(FRAMEBUFFER *fb, UINT32 x, UINT32 y, UINT32 color) {
     if (x >= fb->Width || y >= fb->Height) return EFI_SUCCESS;
+    UINT8 *pixel = fb->PixelData + y * fb->Pitch + x * 4;
     
-    // Use GOP Blt for reliable rendering
-    EFI_GRAPHICS_OUTPUT_BLT_PIXEL pixel;
-    pixel.Red = (color >> 0) & 0xFF;
-    pixel.Green = (color >> 8) & 0xFF;
-    pixel.Blue = (color >> 16) & 0xFF;
-    pixel.Reserved = 0;
+    // Extract RGB from our color format (RRGGBB)
+    UINT8 r = (color >> 0) & 0xFF;
+    UINT8 g = (color >> 8) & 0xFF;
+    UINT8 b = (color >> 16) & 0xFF;
     
-    return Gop->Blt(Gop, &pixel, EfiBltVideoToVideo, x, y, x, y, 1, 1, 0);
+    // Pixel format 1 = BlueGreenRedReserved8BitPerColor (BGR)
+    pixel[0] = b;
+    pixel[1] = g;
+    pixel[2] = r;
+    pixel[3] = 0;
+    return EFI_SUCCESS;
 }
 
 EFI_STATUS DrawRect(FRAMEBUFFER *fb, UINT32 x, UINT32 y, UINT32 w, UINT32 h, UINT32 color) {
@@ -161,14 +165,13 @@ EFI_STATUS DrawString(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 *str, UINT32 f
 }
 
 EFI_STATUS ClearScreen(FRAMEBUFFER *fb, UINT32 bgColor) {
-    // Use GOP Blt to fill screen
-    EFI_GRAPHICS_OUTPUT_BLT_PIXEL color;
-    color.Red = (bgColor >> 0) & 0xFF;
-    color.Green = (bgColor >> 8) & 0xFF;
-    color.Blue = (bgColor >> 16) & 0xFF;
-    color.Reserved = 0;
-    
-    return Gop->Blt(Gop, &color, EfiBltVideoFill, 0, 0, 0, 0, fb->Width, fb->Height, 0);
+    // Use direct framebuffer for full screen clear
+    for (UINT32 y = 0; y < fb->Height; y++) {
+        for (UINT32 x = 0; x < fb->Width; x++) {
+            DrawPixel(fb, x, y, bgColor);
+        }
+    }
+    return EFI_SUCCESS;
 }
 
 VOID InitDocument(VOID) {
