@@ -1087,11 +1087,12 @@ static VOID DrawHelpOverlay(FRAMEBUFFER *fb) {
 }
 
 EFI_STATUS ClearScreen(FRAMEBUFFER *fb, UINT32 bgColor) {
-    // Use direct framebuffer for full screen clear
+    /* Full-screen fill: long on large GOP modes; feed watchdog for picky firmware. */
     for (UINT32 y = 0; y < fb->Height; y++) {
-        for (UINT32 x = 0; x < fb->Width; x++) {
+        if ((y & 63) == 0)
+            KickFirmwareWatchdog();
+        for (UINT32 x = 0; x < fb->Width; x++)
             DrawPixel(fb, x, y, bgColor);
-        }
     }
     return EFI_SUCCESS;
 }
@@ -1152,28 +1153,50 @@ static VOID DrawSplashScreen(FRAMEBUFFER *fb) {
     }
 }
 
+/*
+ * OVMF/QEMU: ConIn->ReadKeyStroke sometimes returns EFI_SUCCESS with ScanCode/UnicodeChar
+ * both zero forever; draining with while (!EFI_ERROR(...)) never terminates.
+ */
+#define SPLASH_KEY_DRAIN_MAX 256
+
+static VOID SplashDrainConIn(VOID) {
+    EFI_INPUT_KEY key;
+    UINTN i;
+    EFI_STATUS st;
+
+    for (i = 0; i < SPLASH_KEY_DRAIN_MAX; i++) {
+        st = uefi_call_wrapper(ST->ConIn->ReadKeyStroke, 2, ST->ConIn, &key);
+        if (EFI_ERROR(st))
+            return;
+        if (key.ScanCode == SCAN_NULL && key.UnicodeChar == 0)
+            return;
+    }
+}
+
 static VOID RunSplashScreen(FRAMEBUFFER *fb) {
     EFI_INPUT_KEY key;
     UINT64 elapsed;
 
     DrawSplashScreen(fb);
     FlipFramebuffer(fb);
+    KickFirmwareWatchdog();
 
-    while (!EFI_ERROR(uefi_call_wrapper(ST->ConIn->ReadKeyStroke, 2, ST->ConIn, &key)))
-        ;
+    SplashDrainConIn();
 
     elapsed = 0;
     while (elapsed < (UINT64)SPLASH_TIMEOUT_US) {
         EFI_STATUS ks = uefi_call_wrapper(ST->ConIn->ReadKeyStroke, 2, ST->ConIn, &key);
 
-        if (!EFI_ERROR(ks))
-            break;
+        if (!EFI_ERROR(ks)) {
+            if (key.ScanCode != SCAN_NULL || key.UnicodeChar != 0)
+                break;
+        }
+        KickFirmwareWatchdog();
         uefi_call_wrapper(BS->Stall, 1, 40000);
         elapsed += 40000;
     }
 
-    while (!EFI_ERROR(uefi_call_wrapper(ST->ConIn->ReadKeyStroke, 2, ST->ConIn, &key)))
-        ;
+    SplashDrainConIn();
 }
 
 VOID InitDocument(VOID) {
