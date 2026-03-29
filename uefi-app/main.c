@@ -191,6 +191,8 @@ static BOOLEAN Running = TRUE;
 static UINT32 WrapPixelWidth = 800;
 
 #define CHAR_GAP 2
+/* Word space advance multiplier (advance for ' ' is this × normal font advance). */
+#define SPACE_ADVANCE_MULT 3
 
 #define SCELL(_fb, _x, _y, _c) DrawRect((_fb), (_x), (_y), FontSize, FontSize, (_c))
 
@@ -541,6 +543,8 @@ static UINT32 GlyphAdvance(CHAR16 ch) {
         }
         break;
     }
+    if (ch == L' ')
+        base *= SPACE_ADVANCE_MULT;
     return base * FontSize;
 }
 
