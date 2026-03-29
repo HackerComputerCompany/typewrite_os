@@ -15,8 +15,8 @@
 #include <eficon.h>
 #include <efiprot.h>
 
-#include "virgil.h"
-#include "helvetica.h"
+#include <virgil.h>
+#include <helvetica.h>
 
 // Simple 5x7 built-in font (ASCII 32-126)
 #define SIMPLE_FONT_HEIGHT 8
@@ -454,7 +454,7 @@ EFI_STATUS DrawCharSimple(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 ch, UINT32
     return EFI_SUCCESS;
 }
 
-EFI_STATUS DrawCharVirgil(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 ch, UINT32 fgColor, UINT32 bgColor) {
+EFI_STATUS DrawCharVirgil(FRAMEBUFFER *fb, UINT32 x, UINT32 baselineY, CHAR16 ch, UINT32 fgColor, UINT32 bgColor) {
     if (ch < VIRGIL_ASC_MIN || ch > VIRGIL_ASC_MAX) return EFI_SUCCESS;
     
     UINT32 charIndex = ch - VIRGIL_ASC_MIN;
@@ -468,6 +468,7 @@ EFI_STATUS DrawCharVirgil(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 ch, UINT32
      * Per-glyph layout (see fonts/convert_font.py): each row has
      * (glyphWidth+7)/8 bytes, not VIRGIL_ROW_BYTES. Fixed stride was reading
      * past the glyph into the next character — garbled bottoms (e.g. \"T\").
+     * baselineY + bitmap_top (FreeType) — rows hang below baseline for descenders.
      */
     UINT32 gw = virgil_widths[charIndex];
     if (gw < 1)
@@ -480,11 +481,12 @@ EFI_STATUS DrawCharVirgil(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 ch, UINT32
         gh = 1;
     if (gh > VIRGIL_HEIGHT)
         gh = VIRGIL_HEIGHT;
+    UINT32 bmpTop = virgil_bitmap_top[charIndex];
 
     for (UINT32 py = 0; py < gh; py++) {
-        UINT32 dy = y + py * FontSize;
-        if (dy >= fb->Height)
-            break;
+        INT32 dy = (INT32)baselineY - (INT32)(bmpTop * FontSize) + (INT32)(py * FontSize);
+        if (dy < 0 || (UINT32)dy >= fb->Height)
+            continue;
         UINT32 rowOff = offset + py * rowB;
         for (UINT32 byteIdx = 0; byteIdx < rowB && rowOff + byteIdx < sizeof(virgil_bitmap); byteIdx++) {
             UINT8 byte = virgil_bitmap[rowOff + byteIdx];
@@ -496,9 +498,9 @@ EFI_STATUS DrawCharVirgil(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 ch, UINT32
                 if (dx >= fb->Width)
                     continue;
                 if (byte & (1u << bit)) {
-                    SCELL(fb, dx, dy, fgColor);
+                    SCELL(fb, dx, (UINT32)dy, fgColor);
                 } else {
-                    SCELL(fb, dx, dy, bgColor);
+                    SCELL(fb, dx, (UINT32)dy, bgColor);
                 }
             }
         }
@@ -506,7 +508,7 @@ EFI_STATUS DrawCharVirgil(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 ch, UINT32
     return EFI_SUCCESS;
 }
 
-EFI_STATUS DrawCharHelvetica(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 ch, UINT32 fgColor, UINT32 bgColor) {
+EFI_STATUS DrawCharHelvetica(FRAMEBUFFER *fb, UINT32 x, UINT32 baselineY, CHAR16 ch, UINT32 fgColor, UINT32 bgColor) {
     if (ch < HELVETICA_ASC_MIN || ch > HELVETICA_ASC_MAX) return EFI_SUCCESS;
     
     UINT32 charIndex = ch - HELVETICA_ASC_MIN;
@@ -527,11 +529,12 @@ EFI_STATUS DrawCharHelvetica(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 ch, UIN
         gh = 1;
     if (gh > HELVETICA_HEIGHT)
         gh = HELVETICA_HEIGHT;
+    UINT32 bmpTop = helvetica_bitmap_top[charIndex];
 
     for (UINT32 py = 0; py < gh; py++) {
-        UINT32 dy = y + py * FontSize;
-        if (dy >= fb->Height)
-            break;
+        INT32 dy = (INT32)baselineY - (INT32)(bmpTop * FontSize) + (INT32)(py * FontSize);
+        if (dy < 0 || (UINT32)dy >= fb->Height)
+            continue;
         UINT32 rowOff = offset + py * rowB;
         for (UINT32 byteIdx = 0; byteIdx < rowB && rowOff + byteIdx < sizeof(helvetica_bitmap); byteIdx++) {
             UINT8 byte = helvetica_bitmap[rowOff + byteIdx];
@@ -543,9 +546,9 @@ EFI_STATUS DrawCharHelvetica(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 ch, UIN
                 if (dx >= fb->Width)
                     continue;
                 if (byte & (1u << bit)) {
-                    SCELL(fb, dx, dy, fgColor);
+                    SCELL(fb, dx, (UINT32)dy, fgColor);
                 } else {
-                    SCELL(fb, dx, dy, bgColor);
+                    SCELL(fb, dx, (UINT32)dy, bgColor);
                 }
             }
         }
@@ -553,14 +556,14 @@ EFI_STATUS DrawCharHelvetica(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 ch, UIN
     return EFI_SUCCESS;
 }
 
-EFI_STATUS DrawChar(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 ch, UINT32 fgColor, UINT32 bgColor) {
+EFI_STATUS DrawChar(FRAMEBUFFER *fb, UINT32 x, UINT32 yOrigin, CHAR16 ch, UINT32 fgColor, UINT32 bgColor) {
     switch (CurrentFontKind) {
     case FONT_VIRGIL:
-        return DrawCharVirgil(fb, x, y, ch, fgColor, bgColor);
+        return DrawCharVirgil(fb, x, yOrigin, ch, fgColor, bgColor);
     case FONT_HELVETICA:
-        return DrawCharHelvetica(fb, x, y, ch, fgColor, bgColor);
+        return DrawCharHelvetica(fb, x, yOrigin, ch, fgColor, bgColor);
     case FONT_SIMPLE:
-        return DrawCharSimple(fb, x, y, ch, fgColor, bgColor);
+        return DrawCharSimple(fb, x, yOrigin, ch, fgColor, bgColor);
     default:
         return EFI_SUCCESS;
     }
@@ -615,10 +618,10 @@ static UINT32 ActiveFontLineHeight(VOID) {
     case FONT_SIMPLE:
         return SIMPLE_FONT_HEIGHT;
     case FONT_VIRGIL:
-        return VIRGIL_HEIGHT;
+        return VIRGIL_LINE_BOX;
     case FONT_HELVETICA:
     default:
-        return HELVETICA_HEIGHT;
+        return HELVETICA_LINE_BOX;
     }
 }
 
@@ -701,9 +704,16 @@ EFI_STATUS DrawString(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 *str, UINT32 f
     UINT32 lineBox = ActiveFontLineHeight() * FontSize;
     while (*str) {
         CHAR16 c = *str;
-        UINT32 gh = GlyphBitmapHeight(c);
-        UINT32 yDraw = y + lineBox - gh * FontSize;
-        DrawChar(fb, posX, yDraw, c, fgColor, bgColor);
+        if (CurrentFontKind == FONT_SIMPLE) {
+            UINT32 gh = GlyphBitmapHeight(c);
+            UINT32 yDraw = y + lineBox - gh * FontSize;
+            DrawChar(fb, posX, yDraw, c, fgColor, bgColor);
+        } else {
+            UINT32 ascent =
+                (CurrentFontKind == FONT_VIRGIL) ? VIRGIL_MAX_TOP : HELVETICA_MAX_TOP;
+            UINT32 baselineY = y + ascent * FontSize;
+            DrawChar(fb, posX, baselineY, c, fgColor, bgColor);
+        }
         posX += GlyphAdvance(c);
         str++;
     }

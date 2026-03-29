@@ -100,7 +100,7 @@ For QEMU, run [`../start-qemu.sh`](../start-qemu.sh) from the repo root (it runs
 | `Makefile` | `TARGET = Typewriter.efi`, gnu-efi link + objcopy |
 | `main.c` | Application entry, GOP, fonts, input loop |
 | `main_minimal.c` | Alternate minimal sketch (not the default `make` target) |
-| `virgil.h`, `helvetica.h` | Font bitmap data |
+| `../fonts/virgil.h`, `../fonts/helvetica.h` | Font bitmap data (built with `fonts/convert_font.py`) |
 | `fs/` | FAT contents for QEMU (copy `Typewriter.efi`, `startup.nsh`, etc.) |
 
 ## Technical notes
