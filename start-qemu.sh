@@ -17,15 +17,55 @@ FRESH_VARS=0
 
 usage() {
     cat <<'EOF'
-Usage: ./start-qemu.sh [options]
+NAME
+    start-qemu.sh — build Typewriter.efi and run it under QEMU with OVMF (UEFI).
 
-  --no-build    Do not run make; use existing uefi-app/Typewriter.efi
-  --fresh-vars  Remove ovmf_vars.fd and recreate from distro template
-  -h, --help    Show this help
+SYNOPSIS
+    ./start-qemu.sh [OPTION]...
 
-Environment:
-  OVMF_CODE      Path to OVMF_CODE.fd (optional; auto-detected)
-  QEMU_DISPLAY   QEMU -display value (default: gtk). Use "none" with serial only.
+DESCRIPTION
+    Runs from the repository root. By default:
+      1. make -C uefi-app          (produces uefi-app/Typewriter.efi)
+      2. cp Typewriter.efi         → uefi-app/fs/ (QEMU synthetic FAT drive)
+      3. Ensures uefi-app/fs/startup.nsh runs Typewriter.efi in the UEFI Shell
+      4. Launches qemu-system-x86_64 with OVMF pflash + FAT + serial log
+
+    Firmware: read-only code from the distro (or OVMF_CODE); writable NVRAM
+    in ./ovmf_vars.fd (created from OVMF_VARS.fd template when missing).
+
+OPTIONS
+    --no-build      Skip make; use existing uefi-app/Typewriter.efi (must exist).
+    --fresh-vars    Delete ./ovmf_vars.fd and recreate from the template (reset
+                    NVRAM / boot entries).
+    -h, --help      Print this help and exit (exit status 0).
+
+ENVIRONMENT
+    OVMF_CODE       Absolute path to OVMF_CODE.fd. If unset, the script tries:
+                    /usr/share/OVMF/OVMF_CODE.fd
+                    /usr/share/qemu/OVMF_CODE.fd
+                    /usr/share/ovmf/OVMF.fd
+    QEMU_DISPLAY    Argument to qemu -display (default: gtk).
+                    Use "none" on headless hosts and read uefi-app/serial.log.
+
+FILES (paths relative to repo root)
+    uefi-app/Typewriter.efi   Built binary (make output).
+    uefi-app/fs/              FAT contents for QEMU (Typewriter.efi + startup.nsh).
+    ovmf_vars.fd              Writable UEFI variable store (git may track or ignore).
+    uefi-app/serial.log       Serial port output from the guest.
+
+REQUIREMENTS
+    Debian/Ubuntu:  sudo apt install qemu-system-x86 ovmf build-essential
+    gnu-efi path:  set in uefi-app/Makefile (EFIDIR) for the UEFI build.
+
+EXAMPLES
+    ./start-qemu.sh
+    ./start-qemu.sh --no-build
+    ./start-qemu.sh --fresh-vars
+    QEMU_DISPLAY=none ./start-qemu.sh
+    OVMF_CODE=/usr/share/OVMF/OVMF_CODE.fd ./start-qemu.sh
+
+SEE ALSO
+    BUILD_SYSTEM.md (QEMU details), uefi-app/README.md, AGENTS.md
 EOF
 }
 

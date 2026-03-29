@@ -1,5 +1,8 @@
 # Buildroot
+/buildroot.tar.gz
 /buildroot-2024.02/output/
+/buildroot-2024.02/dl/
+/buildroot-2024.02/host/
 /buildroot-2024.02/.config.old
 /buildroot-2024.02/.br-external.mk
 /buildroot-2024.02/.stamp

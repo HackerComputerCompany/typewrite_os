@@ -180,7 +180,7 @@ Options and environment:
 | `OVMF_CODE` | Absolute path to the read-only OVMF code image. |
 | `QEMU_DISPLAY` | Passed to QEMU `-display` (default `gtk`). Use `none` on headless hosts. |
 
-Help: `./start-qemu.sh --help`
+Full CLI reference: **`./start-qemu.sh --help`** (name, synopsis, options, env, files, examples).
 
 **Packages (Debian/Ubuntu):** `sudo apt install qemu-system-x86 ovmf`
 
@@ -274,6 +274,7 @@ uefi-app/
 
 ## Changelog
 
-- **2026-03-29**: [`start-qemu.sh`](start-qemu.sh) now builds `uefi-app`, syncs `Typewriter.efi` into `uefi-app/fs/`, auto-detects OVMF paths, drops duplicate `-bios`, documents `--no-build` / `--fresh-vars` / `QEMU_DISPLAY` / `OVMF_CODE`.
+- **2026-03-29**: Removed redundant tracked **`buildroot.tar.gz`** (vendored tree remains under `buildroot-2024.02/`); local Buildroot **`output/`**, **`dl/`**, etc. are still safe to delete when present — they are build products, not source.
+- **2026-03-29**: [`start-qemu.sh`](start-qemu.sh) **`--help`** documents behavior, paths, requirements, and examples; script builds `uefi-app`, syncs `Typewriter.efi` into `uefi-app/fs/`, auto-detects OVMF, drops duplicate `-bios`.
 - **2026-03-29**: Added [`AGENTS.md`](AGENTS.md) and [`agent.md`](agent.md) pointers for return-to-context; root [`README.md`](README.md) and [`PROJECT_STATUS.md`](PROJECT_STATUS.md) updated for dual-track (UEFI + Buildroot) state.
 - **2026-03-28**: Fixed Makefile to produce valid PE32+ by using correct linker flags and objcopy --target option
