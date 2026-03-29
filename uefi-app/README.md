@@ -86,7 +86,7 @@ For QEMU, run [`../start-qemu.sh`](../start-qemu.sh) from the repo root (it runs
 | Key | Action |
 |-----|--------|
 | **F1** | Toggle on-screen **help** |
-| **F2** | **Cycle font:** Virgil → Helvetica → simple 5×8 |
+| **F2** | **Cycle font** (9): Virgil, Inter (sans), Special Elite, Courier Prime, VT323, Press Start 2P, IBM Plex Mono, Share Tech Mono, simple — see [`../fonts/README.md`](../fonts/README.md) |
 | **F3** / **F6** | Increase / decrease **font scale** (1–6: glyph size, advances, proportional line step; text wraps to the next line at the margins) |
 | **F4** | Cycle background color |
 | **F5** | **Cycle cursor:** bar (solid) → bar (blink ~0.5s) → block (solid) → block (blink) → hidden |

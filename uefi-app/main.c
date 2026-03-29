@@ -2,7 +2,7 @@
  * Typewriter.c - UEFI Typewriter Application with Virgil/Helvetica Fonts
  * 
  * A native UEFI typewriter experience with:
- * - Bitmap font rendering (Virgil + Helvetica)
+ * - Bitmap font rendering (Virgil, Inter, + retro / typewriter faces)
  * - Typewriter-style input with visual feedback
  * - File save/load from EFI variables
  * - Multiple view modes
@@ -17,6 +17,46 @@
 
 #include <virgil.h>
 #include <helvetica.h>
+#include <special_elite.h>
+#include <courier_prime.h>
+#include <vt323.h>
+#include <press_start_2p.h>
+#include <ibm_plex_mono.h>
+#include <share_tech_mono.h>
+
+typedef struct {
+    const UINT32 *offsets;
+    const UINT8 *widths;
+    const UINT8 *advances;
+    const UINT8 *bitmap_top;
+    const UINT8 *bitmap;
+    UINTN bitmap_size;
+    UINT32 asc_min;
+    UINT32 asc_max;
+    UINT32 line_box;
+    UINT32 max_top;
+    UINT32 max_glyph_height;
+} BitmapFont;
+
+/* Order must match FONT_KIND for indices 0 .. FONT_SIMPLE-1 */
+static const BitmapFont gBitmapFonts[] = {
+    { virgil_offsets, virgil_widths, virgil_advances, virgil_bitmap_top, virgil_bitmap,
+      sizeof(virgil_bitmap), VIRGIL_ASC_MIN, VIRGIL_ASC_MAX, VIRGIL_LINE_BOX, VIRGIL_MAX_TOP, VIRGIL_HEIGHT },
+    { helvetica_offsets, helvetica_widths, helvetica_advances, helvetica_bitmap_top, helvetica_bitmap,
+      sizeof(helvetica_bitmap), HELVETICA_ASC_MIN, HELVETICA_ASC_MAX, HELVETICA_LINE_BOX, HELVETICA_MAX_TOP, HELVETICA_HEIGHT },
+    { special_elite_offsets, special_elite_widths, special_elite_advances, special_elite_bitmap_top, special_elite_bitmap,
+      sizeof(special_elite_bitmap), SPECIAL_ELITE_ASC_MIN, SPECIAL_ELITE_ASC_MAX, SPECIAL_ELITE_LINE_BOX, SPECIAL_ELITE_MAX_TOP, SPECIAL_ELITE_HEIGHT },
+    { courier_prime_offsets, courier_prime_widths, courier_prime_advances, courier_prime_bitmap_top, courier_prime_bitmap,
+      sizeof(courier_prime_bitmap), COURIER_PRIME_ASC_MIN, COURIER_PRIME_ASC_MAX, COURIER_PRIME_LINE_BOX, COURIER_PRIME_MAX_TOP, COURIER_PRIME_HEIGHT },
+    { vt323_offsets, vt323_widths, vt323_advances, vt323_bitmap_top, vt323_bitmap,
+      sizeof(vt323_bitmap), VT323_ASC_MIN, VT323_ASC_MAX, VT323_LINE_BOX, VT323_MAX_TOP, VT323_HEIGHT },
+    { press_start_2p_offsets, press_start_2p_widths, press_start_2p_advances, press_start_2p_bitmap_top, press_start_2p_bitmap,
+      sizeof(press_start_2p_bitmap), PRESS_START_2P_ASC_MIN, PRESS_START_2P_ASC_MAX, PRESS_START_2P_LINE_BOX, PRESS_START_2P_MAX_TOP, PRESS_START_2P_HEIGHT },
+    { ibm_plex_mono_offsets, ibm_plex_mono_widths, ibm_plex_mono_advances, ibm_plex_mono_bitmap_top, ibm_plex_mono_bitmap,
+      sizeof(ibm_plex_mono_bitmap), IBM_PLEX_MONO_ASC_MIN, IBM_PLEX_MONO_ASC_MAX, IBM_PLEX_MONO_LINE_BOX, IBM_PLEX_MONO_MAX_TOP, IBM_PLEX_MONO_HEIGHT },
+    { share_tech_mono_offsets, share_tech_mono_widths, share_tech_mono_advances, share_tech_mono_bitmap_top, share_tech_mono_bitmap,
+      sizeof(share_tech_mono_bitmap), SHARE_TECH_MONO_ASC_MIN, SHARE_TECH_MONO_ASC_MAX, SHARE_TECH_MONO_LINE_BOX, SHARE_TECH_MONO_MAX_TOP, SHARE_TECH_MONO_HEIGHT },
+};
 
 // Simple 5x7 built-in font (ASCII 32-126)
 #define SIMPLE_FONT_HEIGHT 8
@@ -160,6 +200,12 @@ static EFI_GRAPHICS_OUTPUT_PROTOCOL *Gop;
 typedef enum {
     FONT_VIRGIL = 0,
     FONT_HELVETICA,
+    FONT_SPECIAL_ELITE,
+    FONT_COURIER_PRIME,
+    FONT_VT323,
+    FONT_PRESS_START_2P,
+    FONT_IBM_PLEX_MONO,
+    FONT_SHARE_TECH_MONO,
     FONT_SIMPLE,
     FONT_NUM
 } FONT_KIND;
@@ -454,23 +500,20 @@ EFI_STATUS DrawCharSimple(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 ch, UINT32
     return EFI_SUCCESS;
 }
 
-EFI_STATUS DrawCharVirgil(FRAMEBUFFER *fb, UINT32 x, UINT32 baselineY, CHAR16 ch, UINT32 fgColor, UINT32 bgColor) {
-    if (ch < VIRGIL_ASC_MIN || ch > VIRGIL_ASC_MAX) return EFI_SUCCESS;
-    
-    UINT32 charIndex = ch - VIRGIL_ASC_MIN;
-    UINT32 offset = virgil_offsets[charIndex];
-    UINT32 nextOffset = (charIndex < 94) ? virgil_offsets[charIndex + 1] : sizeof(virgil_bitmap);
-    UINT32 glyphBytes = nextOffset - offset;
-    
-    if (glyphBytes == 0 || offset + glyphBytes > sizeof(virgil_bitmap)) return EFI_SUCCESS;
+EFI_STATUS DrawCharBitmapFont(FRAMEBUFFER *fb, UINT32 x, UINT32 baselineY, CHAR16 ch, UINT32 fgColor,
+                              UINT32 bgColor, const BitmapFont *F) {
+    if (ch < F->asc_min || ch > F->asc_max)
+        return EFI_SUCCESS;
 
-    /*
-     * Per-glyph layout (see fonts/convert_font.py): each row has
-     * (glyphWidth+7)/8 bytes, not VIRGIL_ROW_BYTES. Fixed stride was reading
-     * past the glyph into the next character — garbled bottoms (e.g. \"T\").
-     * baselineY + bitmap_top (FreeType) — rows hang below baseline for descenders.
-     */
-    UINT32 gw = virgil_widths[charIndex];
+    UINT32 charIndex = ch - F->asc_min;
+    UINT32 offset = F->offsets[charIndex];
+    UINT32 nextOffset = (charIndex < 94) ? F->offsets[charIndex + 1] : (UINT32)F->bitmap_size;
+    UINT32 glyphBytes = nextOffset - offset;
+
+    if (glyphBytes == 0 || offset + glyphBytes > F->bitmap_size)
+        return EFI_SUCCESS;
+
+    UINT32 gw = F->widths[charIndex];
     if (gw < 1)
         gw = 1;
     UINT32 rowB = (gw + 7) / 8;
@@ -479,65 +522,17 @@ EFI_STATUS DrawCharVirgil(FRAMEBUFFER *fb, UINT32 x, UINT32 baselineY, CHAR16 ch
     UINT32 gh = glyphBytes / rowB;
     if (gh < 1)
         gh = 1;
-    if (gh > VIRGIL_HEIGHT)
-        gh = VIRGIL_HEIGHT;
-    UINT32 bmpTop = virgil_bitmap_top[charIndex];
+    if (gh > F->max_glyph_height)
+        gh = F->max_glyph_height;
+    UINT32 bmpTop = F->bitmap_top[charIndex];
 
     for (UINT32 py = 0; py < gh; py++) {
         INT32 dy = (INT32)baselineY - (INT32)(bmpTop * FontSize) + (INT32)(py * FontSize);
         if (dy < 0 || (UINT32)dy >= fb->Height)
             continue;
         UINT32 rowOff = offset + py * rowB;
-        for (UINT32 byteIdx = 0; byteIdx < rowB && rowOff + byteIdx < sizeof(virgil_bitmap); byteIdx++) {
-            UINT8 byte = virgil_bitmap[rowOff + byteIdx];
-            for (UINT32 bit = 0; bit < 8; bit++) {
-                UINT32 px = byteIdx * 8 + bit;
-                if (px >= gw)
-                    break;
-                UINT32 dx = x + px * FontSize;
-                if (dx >= fb->Width)
-                    continue;
-                if (byte & (1u << bit)) {
-                    SCELL(fb, dx, (UINT32)dy, fgColor);
-                } else {
-                    SCELL(fb, dx, (UINT32)dy, bgColor);
-                }
-            }
-        }
-    }
-    return EFI_SUCCESS;
-}
-
-EFI_STATUS DrawCharHelvetica(FRAMEBUFFER *fb, UINT32 x, UINT32 baselineY, CHAR16 ch, UINT32 fgColor, UINT32 bgColor) {
-    if (ch < HELVETICA_ASC_MIN || ch > HELVETICA_ASC_MAX) return EFI_SUCCESS;
-    
-    UINT32 charIndex = ch - HELVETICA_ASC_MIN;
-    UINT32 offset = helvetica_offsets[charIndex];
-    UINT32 nextOffset = (charIndex < 94) ? helvetica_offsets[charIndex + 1] : sizeof(helvetica_bitmap);
-    UINT32 glyphBytes = nextOffset - offset;
-    
-    if (glyphBytes == 0 || offset + glyphBytes > sizeof(helvetica_bitmap)) return EFI_SUCCESS;
-
-    UINT32 gw = helvetica_widths[charIndex];
-    if (gw < 1)
-        gw = 1;
-    UINT32 rowB = (gw + 7) / 8;
-    if (rowB < 1)
-        rowB = 1;
-    UINT32 gh = glyphBytes / rowB;
-    if (gh < 1)
-        gh = 1;
-    if (gh > HELVETICA_HEIGHT)
-        gh = HELVETICA_HEIGHT;
-    UINT32 bmpTop = helvetica_bitmap_top[charIndex];
-
-    for (UINT32 py = 0; py < gh; py++) {
-        INT32 dy = (INT32)baselineY - (INT32)(bmpTop * FontSize) + (INT32)(py * FontSize);
-        if (dy < 0 || (UINT32)dy >= fb->Height)
-            continue;
-        UINT32 rowOff = offset + py * rowB;
-        for (UINT32 byteIdx = 0; byteIdx < rowB && rowOff + byteIdx < sizeof(helvetica_bitmap); byteIdx++) {
-            UINT8 byte = helvetica_bitmap[rowOff + byteIdx];
+        for (UINT32 byteIdx = 0; byteIdx < rowB && rowOff + byteIdx < F->bitmap_size; byteIdx++) {
+            UINT8 byte = F->bitmap[rowOff + byteIdx];
             for (UINT32 bit = 0; bit < 8; bit++) {
                 UINT32 px = byteIdx * 8 + bit;
                 if (px >= gw)
@@ -557,128 +552,88 @@ EFI_STATUS DrawCharHelvetica(FRAMEBUFFER *fb, UINT32 x, UINT32 baselineY, CHAR16
 }
 
 EFI_STATUS DrawChar(FRAMEBUFFER *fb, UINT32 x, UINT32 yOrigin, CHAR16 ch, UINT32 fgColor, UINT32 bgColor) {
-    switch (CurrentFontKind) {
-    case FONT_VIRGIL:
-        return DrawCharVirgil(fb, x, yOrigin, ch, fgColor, bgColor);
-    case FONT_HELVETICA:
-        return DrawCharHelvetica(fb, x, yOrigin, ch, fgColor, bgColor);
-    case FONT_SIMPLE:
+    if (CurrentFontKind == FONT_SIMPLE)
         return DrawCharSimple(fb, x, yOrigin, ch, fgColor, bgColor);
-    default:
-        return EFI_SUCCESS;
-    }
+    if (CurrentFontKind < FONT_SIMPLE)
+        return DrawCharBitmapFont(fb, x, yOrigin, ch, fgColor, bgColor, &gBitmapFonts[CurrentFontKind]);
+    return EFI_SUCCESS;
 }
 
-static UINT32 GlyphAdvance(CHAR16 ch) {
+static UINT32 GlyphAdvanceBitmap(CHAR16 ch, const BitmapFont *F) {
     UINT32 base;
-    switch (CurrentFontKind) {
-    case FONT_SIMPLE:
-        if (ch >= 32 && ch <= 126)
-            base = SIMPLE_FONT_WIDTH + 1;
+    if (ch < F->asc_min || ch > F->asc_max)
+        base = CHAR_GAP;
+    else {
+        UINT32 idx = ch - F->asc_min;
+        UINT32 w = F->widths[idx];
+        if (w < 1)
+            w = 1;
+        if (F->advances[idx] > 0)
+            base = (UINT32)F->advances[idx];
         else
-            base = CHAR_GAP;
-        break;
-    case FONT_VIRGIL:
-        if (ch < VIRGIL_ASC_MIN || ch > VIRGIL_ASC_MAX)
-            base = CHAR_GAP;
-        else {
-            UINT32 idx = ch - VIRGIL_ASC_MIN;
-            UINT32 w = virgil_widths[idx];
-            if (w < 1)
-                w = 1;
-            if (virgil_advances[idx] > 0)
-                base = (UINT32)virgil_advances[idx];
-            else
-                base = w + CHAR_GAP;
-        }
-        break;
-    case FONT_HELVETICA:
-    default:
-        if (ch < HELVETICA_ASC_MIN || ch > HELVETICA_ASC_MAX)
-            base = CHAR_GAP;
-        else {
-            UINT32 idx2 = ch - HELVETICA_ASC_MIN;
-            UINT32 w2 = helvetica_widths[idx2];
-            if (w2 < 1)
-                w2 = 1;
-            if (helvetica_advances[idx2] > 0)
-                base = (UINT32)helvetica_advances[idx2];
-            else
-                base = w2 + CHAR_GAP;
-        }
-        break;
+            base = w + CHAR_GAP;
     }
     if (ch == L' ')
         base *= SPACE_ADVANCE_MULT;
     return base * FontSize;
 }
 
-static UINT32 ActiveFontLineHeight(VOID) {
-    switch (CurrentFontKind) {
-    case FONT_SIMPLE:
-        return SIMPLE_FONT_HEIGHT;
-    case FONT_VIRGIL:
-        return VIRGIL_LINE_BOX;
-    case FONT_HELVETICA:
-    default:
-        return HELVETICA_LINE_BOX;
+static UINT32 GlyphAdvance(CHAR16 ch) {
+    if (CurrentFontKind == FONT_SIMPLE) {
+        UINT32 base;
+        if (ch >= 32 && ch <= 126)
+            base = SIMPLE_FONT_WIDTH + 1;
+        else
+            base = CHAR_GAP;
+        if (ch == L' ')
+            base *= SPACE_ADVANCE_MULT;
+        return base * FontSize;
     }
+    if (CurrentFontKind < FONT_SIMPLE)
+        return GlyphAdvanceBitmap(ch, &gBitmapFonts[CurrentFontKind]);
+    return CHAR_GAP * FontSize;
+}
+
+static UINT32 ActiveFontLineHeight(VOID) {
+    if (CurrentFontKind == FONT_SIMPLE)
+        return SIMPLE_FONT_HEIGHT;
+    if (CurrentFontKind < FONT_SIMPLE)
+        return gBitmapFonts[CurrentFontKind].line_box;
+    return SIMPLE_FONT_HEIGHT;
+}
+
+static UINT32 GlyphBitmapHeightBitmap(CHAR16 ch, const BitmapFont *F) {
+    if (ch < F->asc_min || ch > F->asc_max)
+        return F->line_box;
+    UINT32 charIndex = ch - F->asc_min;
+    UINT32 offset = F->offsets[charIndex];
+    UINT32 nextOffset = (charIndex < 94) ? F->offsets[charIndex + 1] : (UINT32)F->bitmap_size;
+    UINT32 glyphBytes = nextOffset - offset;
+    if (glyphBytes == 0 || offset + glyphBytes > F->bitmap_size)
+        return F->line_box;
+    UINT32 gw = F->widths[charIndex];
+    if (gw < 1)
+        gw = 1;
+    UINT32 rowB = (gw + 7) / 8;
+    if (rowB < 1)
+        rowB = 1;
+    UINT32 gh = glyphBytes / rowB;
+    if (gh < 1)
+        gh = 1;
+    if (gh > F->max_glyph_height)
+        gh = F->max_glyph_height;
+    return gh;
 }
 
 static UINT32 GlyphBitmapHeight(CHAR16 ch) {
-    switch (CurrentFontKind) {
-    case FONT_SIMPLE:
+    if (CurrentFontKind == FONT_SIMPLE) {
         if (ch >= 32 && ch <= 126)
             return SIMPLE_FONT_HEIGHT;
         return ActiveFontLineHeight();
-    case FONT_VIRGIL:
-        if (ch < VIRGIL_ASC_MIN || ch > VIRGIL_ASC_MAX)
-            return ActiveFontLineHeight();
-        {
-            UINT32 charIndex = ch - VIRGIL_ASC_MIN;
-            UINT32 offset = virgil_offsets[charIndex];
-            UINT32 nextOffset = (charIndex < 94) ? virgil_offsets[charIndex + 1] : sizeof(virgil_bitmap);
-            UINT32 glyphBytes = nextOffset - offset;
-            if (glyphBytes == 0 || offset + glyphBytes > sizeof(virgil_bitmap))
-                return ActiveFontLineHeight();
-            UINT32 gw = virgil_widths[charIndex];
-            if (gw < 1)
-                gw = 1;
-            UINT32 rowB = (gw + 7) / 8;
-            if (rowB < 1)
-                rowB = 1;
-            UINT32 gh = glyphBytes / rowB;
-            if (gh < 1)
-                gh = 1;
-            if (gh > VIRGIL_HEIGHT)
-                gh = VIRGIL_HEIGHT;
-            return gh;
-        }
-    case FONT_HELVETICA:
-    default:
-        if (ch < HELVETICA_ASC_MIN || ch > HELVETICA_ASC_MAX)
-            return ActiveFontLineHeight();
-        {
-            UINT32 charIndex = ch - HELVETICA_ASC_MIN;
-            UINT32 offset = helvetica_offsets[charIndex];
-            UINT32 nextOffset = (charIndex < 94) ? helvetica_offsets[charIndex + 1] : sizeof(helvetica_bitmap);
-            UINT32 glyphBytes = nextOffset - offset;
-            if (glyphBytes == 0 || offset + glyphBytes > sizeof(helvetica_bitmap))
-                return ActiveFontLineHeight();
-            UINT32 gw = helvetica_widths[charIndex];
-            if (gw < 1)
-                gw = 1;
-            UINT32 rowB = (gw + 7) / 8;
-            if (rowB < 1)
-                rowB = 1;
-            UINT32 gh = glyphBytes / rowB;
-            if (gh < 1)
-                gh = 1;
-            if (gh > HELVETICA_HEIGHT)
-                gh = HELVETICA_HEIGHT;
-            return gh;
-        }
     }
+    if (CurrentFontKind < FONT_SIMPLE)
+        return GlyphBitmapHeightBitmap(ch, &gBitmapFonts[CurrentFontKind]);
+    return ActiveFontLineHeight();
 }
 
 static UINT32 LineAdvance(VOID) {
@@ -709,9 +664,7 @@ EFI_STATUS DrawString(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 *str, UINT32 f
             UINT32 yDraw = y + lineBox - gh * FontSize;
             DrawChar(fb, posX, yDraw, c, fgColor, bgColor);
         } else {
-            UINT32 ascent =
-                (CurrentFontKind == FONT_VIRGIL) ? VIRGIL_MAX_TOP : HELVETICA_MAX_TOP;
-            UINT32 baselineY = y + ascent * FontSize;
+            UINT32 baselineY = y + gBitmapFonts[CurrentFontKind].max_top * FontSize;
             DrawChar(fb, posX, baselineY, c, fgColor, bgColor);
         }
         posX += GlyphAdvance(c);
@@ -857,7 +810,7 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
         UINT32 bw = fb->Width - 96;
         if (bw > 760)
             bw = 760;
-        UINT32 bh = 440;
+        UINT32 bh = 480;
         if (by + bh + 48 > fb->Height)
             bh = fb->Height - by - 64;
         DrawRect(fb, bx - 2, by - 2, bw + 4, bh + 4, hd);
@@ -868,7 +821,11 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
         ly += HELP_LINE_GAP + 10;
         DrawString(fb, lx, ly, L"F1   Toggle this help", hf, hb);
         ly += HELP_LINE_GAP;
-        DrawString(fb, lx, ly, L"F2   Cycle font: Virgil -> Helvetica -> Simple", hf, hb);
+        DrawString(fb, lx, ly, L"F2   Cycle font (9): Virgil, Inter, Special Elite,", hf, hb);
+        ly += HELP_LINE_GAP;
+        DrawString(fb, lx, ly, L"     Courier Prime, VT323, Press Start 2P,", hf, hb);
+        ly += HELP_LINE_GAP;
+        DrawString(fb, lx, ly, L"     IBM Plex Mono, Share Tech Mono, Simple", hf, hb);
         ly += HELP_LINE_GAP;
         DrawString(fb, lx, ly, L"F3   Increase font size (scale)", hf, hb);
         ly += HELP_LINE_GAP;

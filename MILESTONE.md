@@ -7,7 +7,7 @@ This milestone marks a **usable beta** of the native **UEFI** editor (`Typewrite
 ## What works
 
 - **GOP text editor** — `uefi-app/main.c`: document buffer, cursor, Enter / Tab / Backspace / printable ASCII, **word wrap** at left/right margins.
-- **Fonts** — **Virgil** (hand-drawn) and **Inter** (as “Helvetica” in-app) from `fonts/convert_font.py`; **baseline-aligned** drawing using FreeType `bitmap_top` so **descenders** (g, p, q, y, j) sit correctly **below the baseline**; simple **5×8** built-in font; **F2** cycles fonts.
+- **Fonts** — **Nine faces** via **F2**: Virgil, Inter (sans), **Special Elite** (typewriter), **Courier Prime** (typewriter mono), **VT323** (terminal), **Press Start 2P** (8-bit), **IBM Plex Mono**, **Share Tech Mono**, plus built-in **simple**; all proportional/universal bitmaps from `fonts/convert_font.py` with **baseline-aligned** `bitmap_top` for descenders. Sources and licenses: [`fonts/README.md`](fonts/README.md).
 - **Scale** — **F3 / F6** scale glyph “fat pixels” and advances (1–6); line step follows **line box + leading**.
 - **Spacing** — word space width is **3×** the normal per-font advance; adjustable via `SPACE_ADVANCE_MULT` in `main.c`.
 - **Flicker** — **incremental** repaint (dirty horizontal stripes) for normal typing; full clears for help, palette/font/scale changes, and first paint.
