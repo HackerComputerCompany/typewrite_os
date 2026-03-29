@@ -91,7 +91,13 @@ For QEMU, run [`../start-qemu.sh`](../start-qemu.sh) from the repo root (it runs
 | **F4** | Cycle background color |
 | **F5** | **Cycle cursor:** bar (solid) → bar (blink ~0.5s) → block (solid) → block (blink) → hidden |
 | **F7** | Toggle **key debug**: last 8 keys as `SC=` scan code / `UC=` Unicode on-screen and on the firmware **serial** console (`[KeyDbg]`) |
+| **F8** | **Save** the document as **`Typewriter.txt`** (UTF-8, LF line endings) on the **boot volume** (same FAT volume as the `.efi`). Status appears in the bottom HUD and on serial (`[Typewrite] save`). |
+| **F9** | **Load** **`Typewriter.txt`** from the boot volume (replaces the in-memory buffer). |
 | **ESC** | Close help if open; otherwise **exit** (uses UEFI **SCAN_ESC** `0x0017`, not Up Arrow `0x0001`) |
+
+### Battery HUD (laptops)
+
+Core UEFI does **not** define a portable “battery %” API. If the firmware publishes Microsoft’s optional **`EFI_BATTERY_CHARGING_PROTOCOL`** (common on some OEM bring-up stacks), the bottom strip shows **SOC %**, **AC** / **DC**, and a segmented bar. Otherwise it shows **`--%`** — the layout still looks like a small LCD status line.
 
 ## Source layout
 

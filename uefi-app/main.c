@@ -4,7 +4,7 @@
  * A native UEFI typewriter experience with:
  * - Bitmap font rendering (Virgil, Inter, + retro / typewriter faces)
  * - Typewriter-style input with visual feedback
- * - File save/load from EFI variables
+ * - F8/F9 save/load Typewriter.txt (UTF-8) on boot volume; optional battery HUD
  * - Multiple view modes
  * 
  * Built with gnu-efi
@@ -23,6 +23,44 @@
 #include <press_start_2p.h>
 #include <ibm_plex_mono.h>
 #include <share_tech_mono.h>
+
+/*
+ * Microsoft bring-up EFI_BATTERY_CHARGING_PROTOCOL (optional). Not part of base UEFI;
+ * some OEM firmware exposes it for SOC %. If missing, the HUD shows "--%".
+ * https://learn.microsoft.com/en-us/windows-hardware/drivers/bringup/efi-battery-charging-protocol
+ */
+typedef struct _EFI_BATTERY_CHARGING_PROTOCOL EFI_BATTERY_CHARGING_PROTOCOL;
+
+struct _EFI_BATTERY_CHARGING_PROTOCOL {
+    EFI_STATUS (EFIAPI *GetBatteryStatus)(EFI_BATTERY_CHARGING_PROTOCOL *This,
+                                          OUT UINT32 *StateOfCharge,
+                                          OUT UINT32 *RatedCapacity,
+                                          OUT INT32 *ChargeCurrent);
+    EFI_STATUS (EFIAPI *ChargeBattery)(EFI_BATTERY_CHARGING_PROTOCOL *This,
+                                         IN UINT32 ChargerType,
+                                         IN UINT32 MaxCurrentmA,
+                                         IN UINT32 TargetmAh,
+                                         IN UINTN Reserved);
+    UINT32 Revision;
+    EFI_STATUS (EFIAPI *GetBatteryInformation)(EFI_BATTERY_CHARGING_PROTOCOL *This,
+                                               OUT UINT32 *StateOfCharge,
+                                               OUT INT32 *CurrentIntoBattery,
+                                               OUT UINT32 *BatteryTerminalVoltage,
+                                               OUT INT32 *BatteryTemperature,
+                                               OUT UINT32 *USBCableVoltage,
+                                               OUT UINT32 *USBCableCurrent);
+};
+
+#define EFI_BATTERY_CHARGING_PROTOCOL_GUID                                     \
+    { 0x840cb643, 0x8198, 0x428a, { 0xa8, 0xb3, 0xa0, 0x72, 0xce, 0x57, 0xcd, 0xb9 } }
+
+#define TYPEWRITER_DOC_FILENAME L"Typewriter.txt"
+#define DOC_FILE_MAX_BYTES      (128 * 1024)
+#define BATTERY_LCD_STRIP_H     54
+#define BATTERY_LCD_MARGIN_BOT  6
+#define FILE_OP_BANNER_TICKS    120
+
+static UINT32 StringPixelWidthChars(const CHAR16 *s);
 
 typedef struct {
     const UINT32 *offsets;
@@ -202,6 +240,10 @@ typedef struct {
 } DOCUMENT;
 
 static EFI_GRAPHICS_OUTPUT_PROTOCOL *Gop;
+static EFI_BATTERY_CHARGING_PROTOCOL *BattChargeProto;
+static EFI_HANDLE BootImageHandle;
+static CHAR16 FileOpBanner[96];
+static UINT32 FileOpBannerTtl = 0;
 
 typedef enum {
     FONT_VIRGIL = 0,
@@ -899,6 +941,324 @@ VOID InitDocument(VOID) {
     LastPaintedLineCount = 0;
 }
 
+static VOID BattTryLocate(VOID) {
+    EFI_GUID guid = EFI_BATTERY_CHARGING_PROTOCOL_GUID;
+
+    BattChargeProto = NULL;
+    if (EFI_ERROR(LibLocateProtocol(&guid, (VOID **)&BattChargeProto)))
+        BattChargeProto = NULL;
+}
+
+static VOID BattSample(UINT32 *soc, BOOLEAN *haveSoc, BOOLEAN *onAc) {
+    UINT32 s = 0;
+    INT32 cur = 0;
+    UINT32 termV = 0;
+    INT32 batT = 0;
+    UINT32 usbV = 0;
+    UINT32 usbI = 0;
+    EFI_STATUS st;
+
+    *haveSoc = FALSE;
+    *onAc = FALSE;
+    *soc = 0;
+    if (BattChargeProto == NULL)
+        return;
+
+    if (BattChargeProto->Revision >= 0x10002 && BattChargeProto->GetBatteryInformation != NULL) {
+        st = uefi_call_wrapper(BattChargeProto->GetBatteryInformation, 7, BattChargeProto,
+                               &s, &cur, &termV, &batT, &usbV, &usbI);
+        if (!EFI_ERROR(st) && s <= 150) {
+            if (s > 100)
+                s = 100;
+            *soc = s;
+            *haveSoc = TRUE;
+            *onAc = (cur > 0);
+            return;
+        }
+    }
+    if (BattChargeProto->GetBatteryStatus != NULL) {
+        UINT32 cap = 0;
+
+        st = uefi_call_wrapper(BattChargeProto->GetBatteryStatus, 4, BattChargeProto, &s, &cap, &cur);
+        if (!EFI_ERROR(st) && s <= 150) {
+            if (s > 100)
+                s = 100;
+            *soc = s;
+            *haveSoc = TRUE;
+            *onAc = (cur > 0);
+        }
+    }
+}
+
+static VOID DrawBatteryLcdStrip(FRAMEBUFFER *fb) {
+    UINT32 bezel = RGB(48, 50, 56);
+    UINT32 lcdBg = RGB(14, 28, 22);
+    UINT32 segOn = RGB(90, 255, 130);
+    UINT32 segDim = RGB(18, 40, 28);
+    UINT32 label = RGB(190, 240, 200);
+    UINT32 y0 = fb->Height - BATTERY_LCD_STRIP_H - BATTERY_LCD_MARGIN_BOT;
+    UINT32 soc, i;
+    BOOLEAN haveSoc, onAc;
+    CHAR16 pctBuf[32];
+    UINT32 barX, barY, barW, segTotalW, segW, nSeg = 20, filledSegs;
+    UINT32 txtX;
+
+    if (fb->Height < TOP_MARGIN + BATTERY_LCD_STRIP_H + BATTERY_LCD_MARGIN_BOT + 24)
+        return;
+
+    BattSample(&soc, &haveSoc, &onAc);
+
+    DrawRect(fb, 0, y0, fb->Width, BATTERY_LCD_STRIP_H, bezel);
+    DrawRect(fb, 5, y0 + 4, fb->Width - 10, BATTERY_LCD_STRIP_H - 8, lcdBg);
+
+    barX = 14;
+    barY = y0 + 16;
+    barW = fb->Width - 220;
+    if (barW < 120)
+        barW = 120;
+    segTotalW = barW;
+    segW = (segTotalW - (nSeg - 1) * 2) / nSeg;
+    if (segW < 4)
+        segW = 4;
+
+    filledSegs = haveSoc ? (soc * nSeg + 99) / 100 : 0;
+    if (filledSegs > nSeg)
+        filledSegs = nSeg;
+
+    for (i = 0; i < nSeg; i++) {
+        UINT32 sx = barX + i * (segW + 2);
+        UINT32 fillC = (i < filledSegs) ? segOn : segDim;
+
+        DrawRect(fb, sx, barY, segW, 12, fillC);
+    }
+
+    DrawString(fb, barX, y0 + 4, L"BATT", label, lcdBg);
+    if (haveSoc)
+        UnicodeSPrint(pctBuf, sizeof(pctBuf), L"%u%%", soc);
+    else
+        StrCpy(pctBuf, L"--%");
+    if (onAc) {
+        StrCat(pctBuf, L" AC");
+    } else if (haveSoc && soc < 100) {
+        StrCat(pctBuf, L" DC");
+    }
+
+    txtX = fb->Width - 14 - StringPixelWidthChars(pctBuf);
+    if (txtX < barX + segTotalW + 10)
+        txtX = barX + segTotalW + 10;
+    DrawString(fb, txtX, y0 + 8, pctBuf, label, lcdBg);
+
+    if (FileOpBannerTtl > 0 && FileOpBanner[0] && y0 + 36 + FontSize * 8 < fb->Height) {
+        UINT32 bw = StringPixelWidthChars(FileOpBanner);
+        UINT32 mx = (fb->Width > bw + 8) ? (fb->Width - bw) / 2 : 6;
+
+        DrawString(fb, mx, y0 + 32, FileOpBanner, RGB(255, 210, 90), lcdBg);
+    }
+}
+
+static UINTN Utf8WriteChar(CHAR16 c, UINT8 *dst, UINTN left) {
+    if (left < 1)
+        return 0;
+    if (c < 0x80) {
+        dst[0] = (UINT8)c;
+        return 1;
+    }
+    if (c < 0x800 && left >= 2) {
+        dst[0] = (UINT8)(0xC0 | ((c >> 6) & 0x1F));
+        dst[1] = (UINT8)(0x80 | (c & 0x3F));
+        return 2;
+    }
+    if (left >= 3) {
+        dst[0] = (UINT8)(0xE0 | ((c >> 12) & 0x0F));
+        dst[1] = (UINT8)(0x80 | ((c >> 6) & 0x3F));
+        dst[2] = (UINT8)(0x80 | (c & 0x3F));
+        return 3;
+    }
+    return 0;
+}
+
+static VOID FileOpSetBannerOk(const CHAR16 *msg) {
+    StrCpy(FileOpBanner, msg);
+    FileOpBannerTtl = FILE_OP_BANNER_TICKS;
+}
+
+static VOID FileOpSetBannerErr(const CHAR16 *msg, EFI_STATUS st) {
+    UnicodeSPrint(FileOpBanner, sizeof(FileOpBanner), L"%s  (%lx)", msg, (UINTN)st);
+    FileOpBannerTtl = FILE_OP_BANNER_TICKS;
+}
+
+static EFI_STATUS TypewriterSaveFile(EFI_HANDLE img) {
+    EFI_GUID liGuid = EFI_LOADED_IMAGE_PROTOCOL_GUID;
+    EFI_LOADED_IMAGE_PROTOCOL *li = NULL;
+    EFI_FILE *root = NULL;
+    EFI_FILE *f = NULL;
+    EFI_STATUS st;
+    UINTN cap = (UINTN)MAX_LINES * MAX_CHARS_PER_LINE * 4 + MAX_LINES * 2 + 64;
+    UINT8 *buf = NULL;
+    UINTN used = 0;
+    UINT32 L;
+    CHAR16 *p;
+
+    st = uefi_call_wrapper(BS->HandleProtocol, 3, img, &liGuid, (VOID **)&li);
+    if (EFI_ERROR(st) || li == NULL || li->DeviceHandle == NULL)
+        return (st != EFI_SUCCESS) ? st : EFI_NOT_READY;
+
+    root = LibOpenRoot(li->DeviceHandle);
+    if (root == NULL)
+        return EFI_NO_MEDIA;
+
+    if (!EFI_ERROR(uefi_call_wrapper(root->Open, 5, root, &f, TYPEWRITER_DOC_FILENAME,
+                                     EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, (UINT64)0))) {
+        uefi_call_wrapper(f->Delete, 1, f);
+        f = NULL;
+    }
+
+    st = uefi_call_wrapper(root->Open, 5, root, &f, TYPEWRITER_DOC_FILENAME,
+                           EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_CREATE,
+                           (UINT64)0);
+    if (EFI_ERROR(st)) {
+        uefi_call_wrapper(root->Close, 1, root);
+        return st;
+    }
+
+    buf = AllocatePool(cap);
+    if (buf == NULL) {
+        uefi_call_wrapper(f->Close, 1, f);
+        uefi_call_wrapper(root->Close, 1, root);
+        return EFI_OUT_OF_RESOURCES;
+    }
+
+    for (L = 0; L < Doc.LineCount && L < MAX_LINES; L++) {
+        p = Doc.Text[L];
+        while (*p && used + 4 < cap) {
+            UINTN n = Utf8WriteChar(*p++, buf + used, cap - used);
+
+            if (n == 0)
+                break;
+            used += n;
+        }
+        if (used + 1 < cap)
+            buf[used++] = '\n';
+    }
+
+    {
+        UINTN wlen = used;
+
+        st = uefi_call_wrapper(f->Write, 3, f, &wlen, buf);
+        if (!EFI_ERROR(st) && wlen != used)
+            st = EFI_DEVICE_ERROR;
+    }
+    uefi_call_wrapper(f->Flush, 1, f);
+    uefi_call_wrapper(f->Close, 1, f);
+    uefi_call_wrapper(root->Close, 1, root);
+    FreePool(buf);
+    return st;
+}
+
+static VOID TypewriterLoadBytesIntoDoc(const UINT8 *data, UINTN len) {
+    UINT32 line = 0;
+    UINT32 col = 0;
+    UINTN i = 0;
+
+    if (len >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF)
+        i = 3;
+
+    ZeroMem(&Doc, sizeof(Doc));
+    Doc.Modified = TRUE;
+    Doc.LineCount = 1;
+    Doc.CursorX = 0;
+    Doc.CursorY = 0;
+    Doc.Text[0][0] = 0;
+    ZeroMem(KeyDbgLines, sizeof(KeyDbgLines));
+
+    while (i < len && line < MAX_LINES) {
+        UINT8 b0 = data[i];
+        CHAR16 c = 0;
+        UINTN adv = 1;
+
+        if (b0 < 0x80) {
+            c = (CHAR16)b0;
+        } else if ((b0 & 0xE0) == 0xC0 && i + 1 < len) {
+            c = (CHAR16)(((b0 & 0x1F) << 6) | (data[i + 1] & 0x3F));
+            adv = 2;
+        } else if ((b0 & 0xF0) == 0xE0 && i + 2 < len) {
+            c = (CHAR16)(((b0 & 0x0F) << 12) | ((data[i + 1] & 0x3F) << 6) |
+                         (data[i + 2] & 0x3F));
+            adv = 3;
+        } else {
+            i++;
+            continue;
+        }
+
+        i += adv;
+
+        if (c == L'\n' || c == L'\r') {
+            if (c == L'\r' && i < len && data[i] == '\n')
+                i++;
+            Doc.Text[line][col] = 0;
+            line++;
+            col = 0;
+            if (line >= MAX_LINES)
+                break;
+            Doc.Text[line][0] = 0;
+            continue;
+        }
+
+        if (col < MAX_CHARS_PER_LINE - 1)
+            Doc.Text[line][col++] = c;
+    }
+
+    Doc.Text[line][col] = 0;
+    Doc.LineCount = (line < MAX_LINES) ? line + 1 : MAX_LINES;
+    Doc.CursorX = 0;
+    Doc.CursorY = 0;
+    ReflowAllLines();
+    MarkFullRepaint();
+}
+
+static EFI_STATUS TypewriterLoadFile(EFI_HANDLE img) {
+    EFI_GUID liGuid = EFI_LOADED_IMAGE_PROTOCOL_GUID;
+    EFI_LOADED_IMAGE_PROTOCOL *li = NULL;
+    EFI_FILE *root = NULL;
+    EFI_FILE *f = NULL;
+    EFI_STATUS st;
+    UINT8 *buf = NULL;
+    UINTN sz;
+
+    st = uefi_call_wrapper(BS->HandleProtocol, 3, img, &liGuid, (VOID **)&li);
+    if (EFI_ERROR(st) || li == NULL || li->DeviceHandle == NULL)
+        return (st != EFI_SUCCESS) ? st : EFI_NOT_READY;
+
+    root = LibOpenRoot(li->DeviceHandle);
+    if (root == NULL)
+        return EFI_NO_MEDIA;
+
+    st = uefi_call_wrapper(root->Open, 5, root, &f, TYPEWRITER_DOC_FILENAME, EFI_FILE_MODE_READ,
+                           (UINT64)0);
+    if (EFI_ERROR(st)) {
+        uefi_call_wrapper(root->Close, 1, root);
+        return st;
+    }
+
+    buf = AllocatePool(DOC_FILE_MAX_BYTES + 1);
+    if (buf == NULL) {
+        uefi_call_wrapper(f->Close, 1, f);
+        uefi_call_wrapper(root->Close, 1, root);
+        return EFI_OUT_OF_RESOURCES;
+    }
+
+    sz = DOC_FILE_MAX_BYTES;
+    st = uefi_call_wrapper(f->Read, 3, f, &sz, buf);
+    if (!EFI_ERROR(st)) {
+        buf[sz] = 0;
+        TypewriterLoadBytesIntoDoc(buf, sz);
+    }
+    uefi_call_wrapper(f->Close, 1, f);
+    uefi_call_wrapper(root->Close, 1, root);
+    FreePool(buf);
+    return st;
+}
+
 static VOID KeyDbgPush(const EFI_INPUT_KEY *k) {
     UINTN i;
     for (i = 0; i < KEY_DBG_LINES - 1; i++)
@@ -1015,7 +1375,7 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
         UINT32 bw = fb->Width - 96;
         if (bw > 760)
             bw = 760;
-        UINT32 bh = 480;
+        UINT32 bh = 540;
         if (by + bh + 48 > fb->Height)
             bh = fb->Height - by - 64;
         DrawRect(fb, bx - 2, by - 2, bw + 4, bh + 4, hd);
@@ -1044,8 +1404,14 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
         ly += HELP_LINE_GAP;
         DrawString(fb, lx, ly, L"F7   Toggle key debug (scan/unicode log)", hf, hb);
         ly += HELP_LINE_GAP;
+        DrawString(fb, lx, ly, L"F8   Save document as Typewriter.txt (UTF-8) on boot volume", hf, hb);
+        ly += HELP_LINE_GAP;
+        DrawString(fb, lx, ly, L"F9   Load Typewriter.txt from boot volume (replaces buffer)", hf, hb);
+        ly += HELP_LINE_GAP;
         DrawString(fb, lx, ly, L"ESC  Close help; quit app when help is hidden", hf, hb);
     }
+
+    DrawBatteryLcdStrip(fb);
     
     FlipFramebuffer(fb);
     return EFI_SUCCESS;
@@ -1070,50 +1436,73 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
         return EFI_SUCCESS;
     }
     
-    if (key->ScanCode >= 0x0B && key->ScanCode <= 0x12) {  /* F1-F8 */
+    if (key->ScanCode >= SCAN_F1 && key->ScanCode <= SCAN_F9) {
         switch (key->ScanCode) {
-            case 0x0B:  /* F1 - Help */
+            case SCAN_F1:  /* Help */
                 ShowHelp = !ShowHelp;
                 MarkFullRepaint();
                 Doc.Modified = TRUE;
                 break;
-            case 0x0C:  /* F2 - Cycle font */
+            case SCAN_F2:  /* Cycle font */
                 CurrentFontKind = (FONT_KIND)((CurrentFontKind + 1) % FONT_NUM);
                 ReflowAllLines();
                 MarkFullRepaint();
                 Doc.Modified = TRUE;
                 break;
-            case 0x0D:  /* F3 - Increase font / scale */
+            case SCAN_F3:  /* Increase font / scale */
                 if (FontSize < 6)
                     FontSize++;
                 ReflowAllLines();
                 MarkFullRepaint();
                 Doc.Modified = TRUE;
                 break;
-            case 0x0E:  /* F4 - Cycle background */
+            case SCAN_F4:  /* Cycle background */
                 CurrentBgColor = (CurrentBgColor + 1) % 10;
                 MarkFullRepaint();
                 Doc.Modified = TRUE;
                 break;
-            case 0x0F:  /* F5 - Cycle cursor style */
+            case SCAN_F5:  /* Cycle cursor style */
                 CursorMode = (CursorMode + 1) % CURSOR_MODE_NUM;
                 CursorBlinkAccumUs = 0;
                 CursorBlinkPhase = TRUE;
                 MarkDirtyRange(Doc.CursorY, Doc.CursorY);
                 Doc.Modified = TRUE;
                 break;
-            case 0x10:  /* F6 - Decrease font / scale */
+            case SCAN_F6:  /* Decrease font / scale */
                 if (FontSize > 1)
                     FontSize--;
                 ReflowAllLines();
                 MarkFullRepaint();
                 Doc.Modified = TRUE;
                 break;
-            case SCAN_F7:  /* F7 - Toggle key debug overlay + serial log */
+            case SCAN_F7:  /* Toggle key debug overlay + serial log */
                 KeyDebugMode = !KeyDebugMode;
                 MarkFullRepaint();
                 Doc.Modified = TRUE;
                 break;
+            case SCAN_F8: {
+                EFI_STATUS fst = TypewriterSaveFile(BootImageHandle);
+
+                if (!EFI_ERROR(fst))
+                    FileOpSetBannerOk(L"Saved Typewriter.txt");
+                else
+                    FileOpSetBannerErr(L"Save failed", fst);
+                Print(L"[Typewrite] save %r\n", fst);
+                MarkFullRepaint();
+                Doc.Modified = TRUE;
+                break;
+            }
+            case SCAN_F9: {
+                EFI_STATUS fst = TypewriterLoadFile(BootImageHandle);
+
+                if (!EFI_ERROR(fst))
+                    FileOpSetBannerOk(L"Loaded Typewriter.txt");
+                else
+                    FileOpSetBannerErr(L"Load failed", fst);
+                Print(L"[Typewrite] load %r\n", fst);
+                Doc.Modified = TRUE;
+                break;
+            }
         }
         return EFI_SUCCESS;
     }
@@ -1178,11 +1567,13 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     InitializeLib(ImageHandle, SystemTable);
     KickFirmwareWatchdog();
+    BootImageHandle = ImageHandle;
+    BattTryLocate();
 
     Print(L"\r\n========================================\r\n");
     Print(L"  Typewrite OS v1.0\r\n");
     Print(L"  UEFI Typewriter Application\r\n");
-    Print(L"  F1 help  F2 font  F3/F6 scale  F5 cursor  F7 key debug\r\n");
+    Print(L"  F1 help  F2 font  F3/F6 scale  F5 cursor  F7 key dbg  F8 save  F9 load\r\n");
     Print(L"========================================\r\n\r\n");
     
     EFI_GUID gopGuid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
@@ -1293,8 +1684,19 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         
         /* Idle longer when unchanged to avoid burning CPU; short delay after input */
         {
+            static UINT32 battPollUs = 0;
             UINT32 stallUs = EFI_ERROR(keyStatus) ? 50000 : 5000;
+
             uefi_call_wrapper(BS->Stall, 1, stallUs);
+            battPollUs += stallUs;
+            if (battPollUs >= 2000000) {
+                battPollUs = 0;
+                Doc.Modified = TRUE;
+            }
+            if (FileOpBannerTtl > 0) {
+                FileOpBannerTtl--;
+                Doc.Modified = TRUE;
+            }
             if (!ShowHelp && CursorWantsBlinkTimer()) {
                 CursorBlinkAccumUs += stallUs;
                 while (CursorBlinkAccumUs >= CURSOR_BLINK_PERIOD_US) {
