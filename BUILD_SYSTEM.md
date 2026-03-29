@@ -177,16 +177,34 @@ Options and environment:
 |-----------------|--------|
 | `--no-build` | Skip `make`; use existing `uefi-app/Typewriter.efi`. |
 | `--fresh-vars` | Delete `ovmf_vars.fd` and recreate from the template (reset UEFI NVRAM / boot entries). |
+| `--serial-stdio` | Guest serial (COM1) on **this terminal** instead of `uefi-app/serial.log`. |
+| `--sdl` | Use **SDL** for the window (try this if GTK seems stuck or stays black). |
 | `OVMF_CODE` | Absolute path to the read-only OVMF code image. |
-| `QEMU_DISPLAY` | Passed to QEMU `-display` (default `gtk`). Use `none` on headless hosts. |
+| `QEMU_DISPLAY` | Passed to QEMU `-display`. Default is **`gtk,gl=off`** (plain `gtk` is upgraded unless `QEMU_GTK_GL=1`). |
+| `QEMU_GTK_GL` | Set to `1` to use GTK with OpenGL (`gtk` or `gtk,gl=on`). |
+| `QEMU_MACHINE` | `-machine` argument (default **`q35,accel=kvm:tcg`**). Set to empty to use QEMU’s default PC: `QEMU_MACHINE= ./start-qemu.sh` |
 
 Full CLI reference: **`./start-qemu.sh --help`** (name, synopsis, options, env, files, examples).
 
-**Packages (Debian/Ubuntu):** `sudo apt install qemu-system-x86 ovmf`
+**Packages (Debian/Ubuntu):** `sudo apt install qemu-system-x86 ovmf` (install **`qemu-system-gui`** too if GTK/SDL modules are missing).
 
-**Serial log:** `uefi-app/serial.log` (firmware and `Print()` output).
+**Serial log:** `uefi-app/serial.log` by default, or **`--serial-stdio`** to watch firmware and `Print()` in the terminal.
 
 **Display:** With GTK, use **Ctrl+Alt+G** to grab the mouse and **Ctrl+Alt** to release.
+
+### QEMU window hangs, black screen, or “Guest has not initialized the display (yet)”
+
+That **title-bar message is normal** for several seconds while OVMF starts; it is not always a hang.
+
+If the **window stays blank** or **never seems to finish “display init”**:
+
+1. Run **`./start-qemu.sh --sdl`** — SDL avoids many GTK + OpenGL / Wayland issues.
+2. The script defaults to **`gtk,gl=off`**. If you forced GL (`QEMU_GTK_GL=1`) and see problems, turn it off again.
+3. Run **`./start-qemu.sh --serial-stdio`** — you should see TianoCore / shell / `Print()` output on the terminal even when the GUI is black. Confirms the guest is running.
+4. On **Wayland**, try forcing X11 for GTK: **`GDK_BACKEND=x11 ./start-qemu.sh`**
+5. Ensure **`qemu-system-gui`** (or your distro’s equivalent) is installed so the GTK/SDL UI modules load.
+
+The script uses **`-machine q35,accel=kvm:tcg`** by default (better match for UEFI + GOP than older i440fx defaults). Override only if you know you need another machine type.
 
 ### Manual QEMU command (equivalent layout)
 
@@ -194,12 +212,13 @@ Do **not** pass both `-bios` and OVMF `pflash` for the same image (redundant / c
 
 ```bash
 qemu-system-x86_64 \
+    -machine q35,accel=kvm:tcg \
     -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
     -drive if=pflash,format=raw,file=ovmf_vars.fd \
     -drive format=raw,file=fat:rw:uefi-app/fs \
     -m 256M \
     -net none \
-    -display gtk \
+    -display gtk,gl=off \
     -serial file:uefi-app/serial.log
 ```
 
@@ -274,6 +293,7 @@ uefi-app/
 
 ## Changelog
 
+- **2026-03-29**: **`start-qemu.sh`**: default **`-machine q35,accel=kvm:tcg`**, default GTK **`gl=off`**, **`--sdl`** and **`--serial-stdio`**, pre-launch tips; **BUILD_SYSTEM.md** QEMU display troubleshooting.
 - **2026-03-29**: Removed redundant tracked **`buildroot.tar.gz`** (vendored tree remains under `buildroot-2024.02/`); local Buildroot **`output/`**, **`dl/`**, etc. are still safe to delete when present — they are build products, not source.
 - **2026-03-29**: [`start-qemu.sh`](start-qemu.sh) **`--help`** documents behavior, paths, requirements, and examples; script builds `uefi-app`, syncs `Typewriter.efi` into `uefi-app/fs/`, auto-detects OVMF, drops duplicate `-bios`.
 - **2026-03-29**: Added [`AGENTS.md`](AGENTS.md) and [`agent.md`](agent.md) pointers for return-to-context; root [`README.md`](README.md) and [`PROJECT_STATUS.md`](PROJECT_STATUS.md) updated for dual-track (UEFI + Buildroot) state.

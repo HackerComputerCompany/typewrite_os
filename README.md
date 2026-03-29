@@ -29,7 +29,7 @@ From the **repo root** (install `qemu-system-x86` and `ovmf` on Debian/Ubuntu):
 ./start-qemu.sh
 ```
 
-This runs **`make -C uefi-app`**, copies **`Typewriter.efi`** into **`uefi-app/fs/`** (QEMU’s FAT folder), then starts QEMU with OVMF. Options: `./start-qemu.sh --help`. Details: [`BUILD_SYSTEM.md`](BUILD_SYSTEM.md#testing) (serial log path, `QEMU_DISPLAY=none`, `--fresh-vars`, etc.).
+This runs **`make -C uefi-app`**, copies **`Typewriter.efi`** into **`uefi-app/fs/`** (QEMU’s FAT folder), then starts QEMU with OVMF (default **`q35`** + **`gtk,gl=off`**). Options: **`./start-qemu.sh --help`**. If the QEMU window looks stuck or black, try **`./start-qemu.sh --sdl`** or **`./start-qemu.sh --serial-stdio`**. Full troubleshooting (display hang, black window): [`BUILD_SYSTEM.md`](BUILD_SYSTEM.md) → *Testing* → *QEMU window hangs…*.
 
 ## License / upstream
 

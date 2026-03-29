@@ -14,6 +14,7 @@ SERIAL_LOG="${UEFI_DIR}/serial.log"
 
 DO_BUILD=1
 FRESH_VARS=0
+SERIAL_STDIO=0
 
 usage() {
     cat <<'EOF'
@@ -34,18 +35,27 @@ DESCRIPTION
     in ./ovmf_vars.fd (created from OVMF_VARS.fd template when missing).
 
 OPTIONS
-    --no-build      Skip make; use existing uefi-app/Typewriter.efi (must exist).
-    --fresh-vars    Delete ./ovmf_vars.fd and recreate from the template (reset
-                    NVRAM / boot entries).
-    -h, --help      Print this help and exit (exit status 0).
+    --no-build       Skip make; use existing uefi-app/Typewriter.efi (must exist).
+    --fresh-vars     Delete ./ovmf_vars.fd and recreate from the template (reset
+                     NVRAM / boot entries).
+    --serial-stdio   Send guest COM1 to this terminal (firmware + Print output).
+                     Does not write uefi-app/serial.log (use shell redirection if needed).
+    --sdl            Use SDL instead of GTK (often works when the GTK window hangs
+                     or stays black during “display init”).
+    -h, --help       Print this help and exit (exit status 0).
 
 ENVIRONMENT
     OVMF_CODE       Absolute path to OVMF_CODE.fd. If unset, the script tries:
                     /usr/share/OVMF/OVMF_CODE.fd
                     /usr/share/qemu/OVMF_CODE.fd
                     /usr/share/ovmf/OVMF.fd
-    QEMU_DISPLAY    Argument to qemu -display (default: gtk).
-                    Use "none" on headless hosts and read uefi-app/serial.log.
+    QEMU_DISPLAY    Passed to qemu -display. Default is gtk with OpenGL off
+                    (gtk,gl=off) to avoid common host hangs/black screens.
+                    Examples: sdl, none, gtk, gtk,gl=on
+    QEMU_GTK_GL     Set to 1 to use OpenGL with GTK (default is off).
+    QEMU_MACHINE    Machine type (default: q35,accel=kvm:tcg). OVMF + GOP behaves
+                    more reliably on q35 than the older i440fx default. Set empty
+                    to omit -machine and use QEMU’s default: QEMU_MACHINE= ./start-qemu.sh
 
 FILES (paths relative to repo root)
     uefi-app/Typewriter.efi   Built binary (make output).
@@ -59,8 +69,9 @@ REQUIREMENTS
 
 EXAMPLES
     ./start-qemu.sh
-    ./start-qemu.sh --no-build
-    ./start-qemu.sh --fresh-vars
+    ./start-qemu.sh --sdl
+    ./start-qemu.sh --serial-stdio
+    ./start-qemu.sh --no-build --fresh-vars
     QEMU_DISPLAY=none ./start-qemu.sh
     OVMF_CODE=/usr/share/OVMF/OVMF_CODE.fd ./start-qemu.sh
 
@@ -73,6 +84,8 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --no-build) DO_BUILD=0; shift ;;
         --fresh-vars) FRESH_VARS=1; shift ;;
+        --serial-stdio) SERIAL_STDIO=1; shift ;;
+        --sdl) QEMU_DISPLAY=sdl; shift ;;
         -h|--help) usage; exit 0 ;;
         *)
             echo "Unknown option: $1" >&2
@@ -157,21 +170,55 @@ fi
 init_ovmf_vars "$OVMF_CODE_PATH"
 
 QEMU_DISPLAY="${QEMU_DISPLAY:-gtk}"
+# GTK + OpenGL often black-screens or stalls on some hosts (Wayland/Mesa); default gl=off.
+if [[ "$QEMU_DISPLAY" == "gtk" && "${QEMU_GTK_GL:-0}" != "1" ]]; then
+    QEMU_DISPLAY="gtk,gl=off"
+fi
+
+MACHINE_ARGS=()
+if [[ ! -v QEMU_MACHINE ]]; then
+    MACHINE_ARGS=(-machine "q35,accel=kvm:tcg")
+elif [[ -n "$QEMU_MACHINE" ]]; then
+    MACHINE_ARGS=(-machine "$QEMU_MACHINE")
+fi
+
+SERIAL_ARGS=(-serial file:"$SERIAL_LOG")
+if [[ "$SERIAL_STDIO" -eq 1 ]]; then
+    SERIAL_ARGS=(-serial stdio)
+fi
 
 echo "Starting QEMU with UEFI..."
 echo "  OVMF code:  $OVMF_CODE_PATH"
 echo "  OVMF vars:  $OVMF_VARS_LOCAL"
 echo "  FAT folder: ${UEFI_DIR}/fs"
-echo "  Serial log: $SERIAL_LOG"
-echo "  Display:    $QEMU_DISPLAY  (set QEMU_DISPLAY=none for -nographic)"
-echo "  Grab:       Ctrl+Alt+G (gtk) / Ctrl+Alt to release mouse"
+if [[ "$SERIAL_STDIO" -eq 1 ]]; then
+    echo "  Serial:     stdio (this terminal — firmware and Print output)"
+else
+    echo "  Serial log: $SERIAL_LOG"
+fi
+echo "  Display:    $QEMU_DISPLAY"
+if [[ "$QEMU_DISPLAY" == gtk* ]]; then
+    echo "  Grab:       Ctrl+Alt+G / Ctrl+Alt to release mouse (GTK)"
+fi
+if [[ -n "${MACHINE_ARGS[*]}" ]]; then
+    echo "  Machine:    ${MACHINE_ARGS[1]}"
+else
+    echo "  Machine:    (QEMU default — set QEMU_MACHINE=q35,accel=kvm:tcg if unsure)"
+fi
 echo ""
+if [[ "$QEMU_DISPLAY" != "none" && "$QEMU_DISPLAY" != curses ]]; then
+    echo "Tip: If the window stays blank or seems stuck on “display” init, try:" >&2
+    echo "     ./start-qemu.sh --sdl     or     ./start-qemu.sh --serial-stdio" >&2
+    echo "     (OVMF can take a few seconds before the first frame; that is normal.)" >&2
+    echo "" >&2
+fi
 
 exec qemu-system-x86_64 \
+    "${MACHINE_ARGS[@]}" \
     -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE_PATH" \
     -drive if=pflash,format=raw,file="$OVMF_VARS_LOCAL" \
     -drive format=raw,file=fat:rw:"${UEFI_DIR}/fs" \
     -m 256M \
     -net none \
     -display "$QEMU_DISPLAY" \
-    -serial file:"$SERIAL_LOG"
+    "${SERIAL_ARGS[@]}"
