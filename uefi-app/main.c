@@ -178,6 +178,12 @@ static const UINT32 simple_font_offsets[] = {
 #define RIGHT_MARGIN 24
 #define TOP_MARGIN 30
 
+/* UEFI firmware watchdog (often ~5 min) resets the platform if not fed; timeout 0 disables. */
+static VOID KickFirmwareWatchdog(VOID) {
+    if (BS != NULL && BS->SetWatchdogTimer != NULL)
+        (void)uefi_call_wrapper(BS->SetWatchdogTimer, 4, (UINTN)0, (UINT64)0, (UINTN)0, NULL);
+}
+
 typedef struct {
     UINT32 Width;
     UINT32 Height;
@@ -351,105 +357,128 @@ static VOID PrependToLine(CHAR16 *line, const CHAR16 *prefix) {
     CopyMem(line, buf, (pl + ol + 1) * sizeof(CHAR16));
 }
 
-static VOID ApplyWordWrap(UINT32 L) {
+/*
+ * One wrap split from line L into L+1. No recursion — deep recursive wraps blew the
+ * UEFI stack (~128KB typical) and could reset the machine.
+ */
+static BOOLEAN SplitOverflowingLineOnce(UINT32 L) {
+    UINT32 len;
+    UINT32 i;
+    UINT32 w;
+    UINT32 lastSpace;
+    UINT32 overflowIdx;
+    UINT32 breakStart;
+    UINT32 oldCx;
+    UINT32 oldCy;
+    CHAR16 tail[MAX_CHARS_PER_LINE];
+    UINT32 t;
+    CHAR16 *line;
+
     if (L >= MAX_LINES - 1 || WrapPixelWidth < 48)
-        return;
-    CHAR16 *line = Doc.Text[L];
-    UINT32 guard = 0;
+        return FALSE;
+    line = Doc.Text[L];
+    if (LinePixelWidth(line) <= WrapPixelWidth)
+        return FALSE;
 
-    while (LinePixelWidth(line) > WrapPixelWidth && guard++ < MAX_CHARS_PER_LINE * 2) {
-        UINT32 len = LineLen(line);
-        if (len == 0)
-            return;
+    len = LineLen(line);
+    if (len == 0)
+        return FALSE;
 
-        UINT32 i = 0;
-        UINT32 w = 0;
-        UINT32 lastSpace = (UINT32)-1;
-        UINT32 overflowIdx = len;
+    w = 0;
+    lastSpace = (UINT32)-1;
+    overflowIdx = len;
+    for (i = 0; line[i] && i < MAX_CHARS_PER_LINE; i++) {
+        UINT32 adv = GlyphAdvance(line[i]);
 
+        if (line[i] == L' ')
+            lastSpace = i;
+        if (w + adv > WrapPixelWidth) {
+            overflowIdx = i;
+            break;
+        }
+        w += adv;
+    }
+
+    if (overflowIdx >= len)
+        return FALSE;
+
+    if (lastSpace != (UINT32)-1 && lastSpace < overflowIdx && lastSpace > 0) {
+        breakStart = lastSpace + 1;
+        while (line[breakStart] == L' ')
+            breakStart++;
+    } else {
+        w = 0;
+        breakStart = 0;
         for (i = 0; line[i] && i < MAX_CHARS_PER_LINE; i++) {
             UINT32 adv = GlyphAdvance(line[i]);
-            if (line[i] == L' ')
-                lastSpace = i;
-            if (w + adv > WrapPixelWidth) {
-                overflowIdx = i;
+
+            if (w + adv > WrapPixelWidth)
                 break;
-            }
             w += adv;
+            breakStart = i + 1;
         }
+        if (breakStart == 0 && line[0])
+            breakStart = 1;
+    }
 
-        if (overflowIdx >= len)
+    if (breakStart >= len)
+        return FALSE;
+
+    oldCx = Doc.CursorX;
+    oldCy = Doc.CursorY;
+
+    t = 0;
+    for (i = breakStart; line[i] && t < MAX_CHARS_PER_LINE - 1; i++)
+        tail[t++] = line[i];
+    tail[t] = 0;
+    line[breakStart] = 0;
+
+    while (LineLen(line) > 0) {
+        UINT32 u = LineLen(line);
+
+        if (u > 0 && line[u - 1] == L' ')
+            line[u - 1] = 0;
+        else
             break;
+    }
 
-        UINT32 breakStart;
-        if (lastSpace != (UINT32)-1 && lastSpace < overflowIdx && lastSpace > 0) {
-            breakStart = lastSpace + 1;
-            while (line[breakStart] == L' ')
-                breakStart++;
-        } else {
-            w = 0;
-            breakStart = 0;
-            for (i = 0; line[i] && i < MAX_CHARS_PER_LINE; i++) {
-                UINT32 adv = GlyphAdvance(line[i]);
-                if (w + adv > WrapPixelWidth)
-                    break;
-                w += adv;
-                breakStart = i + 1;
-            }
-            if (breakStart == 0 && line[0])
-                breakStart = 1;
-        }
+    if (Doc.Text[L + 1][0] == 0) {
+        StrCpy(Doc.Text[L + 1], tail);
+    } else {
+        PrependToLine(Doc.Text[L + 1], tail);
+    }
 
-        if (breakStart >= len)
-            break;
+    if (Doc.LineCount < L + 2)
+        Doc.LineCount = L + 2;
 
-        UINT32 oldCx = Doc.CursorX;
-        UINT32 oldCy = Doc.CursorY;
+    if (oldCy == L && oldCx >= breakStart) {
+        Doc.CursorY = L + 1;
+        Doc.CursorX = oldCx - breakStart;
+    }
 
-        CHAR16 tail[MAX_CHARS_PER_LINE];
-        UINT32 t = 0;
-        for (i = breakStart; line[i] && t < MAX_CHARS_PER_LINE - 1; i++)
-            tail[t++] = line[i];
-        tail[t] = 0;
-        line[breakStart] = 0;
+    return TRUE;
+}
 
-        while (LineLen(line) > 0) {
-            UINT32 u = LineLen(line);
-            if (u > 0 && line[u - 1] == L' ')
-                line[u - 1] = 0;
-            else
+static VOID ApplyWordWrap(UINT32 startL) {
+    UINT32 rounds = 0;
+    const UINT32 maxRounds = MAX_LINES * MAX_CHARS_PER_LINE * 4;
+
+    while (rounds++ < maxRounds) {
+        UINT32 L;
+
+        for (L = startL; L < MAX_LINES - 1; L++) {
+            if (LinePixelWidth(Doc.Text[L]) > WrapPixelWidth)
                 break;
         }
-
-        if (Doc.Text[L + 1][0] == 0) {
-            StrCpy(Doc.Text[L + 1], tail);
-        } else {
-            PrependToLine(Doc.Text[L + 1], tail);
-        }
-
-        if (Doc.LineCount < L + 2)
-            Doc.LineCount = L + 2;
-
-        if (oldCy == L && oldCx >= breakStart) {
-            Doc.CursorY = L + 1;
-            Doc.CursorX = oldCx - breakStart;
-        }
-
-        ApplyWordWrap(L + 1);
+        if (L >= MAX_LINES - 1)
+            return;
+        if (!SplitOverflowingLineOnce(L))
+            return;
     }
 }
 
 static VOID ReflowAllLines(VOID) {
-    for (UINT32 iter = 0; iter < 500; iter++) {
-        UINT32 L;
-        for (L = 0; L < Doc.LineCount && L < MAX_LINES - 1; L++) {
-            if (LinePixelWidth(Doc.Text[L]) > WrapPixelWidth)
-                break;
-        }
-        if (L >= Doc.LineCount || L >= MAX_LINES - 1)
-            return;
-        ApplyWordWrap(L);
-    }
+    ApplyWordWrap(0);
 }
 
 /* GOP front buffer (hardware). When non-NULL, fb->PixelData points at a Pool back buffer. */
@@ -1148,7 +1177,8 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
 
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     InitializeLib(ImageHandle, SystemTable);
-    
+    KickFirmwareWatchdog();
+
     Print(L"\r\n========================================\r\n");
     Print(L"  Typewrite OS v1.0\r\n");
     Print(L"  UEFI Typewriter Application\r\n");
@@ -1239,6 +1269,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     InitDocument();
 
     while (Running) {
+        KickFirmwareWatchdog();
         if (Doc.Modified) {
             RenderDocument(&fb);
             Doc.Modified = FALSE;

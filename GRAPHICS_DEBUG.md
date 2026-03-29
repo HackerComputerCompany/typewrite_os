@@ -51,6 +51,14 @@ Also corrected **`SetMode` `uefi_call_wrapper` arity** to **2** (matches gnu-efi
 
 Earlier MacBook tests: tiny draws and some GOP paths behaved badly; **bitmap glyph decode bugs above are fixed** in software.
 
+### Long-run stability (unexpected reboot after typing)
+
+Many PCs enable a **firmware watchdog** during boot that **resets** the machine if the EFI image never clears it. **`main.c`** calls **`BootServices->SetWatchdogTimer(0, …)`** (timeout **0** = off per UEFI spec) after init and **once per main-loop iteration** so long sessions do not trip a **~5 minute** timer.
+
+**Word wrap** used to **`ApplyWordWrap` → `ApplyWordWrap(L+1)` recursion**; a tall document could recurse **per visual line** and **overflow the small UEFI stack** (undefined behavior / reset). Wrapping is now **iterative** (`SplitOverflowingLineOnce` + bounded rounds).
+
+Document buffers are fixed (**`MAX_LINES` × `MAX_CHARS_PER_LINE`**); there is no heap growth for the editor body (only the optional Apple GOP Blt buffer at startup).
+
 ## Test Results
 
 ### Test: Half-screen red/blue
