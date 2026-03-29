@@ -180,6 +180,16 @@ static BOOLEAN Running = TRUE;
 
 #define CHAR_GAP 2
 
+/* GOP front buffer (hardware). When non-NULL, fb->PixelData points at a Pool back buffer. */
+static UINT8 *FbFront = NULL;
+static UINTN FbCopyBytes = 0;
+
+static VOID FlipFramebuffer(FRAMEBUFFER *fb) {
+    if (FbCopyBytes == 0 || FbFront == NULL || fb->PixelData == FbFront)
+        return;
+    CopyMem(FbFront, fb->PixelData, FbCopyBytes);
+}
+
 EFI_STATUS DrawPixel(FRAMEBUFFER *fb, UINT32 x, UINT32 y, UINT32 color) {
     if (x >= fb->Width || y >= fb->Height) return EFI_SUCCESS;
     UINT8 *pixel = fb->PixelData + y * fb->Pitch + x * 4;
@@ -413,6 +423,7 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
         DrawRect(fb, cursorX, cursorY, 2, lineStep, fgColor);
     }
     
+    FlipFramebuffer(fb);
     return EFI_SUCCESS;
 }
 
@@ -520,7 +531,20 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     fb.Width = Gop->Mode->Info->HorizontalResolution;
     fb.Height = Gop->Mode->Info->VerticalResolution;
     fb.Pitch = Gop->Mode->Info->PixelsPerScanLine * 4;
-    fb.PixelData = (UINT8*)(UINTN)Gop->Mode->FrameBufferBase;
+    FbFront = (UINT8*)(UINTN)Gop->Mode->FrameBufferBase;
+    fb.PixelData = FbFront;
+    FbCopyBytes = (UINTN)fb.Pitch * (UINTN)fb.Height;
+    
+    {
+        UINT8 *back = NULL;
+        EFI_STATUS bstat = uefi_call_wrapper(BS->AllocatePool, 3, EfiBootServicesData, FbCopyBytes, (VOID**)&back);
+        if (!EFI_ERROR(bstat) && back != NULL) {
+            fb.PixelData = back;
+        } else {
+            Print(L"Note: back buffer alloc failed; drawing directly to framebuffer (may flicker).\n");
+            FbCopyBytes = 0;
+        }
+    }
     
     // Detect pixel format from GOP
     fb.PixelFormat = Gop->Mode->Info->PixelFormat;

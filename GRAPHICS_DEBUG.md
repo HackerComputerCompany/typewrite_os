@@ -2,7 +2,13 @@
 
 > **Repo context:** [`AGENTS.md`](AGENTS.md)
 
-## Current Status (2026-03-29)
+## Current Status (2026-03-30)
+
+### Summary (fonts + flashing)
+
+- **Bitmap fonts** (Virgil / Helvetica) match **`fonts/convert_font.py`** layout: per-glyph width, row stride \((w+7)/8\), variable height; proportional advance and cursor position. Landed in commit **`cd386303`**.
+- **Idle flicker** reduced by redrawing only when **`Doc.Modified`**.
+- **Keystroke flash** reduced by drawing into a **pool back-buffer** and **`CopyMem`** once to the GOP **`FrameBufferBase`** per frame (`FlipFramebuffer` in **`uefi-app/main.c`**). If **`AllocatePool`** fails, the app draws directly and may still flash.
 
 ### Font rendering — root cause fixed in code
 
@@ -23,6 +29,12 @@ The **“H-like” glyphs and wrong shapes** were largely from **incorrect bitma
 
 The main loop was calling **`RenderDocument` ~100×/s** (full-screen clear each time). **Fix:** redraw only when **`Doc.Modified`** is set.
 
+### Full-frame flash on each keystroke
+
+Even with **`Doc.Modified`**, **`RenderDocument`** still does **`ClearScreen`** then redraws everything into the **visible GOP framebuffer**. The hardware can show that **cleared** frame briefly → perceived **flash** on every key.
+
+**Fix:** **compositing back-buffer** — allocate a same-size **`EfiBootServicesData`** pool, set **`fb.PixelData`** to it for all **`DrawPixel`** paths, then **`CopyMem`** once into **`FrameBufferBase`** at end of **`RenderDocument`** (`FlipFramebuffer`). The user sees a single update per frame. If pool allocation fails, the app falls back to drawing directly (may flicker). See **`uefi-app/main.c`** (`FbFront`, `FlipFramebuffer`).
+
 The **square** tests used tight loops writing many pixels and did not use the font decode path, so they could “work” while text looked broken.
 
 ### What Works
@@ -33,10 +45,9 @@ The **square** tests used tight loops writing many pixels and did not use the fo
 - ✅ GOP PixelFormat = 1 (BlueGreenRedReserved8BitPerColor = BGR)
 - ✅ Half-screen red/blue test works in QEMU and on real hardware
 
-### What Doesn't Work
-- ❌ Single pixel drawing doesn't appear on real MacBook hardware
-- ❌ Font characters appear as "H-like" shapes with flickering
-- ❌ Full screen fills work but individual pixels don't render correctly
+### Outstanding (real hardware / GOP edge cases)
+
+Earlier MacBook tests: tiny draws and some GOP paths behaved badly; **bitmap glyph decode bugs above are fixed** in software. Remaining issues may include cache coherency, **`Blt()`** vs raw FB, or firmware-specific GOP — Needs retesting after back-buffer change.
 
 ## Test Results
 

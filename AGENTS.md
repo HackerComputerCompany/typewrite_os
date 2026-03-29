@@ -35,7 +35,7 @@ Invalid PE output used to make the firmware report **“Unsupported format”**.
 
 ## Open problems (UEFI / graphics)
 
-- **`GRAPHICS_DEBUG.md`**: Large framebuffer fills work on real hardware (e.g. MacBook) in tests; fine-grained pixels/glyphs misbehave (flicker, wrong shapes). Next experiments: barriers/cache, pitch verification, GOP **`Blt()`** instead of raw framebuffer writes.
+- **`GRAPHICS_DEBUG.md`**: Bitmap font decode is fixed (proportional stride, etc.); **typing flash** is mitigated with an off-screen compositing buffer + **`CopyMem`** per frame. Remaining real-hardware quirks may need GOP **`Blt()`** or cache/barrier tests.
 
 ## Key paths
 
