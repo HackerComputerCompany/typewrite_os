@@ -435,8 +435,81 @@ static VOID ReflowAllLines(VOID) {
 /* GOP front buffer (hardware). When non-NULL, fb->PixelData points at a Pool back buffer. */
 static UINT8 *FbFront = NULL;
 static UINTN FbCopyBytes = 0;
+/*
+ * Apple UEFI: raw framebuffer writes often hang or show nothing — firmware expects
+ * EfiBltBufferToVideo. QEMU/OVMF and typical PC firmware: direct FB is fine (Blt there
+ * regressed to black screen in tests — GRAPHICS_DEBUG.md).
+ */
+static BOOLEAN GopUseBlt = FALSE;
+
+static BOOLEAN IsAppleSystem(VOID) {
+    CHAR16 *v = (ST != NULL) ? ST->FirmwareVendor : NULL;
+
+    if (v == NULL)
+        return FALSE;
+    /* fw vendor is usually "Apple Inc." — gnu-efi has no StrStr */
+    for (; *v; v++) {
+        if (v[0] == L'A' && v[1] == L'p' && v[2] == L'p' && v[3] == L'l' && v[4] == L'e')
+            return TRUE;
+    }
+    return FALSE;
+}
+
+/*
+ * Prefer a modest listed mode on Macs to avoid huge native + broken linear FB combos.
+ */
+static UINT32 ApplePickGopMode(EFI_GRAPHICS_OUTPUT_PROTOCOL *gop) {
+    UINT32 maxm = gop->Mode->MaxMode;
+    UINT32 fallback = gop->Mode->Mode;
+    UINT32 p, i;
+
+    static const UINT32 pref[][2] = {
+        { 1024, 768 },
+        { 1280, 800 },
+        { 1440, 900 },
+        { 1280, 720 },
+        { 1680, 1050 },
+        { 800, 600 },
+    };
+
+    for (p = 0; p < sizeof(pref) / sizeof(pref[0]); p++) {
+        UINT32 want_w = pref[p][0];
+        UINT32 want_h = pref[p][1];
+
+        for (i = 0; i < maxm; i++) {
+            EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *info = NULL;
+            UINTN sz = 0;
+            EFI_STATUS st = uefi_call_wrapper(gop->QueryMode, 4, gop, i, &sz, &info);
+
+            if (EFI_ERROR(st) || info == NULL)
+                continue;
+            if (info->HorizontalResolution == want_w && info->VerticalResolution == want_h) {
+                UINT32 chosen = i;
+
+                FreePool(info);
+                return chosen;
+            }
+            FreePool(info);
+        }
+    }
+    return fallback;
+}
 
 static VOID FlipFramebuffer(FRAMEBUFFER *fb) {
+    if (GopUseBlt && Gop && Gop->Blt) {
+        UINTN delta = (UINTN)fb->Pitch;
+
+        if (delta == 0)
+            delta = (UINTN)fb->Width * 4;
+        uefi_call_wrapper(Gop->Blt, 10, Gop,
+                          (EFI_GRAPHICS_OUTPUT_BLT_PIXEL *)(VOID *)fb->PixelData,
+                          EfiBltBufferToVideo,
+                          0, 0,
+                          0, 0,
+                          fb->Width, fb->Height,
+                          delta);
+        return;
+    }
     if (FbCopyBytes == 0 || FbFront == NULL || fb->PixelData == FbFront)
         return;
     CopyMem(FbFront, fb->PixelData, FbCopyBytes);
@@ -988,13 +1061,25 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         Print(L"Error: GOP not found (status=%r)\n", status);
         return status;
     }
-    
-    // Set the video mode to ensure it's initialized
-    status = uefi_call_wrapper(Gop->SetMode, 1, Gop, Gop->Mode->Mode);
-    if (EFI_ERROR(status)) {
-        Print(L"Warning: SetMode failed (status=%r)\n", status);
+
+    BOOLEAN apple_hw = IsAppleSystem();
+    {
+        UINT32 wantMode = apple_hw ? ApplePickGopMode(Gop) : Gop->Mode->Mode;
+
+        /* gnu-efi: SetMode arity is 2 (per apps/bltgrid.c, not 1). */
+        status = uefi_call_wrapper(Gop->SetMode, 2, Gop, wantMode);
+        if (EFI_ERROR(status)) {
+            Print(L"Warning: SetMode(%u) failed (status=%r)\n", wantMode, status);
+            if (apple_hw && Gop->Mode->MaxMode > 0) {
+                status = uefi_call_wrapper(Gop->SetMode, 2, Gop, 0);
+                if (EFI_ERROR(status))
+                    Print(L"Warning: SetMode(0) fallback failed (status=%r)\n", status);
+            }
+        }
+        if (apple_hw)
+            uefi_call_wrapper(ST->ConOut->EnableCursor, 2, ST->ConOut, FALSE);
     }
-    
+
     FRAMEBUFFER fb;
     fb.Width = Gop->Mode->Info->HorizontalResolution;
     fb.Height = Gop->Mode->Info->VerticalResolution;
@@ -1008,26 +1093,42 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
             ppl = fb.Width;
         fb.Pitch = ppl * 4;
     }
-    FbFront = (UINT8*)(UINTN)Gop->Mode->FrameBufferBase;
+    GopUseBlt = FALSE;
+    FbFront = (UINT8 *)(UINTN)Gop->Mode->FrameBufferBase;
     fb.PixelData = FbFront;
     /*
-     * Off-screen pool + CopyMem worked on some hosts but leaves a black display on
-     * other OVMF/QEMU paths (scanout vs CPU writes). Draw directly to GOP FB; use
-     * Doc.Modified coalescing to limit full clears. Revisit with GOP Blt if needed.
+     * Non-Apple: direct GOP FB (Blt → black on some OVMF builds — GRAPHICS_DEBUG.md).
+     * Apple: pool buffer + EfiBltBufferToVideo (linear FB writes are unreliable).
      */
     FbCopyBytes = 0;
-    
-    // Detect pixel format from GOP
-    fb.PixelFormat = Gop->Mode->Info->PixelFormat;
-    if (fb.PixelFormat == PixelBlueGreenRedReserved8BitPerColor) {
-        fb.RedMask = 0xFF;  // BGR format
-    } else if (fb.PixelFormat == PixelRedGreenBlueReserved8BitPerColor) {
-        fb.RedMask = 0xFF0000;  // RGB format
-    } else if (fb.PixelFormat == PixelBitMask) {
-        fb.RedMask = Gop->Mode->Info->PixelInformation.RedMask;
-    } else {
-        // Default to BGR
-        fb.RedMask = 0xFF;
+    if (apple_hw && Gop->Blt) {
+        UINTN nbytes = (UINTN)fb.Width * (UINTN)fb.Height * 4;
+        UINT8 *pool = AllocatePool(nbytes);
+
+        if (pool) {
+            GopUseBlt = TRUE;
+            fb.PixelData = pool;
+            fb.Pitch = fb.Width * 4;
+            /* Blt pixel buffer is EFI_GRAPHICS_OUTPUT_BLT_PIXEL layout (BGRx). */
+            fb.PixelFormat = PixelBlueGreenRedReserved8BitPerColor;
+            fb.RedMask = 0xFF;
+            FbFront = NULL;
+        } else {
+            Print(L"Warning: GOP Blt back-buffer alloc failed; using linear FB\n");
+        }
+    }
+
+    if (!GopUseBlt) {
+        fb.PixelFormat = Gop->Mode->Info->PixelFormat;
+        if (fb.PixelFormat == PixelBlueGreenRedReserved8BitPerColor) {
+            fb.RedMask = 0xFF;
+        } else if (fb.PixelFormat == PixelRedGreenBlueReserved8BitPerColor) {
+            fb.RedMask = 0xFF0000;
+        } else if (fb.PixelFormat == PixelBitMask) {
+            fb.RedMask = Gop->Mode->Info->PixelInformation.RedMask;
+        } else {
+            fb.RedMask = 0xFF;
+        }
     }
     
     InitDocument();

@@ -45,7 +45,11 @@ The **square** tests used tight loops writing many pixels and did not use the fo
 
 ### Outstanding (real hardware / GOP edge cases)
 
-Earlier MacBook tests: tiny draws and some GOP paths behaved badly; **bitmap glyph decode bugs above are fixed** in software. Remaining issues may include cache coherency, **`Blt()`** vs raw FB, or firmware-specific GOP — Needs retesting after back-buffer change.
+**2010-era MacBook (Pro / Air):** boot then **lockup** traced to **graphics**: Apple’s UEFI often expects updates via **`Gop->Blt` (`EfiBltBufferToVideo`)**; **raw framebuffer writes** can hang or never scan out. **Fix in `main.c`:** if `FirmwareVendor` contains `Apple`, pick a **listed mode** (prefers 1024×768, then 1280×800, …), allocate an **off-screen BGR buffer**, draw there, **`Blt` full frame** on each flush. **Non-Apple (QEMU, typical PC):** unchanged **direct framebuffer** path — earlier tests showed full-screen **`Blt`** could go **black on OVMF**.
+
+Also corrected **`SetMode` `uefi_call_wrapper` arity** to **2** (matches gnu-efi `apps/bltgrid.c`); arity **1** was wrong and may confuse some firmware.
+
+Earlier MacBook tests: tiny draws and some GOP paths behaved badly; **bitmap glyph decode bugs above are fixed** in software.
 
 ## Test Results
 
