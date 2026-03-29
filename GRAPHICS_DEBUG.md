@@ -13,6 +13,16 @@ The **“H-like” glyphs and wrong shapes** were largely from **incorrect bitma
 
 **Fix:** advance bitmap pointer by `py * ROW_BYTES` per row; decode simple font as column-major with `(1u << row)` per column byte.
 
+### Proportional glyph stride (2026-03-29)
+
+`fonts/convert_font.py` packs each glyph with **`rowBytes = (glyphWidth + 7) / 8`** per scanline and a **variable number of rows** per character. The headers expose **`virgil_widths[]` / `helvetica_widths[]`**, but the renderer mistakenly used **`VIRGIL_ROW_BYTES`** and **`VIRGIL_HEIGHT`** for **every** glyph. Narrow characters (e.g. `i`) used the wrong row stride; taller glyphs (e.g. `T`) **read past the bitmap into the next glyph**, so the **top looked fine** and the **bottom was garbage**.
+
+**Fix:** for each glyph use `rowB = (gw + 7) / 8`, `gh = glyphBytes / rowB`, clip pixels with `px < gw`, advance with `width + gap` (or `advances[]` when non-zero).
+
+### Flicker
+
+The main loop was calling **`RenderDocument` ~100×/s** (full-screen clear each time). **Fix:** redraw only when **`Doc.Modified`** is set.
+
 The **square** tests used tight loops writing many pixels and did not use the font decode path, so they could “work” while text looked broken.
 
 ### What Works

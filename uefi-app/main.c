@@ -178,19 +178,27 @@ static BOOLEAN ShowCursor = TRUE;
 static DOCUMENT Doc;
 static BOOLEAN Running = TRUE;
 
+#define CHAR_GAP 2
+
 EFI_STATUS DrawPixel(FRAMEBUFFER *fb, UINT32 x, UINT32 y, UINT32 color) {
     if (x >= fb->Width || y >= fb->Height) return EFI_SUCCESS;
     UINT8 *pixel = fb->PixelData + y * fb->Pitch + x * 4;
     
-    // Extract RGB from our color format (RRGGBB)
+    /* Packed as RRGGBB in UINT32 (see RGB macro) */
     UINT8 r = (color >> 0) & 0xFF;
     UINT8 g = (color >> 8) & 0xFF;
     UINT8 b = (color >> 16) & 0xFF;
     
-    // Pixel format 1 = BlueGreenRedReserved8BitPerColor (BGR)
-    pixel[0] = b;
-    pixel[1] = g;
-    pixel[2] = r;
+    if (fb->PixelFormat == PixelRedGreenBlueReserved8BitPerColor) {
+        pixel[0] = r;
+        pixel[1] = g;
+        pixel[2] = b;
+    } else {
+        /* BGR and default path (PixelBlueGreenRedReserved8BitPerColor, BitMask, etc.) */
+        pixel[0] = b;
+        pixel[1] = g;
+        pixel[2] = r;
+    }
     pixel[3] = 0;
     return EFI_SUCCESS;
 }
@@ -232,16 +240,33 @@ EFI_STATUS DrawCharVirgil(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 ch, UINT32
     UINT32 nextOffset = (charIndex < 94) ? virgil_offsets[charIndex + 1] : sizeof(virgil_bitmap);
     UINT32 glyphBytes = nextOffset - offset;
     
-    if (glyphBytes == 0 || offset >= sizeof(virgil_bitmap)) return EFI_SUCCESS;
-    
-    /* Row-major bitmap: each row is VIRGIL_ROW_BYTES bytes (see virgil.h) */
-    for (UINT32 py = 0; py < VIRGIL_HEIGHT && (y + py) < fb->Height; py++) {
-        UINT32 rowOff = offset + py * VIRGIL_ROW_BYTES;
-        for (UINT32 byteIdx = 0; byteIdx < VIRGIL_ROW_BYTES && (rowOff + byteIdx) < sizeof(virgil_bitmap); byteIdx++) {
+    if (glyphBytes == 0 || offset + glyphBytes > sizeof(virgil_bitmap)) return EFI_SUCCESS;
+
+    /*
+     * Per-glyph layout (see fonts/convert_font.py): each row has
+     * (glyphWidth+7)/8 bytes, not VIRGIL_ROW_BYTES. Fixed stride was reading
+     * past the glyph into the next character — garbled bottoms (e.g. \"T\").
+     */
+    UINT32 gw = virgil_widths[charIndex];
+    if (gw < 1)
+        gw = 1;
+    UINT32 rowB = (gw + 7) / 8;
+    if (rowB < 1)
+        rowB = 1;
+    UINT32 gh = glyphBytes / rowB;
+    if (gh < 1)
+        gh = 1;
+    if (gh > VIRGIL_HEIGHT)
+        gh = VIRGIL_HEIGHT;
+
+    for (UINT32 py = 0; py < gh && (y + py) < fb->Height; py++) {
+        UINT32 rowOff = offset + py * rowB;
+        for (UINT32 byteIdx = 0; byteIdx < rowB && rowOff + byteIdx < sizeof(virgil_bitmap); byteIdx++) {
             UINT8 byte = virgil_bitmap[rowOff + byteIdx];
             for (UINT32 bit = 0; bit < 8; bit++) {
                 UINT32 px = byteIdx * 8 + bit;
-                if (px >= VIRGIL_MAX_WIDTH) break;
+                if (px >= gw)
+                    break;
                 if (byte & (1u << bit)) {
                     DrawPixel(fb, x + px, y + py, fgColor);
                 } else {
@@ -261,15 +286,28 @@ EFI_STATUS DrawCharHelvetica(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 ch, UIN
     UINT32 nextOffset = (charIndex < 94) ? helvetica_offsets[charIndex + 1] : sizeof(helvetica_bitmap);
     UINT32 glyphBytes = nextOffset - offset;
     
-    if (glyphBytes == 0 || offset >= sizeof(helvetica_bitmap)) return EFI_SUCCESS;
-    
-    for (UINT32 py = 0; py < HELVETICA_HEIGHT && (y + py) < fb->Height; py++) {
-        UINT32 rowOff = offset + py * HELVETICA_ROW_BYTES;
-        for (UINT32 byteIdx = 0; byteIdx < HELVETICA_ROW_BYTES && (rowOff + byteIdx) < sizeof(helvetica_bitmap); byteIdx++) {
+    if (glyphBytes == 0 || offset + glyphBytes > sizeof(helvetica_bitmap)) return EFI_SUCCESS;
+
+    UINT32 gw = helvetica_widths[charIndex];
+    if (gw < 1)
+        gw = 1;
+    UINT32 rowB = (gw + 7) / 8;
+    if (rowB < 1)
+        rowB = 1;
+    UINT32 gh = glyphBytes / rowB;
+    if (gh < 1)
+        gh = 1;
+    if (gh > HELVETICA_HEIGHT)
+        gh = HELVETICA_HEIGHT;
+
+    for (UINT32 py = 0; py < gh && (y + py) < fb->Height; py++) {
+        UINT32 rowOff = offset + py * rowB;
+        for (UINT32 byteIdx = 0; byteIdx < rowB && rowOff + byteIdx < sizeof(helvetica_bitmap); byteIdx++) {
             UINT8 byte = helvetica_bitmap[rowOff + byteIdx];
             for (UINT32 bit = 0; bit < 8; bit++) {
                 UINT32 px = byteIdx * 8 + bit;
-                if (px >= HELVETICA_MAX_WIDTH) break;
+                if (px >= gw)
+                    break;
                 if (byte & (1u << bit)) {
                     DrawPixel(fb, x + px, y + py, fgColor);
                 } else {
@@ -288,12 +326,27 @@ EFI_STATUS DrawChar(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 ch, UINT32 fgCol
     return DrawCharHelvetica(fb, x, y, ch, fgColor, bgColor);
 }
 
-/* Horizontal advance per glyph column (fixed cell; bitmaps are <= max width) */
-static UINT32 CharCellWidth(VOID) {
+static UINT32 GlyphAdvance(CHAR16 ch) {
     if (UseVirgilFont) {
-        return VIRGIL_MAX_WIDTH + 2;
+        if (ch < VIRGIL_ASC_MIN || ch > VIRGIL_ASC_MAX)
+            return CHAR_GAP;
+        UINT32 idx = ch - VIRGIL_ASC_MIN;
+        UINT32 w = virgil_widths[idx];
+        if (w < 1)
+            w = 1;
+        if (virgil_advances[idx] > 0)
+            return (UINT32)virgil_advances[idx];
+        return w + CHAR_GAP;
     }
-    return HELVETICA_MAX_WIDTH + 2;
+    if (ch < HELVETICA_ASC_MIN || ch > HELVETICA_ASC_MAX)
+        return CHAR_GAP;
+    UINT32 idx2 = ch - HELVETICA_ASC_MIN;
+    UINT32 w2 = helvetica_widths[idx2];
+    if (w2 < 1)
+        w2 = 1;
+    if (helvetica_advances[idx2] > 0)
+        return (UINT32)helvetica_advances[idx2];
+    return w2 + CHAR_GAP;
 }
 
 static UINT32 LineAdvance(VOID) {
@@ -302,13 +355,23 @@ static UINT32 LineAdvance(VOID) {
     return (fh > lh) ? fh : lh;
 }
 
+static UINT32 CursorPixelX(CHAR16 *line, UINT32 col) {
+    UINT32 px = LEFT_MARGIN;
+    for (UINT32 i = 0; i < col && i < MAX_CHARS_PER_LINE; i++) {
+        CHAR16 c = line[i];
+        if (!c)
+            break;
+        px += GlyphAdvance(c);
+    }
+    return px;
+}
+
 EFI_STATUS DrawString(FRAMEBUFFER *fb, UINT32 x, UINT32 y, CHAR16 *str, UINT32 fgColor, UINT32 bgColor) {
     if (!str) return EFI_SUCCESS;
     UINT32 posX = x;
-    UINT32 step = CharCellWidth();
     while (*str) {
         DrawChar(fb, posX, y, *str, fgColor, bgColor);
-        posX += step;
+        posX += GlyphAdvance(*str);
         str++;
     }
     return EFI_SUCCESS;
@@ -330,7 +393,7 @@ VOID InitDocument(VOID) {
     Doc.CursorX = 0;
     Doc.CursorY = 0;
     Doc.Text[0][0] = 0;
-    Doc.Modified = FALSE;
+    Doc.Modified = TRUE;
 }
 
 EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
@@ -346,7 +409,7 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
     
     if (ShowCursor) {
         UINT32 cursorY = TOP_MARGIN + Doc.CursorY * lineStep;
-        UINT32 cursorX = LEFT_MARGIN + Doc.CursorX * CharCellWidth() * FontSize;
+        UINT32 cursorX = CursorPixelX(Doc.Text[Doc.CursorY], Doc.CursorX);
         DrawRect(fb, cursorX, cursorY, 2, lineStep, fgColor);
     }
     
@@ -367,18 +430,23 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
                 break;
             case 0x0C:  /* F2 - Decrease font */
                 if (FontSize > 1) FontSize--;
+                Doc.Modified = TRUE;
                 break;
             case 0x0D:  /* F3 - Increase font */
                 if (FontSize < 3) FontSize++;
+                Doc.Modified = TRUE;
                 break;
             case 0x0E:  /* F4 - Cycle background */
                 CurrentBgColor = (CurrentBgColor + 1) % 10;
+                Doc.Modified = TRUE;
                 break;
             case 0x0F:  /* F5 - Toggle cursor */
                 ShowCursor = !ShowCursor;
+                Doc.Modified = TRUE;
                 break;
             case 0x10:  /* F6 - Switch font */
                 UseVirgilFont = !UseVirgilFont;
+                Doc.Modified = TRUE;
                 break;
         }
         return EFI_SUCCESS;
@@ -470,7 +538,10 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     InitDocument();
     
     while (Running) {
-        RenderDocument(&fb);
+        if (Doc.Modified) {
+            RenderDocument(&fb);
+            Doc.Modified = FALSE;
+        }
         
         EFI_INPUT_KEY key;
         EFI_STATUS keyStatus = uefi_call_wrapper(ST->ConIn->ReadKeyStroke, 2, ST->ConIn, &key);
@@ -479,7 +550,8 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
             HandleKey(&key);
         }
         
-        uefi_call_wrapper(BS->Stall, 1, 10000);
+        /* Idle longer when unchanged to avoid burning CPU; short delay after input */
+        uefi_call_wrapper(BS->Stall, 1, EFI_ERROR(keyStatus) ? 50000 : 5000);
     }
     
     Print(L"Typewriter exited. Lines: %d\n", Doc.LineCount);
