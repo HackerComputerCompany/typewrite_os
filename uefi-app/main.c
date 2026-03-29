@@ -822,12 +822,13 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
             UINT32 lineBox = ActiveFontLineHeight() * FontSize;
             CHAR16 *ln = Doc.Text[Doc.CursorY];
             UINT32 cx = CursorPixelX(ln, Doc.CursorX);
-            UINT32 cwBar = FontSize * 2;
-            if (cwBar < 2)
-                cwBar = 2;
+            /* Thin bar like "|": one tall-pixel wide, height = line body (not line+leading). */
+            UINT32 cwBar = FontSize;
+            if (cwBar < 1)
+                cwBar = 1;
 
             if (CursorMode == CURSOR_BAR || CursorMode == CURSOR_BAR_BLINK) {
-                DrawRect(fb, cx, y, cwBar, lineStep, fgColor);
+                DrawRect(fb, cx, y, cwBar, lineBox, fgColor);
             } else if (CursorMode == CURSOR_BLOCK || CursorMode == CURSOR_BLOCK_BLINK) {
                 UINT32 gw;
                 if (Doc.CursorX < MAX_CHARS_PER_LINE && ln[Doc.CursorX] != 0)
