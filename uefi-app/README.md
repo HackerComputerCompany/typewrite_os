@@ -85,7 +85,8 @@ For QEMU, run [`../start-qemu.sh`](../start-qemu.sh) from the repo root (it copi
 | **F3** / **F6** | Increase / decrease **font scale** (1–6: glyph size, advances, proportional line step; text wraps to the next line at the margins) |
 | **F4** | Cycle background color |
 | **F5** | Toggle cursor |
-| **ESC** | Close help if open; otherwise **exit** |
+| **F7** | Toggle **key debug**: last 8 keys as `SC=` scan code / `UC=` Unicode on-screen and on the firmware **serial** console (`[KeyDbg]`) |
+| **ESC** | Close help if open; otherwise **exit** (uses UEFI **SCAN_ESC** `0x0017`, not Up Arrow `0x0001`) |
 
 ## Source layout
 

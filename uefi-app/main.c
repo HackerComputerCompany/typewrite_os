@@ -12,6 +12,7 @@
 
 #include <efi.h>
 #include <efilib.h>
+#include <eficon.h>
 #include <efiprot.h>
 
 #include "virgil.h"
@@ -165,6 +166,10 @@ typedef enum {
 
 static FONT_KIND CurrentFontKind = FONT_VIRGIL;
 static BOOLEAN ShowHelp = FALSE;
+static BOOLEAN KeyDebugMode = FALSE;
+
+#define KEY_DBG_LINES 8
+#define KEY_DBG_COLS 72
 
 #define HELP_LINE_GAP 24
 
@@ -189,6 +194,7 @@ static BOOLEAN ShowCursor = TRUE;
 static DOCUMENT Doc;
 static BOOLEAN Running = TRUE;
 static UINT32 WrapPixelWidth = 800;
+static CHAR16 KeyDbgLines[KEY_DBG_LINES][KEY_DBG_COLS];
 
 #define CHAR_GAP 2
 /* Word space advance multiplier (advance for ' ' is this × normal font advance). */
@@ -665,6 +671,33 @@ VOID InitDocument(VOID) {
     Doc.CursorY = 0;
     Doc.Text[0][0] = 0;
     Doc.Modified = TRUE;
+    ZeroMem(KeyDbgLines, sizeof(KeyDbgLines));
+}
+
+static VOID KeyDbgPush(const EFI_INPUT_KEY *k) {
+    UINTN i;
+    for (i = 0; i < KEY_DBG_LINES - 1; i++)
+        CopyMem(KeyDbgLines[i], KeyDbgLines[i + 1], sizeof(KeyDbgLines[0]));
+    UnicodeSPrint(KeyDbgLines[KEY_DBG_LINES - 1], sizeof(KeyDbgLines[KEY_DBG_LINES - 1]),
+                  L"SC=0x%04x  UC=0x%04x",
+                  (UINTN)k->ScanCode, (UINTN)k->UnicodeChar);
+}
+
+static VOID DrawKeyDebugOverlay(FRAMEBUFFER *fb) {
+    UINT32 bg = RGB(28, 32, 40);
+    UINT32 fg = RGB(230, 210, 80);
+    UINT32 hdr = RGB(255, 245, 200);
+    UINT32 row = ActiveFontLineHeight() * FontSize + FontSize * 2;
+    UINT32 panelH = row * (KEY_DBG_LINES + 2) + 40;
+    UINT32 y0 = (panelH + 24 < fb->Height) ? fb->Height - panelH - 24 : TOP_MARGIN;
+    DrawRect(fb, 4, y0 - 4, fb->Width - 8, panelH, bg);
+    UINT32 ly = y0 + 8;
+    DrawString(fb, 12, ly, L"[F7] Key debug — last keys (serial too)", hdr, bg);
+    ly += row;
+    for (UINT32 i = 0; i < KEY_DBG_LINES && ly + row < fb->Height - 8; i++) {
+        DrawString(fb, 12, ly, KeyDbgLines[i], fg, bg);
+        ly += row;
+    }
 }
 
 EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
@@ -689,6 +722,9 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
         DrawRect(fb, cursorX, cursorY, cw, lineStep, fgColor);
     }
     
+    if (KeyDebugMode)
+        DrawKeyDebugOverlay(fb);
+    
     if (ShowHelp) {
         UINT32 hf = RGB(28, 28, 32);
         UINT32 hb = RGB(230, 224, 210);
@@ -698,7 +734,7 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
         UINT32 bw = fb->Width - 96;
         if (bw > 760)
             bw = 760;
-        UINT32 bh = 400;
+        UINT32 bh = 440;
         if (by + bh + 48 > fb->Height)
             bh = fb->Height - by - 64;
         DrawRect(fb, bx - 2, by - 2, bw + 4, bh + 4, hd);
@@ -719,6 +755,8 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
         ly += HELP_LINE_GAP;
         DrawString(fb, lx, ly, L"F5   Toggle cursor", hf, hb);
         ly += HELP_LINE_GAP;
+        DrawString(fb, lx, ly, L"F7   Toggle key debug (scan/unicode log)", hf, hb);
+        ly += HELP_LINE_GAP;
         DrawString(fb, lx, ly, L"ESC  Close help; quit app when help is hidden", hf, hb);
     }
     
@@ -729,7 +767,12 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
 EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
     if (!key) return EFI_SUCCESS;
     
-    if (key->ScanCode == 0x01) {  /* ESC */
+    /*
+     * UEFI: SCAN_UP is 0x0001; SCAN_ESC is 0x0017 (see eficon.h). Treating 0x01
+     * as ESC breaks the Up Arrow on spec-compliant firmware.
+     */
+    if (key->ScanCode == SCAN_ESC ||
+        (key->ScanCode == SCAN_NULL && key->UnicodeChar == 0x001b)) {
         if (ShowHelp) {
             ShowHelp = FALSE;
             Doc.Modified = TRUE;
@@ -768,6 +811,10 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
                 if (FontSize > 1)
                     FontSize--;
                 ReflowAllLines();
+                Doc.Modified = TRUE;
+                break;
+            case SCAN_F7:  /* F7 - Toggle key debug overlay + serial log */
+                KeyDebugMode = !KeyDebugMode;
                 Doc.Modified = TRUE;
                 break;
         }
@@ -824,7 +871,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     Print(L"\r\n========================================\r\n");
     Print(L"  Typewrite OS v1.0\r\n");
     Print(L"  UEFI Typewriter Application\r\n");
-    Print(L"  F1 help  F2 font  F3/F6 scale\r\n");
+    Print(L"  F1 help  F2 font  F3/F6 scale  F7 key debug\r\n");
     Print(L"========================================\r\n\r\n");
     
     EFI_GUID gopGuid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
@@ -887,7 +934,16 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         EFI_STATUS keyStatus = uefi_call_wrapper(ST->ConIn->ReadKeyStroke, 2, ST->ConIn, &key);
         
         if (!EFI_ERROR(keyStatus)) {
-            HandleKey(&key);
+            KeyDbgPush(&key);
+            {
+                BOOLEAN dbgWas = KeyDebugMode;
+                HandleKey(&key);
+                if (KeyDebugMode)
+                    Print(L"[KeyDbg] SC=0x%x  UC=0x%x\r\n",
+                          key.ScanCode, key.UnicodeChar);
+                if (KeyDebugMode || dbgWas)
+                    Doc.Modified = TRUE;
+            }
         }
         
         /* Idle longer when unchanged to avoid burning CPU; short delay after input */
