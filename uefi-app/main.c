@@ -559,6 +559,8 @@ static VOID FlipFramebuffer(FRAMEBUFFER *fb) {
                           0, 0,
                           fb->Width, fb->Height,
                           delta);
+        /* Some Apple firmware watchdogs are tight during long GOP work. */
+        KickFirmwareWatchdog();
         return;
     }
     if (FbCopyBytes == 0 || FbFront == NULL || fb->PixelData == FbFront)
@@ -589,10 +591,32 @@ EFI_STATUS DrawPixel(FRAMEBUFFER *fb, UINT32 x, UINT32 y, UINT32 color) {
     return EFI_SUCCESS;
 }
 
+/*
+ * Clamp before drawing. Without this, (y + h) or (x + w) UINT32 wrap can make
+ * py < y + h true across a huge range and lock the machine for minutes — seen
+ * on picky firmware when derived w/h are bogus. Same for underflowed widths.
+ */
 EFI_STATUS DrawRect(FRAMEBUFFER *fb, UINT32 x, UINT32 y, UINT32 w, UINT32 h, UINT32 color) {
-    for (UINT32 py = y; py < y + h && py < fb->Height; py++) {
-        for (UINT32 px = x; px < x + w && px < fb->Width; px++) {
-            DrawPixel(fb, px, py, color);
+    if (fb == NULL || fb->Width == 0 || fb->Height == 0)
+        return EFI_SUCCESS;
+    if (w == 0 || h == 0)
+        return EFI_SUCCESS;
+    if (x >= fb->Width || y >= fb->Height)
+        return EFI_SUCCESS;
+    if (w > fb->Width - x)
+        w = fb->Width - x;
+    if (h > fb->Height - y)
+        h = fb->Height - y;
+    if (w == 0 || h == 0)
+        return EFI_SUCCESS;
+
+    {
+        UINT32 yEnd = y + h;
+        UINT32 xEnd = x + w;
+
+        for (UINT32 py = y; py < yEnd; py++) {
+            for (UINT32 px = x; px < xEnd; px++)
+                DrawPixel(fb, px, py, color);
         }
     }
     return EFI_SUCCESS;
@@ -857,7 +881,7 @@ static VOID DrawGridRowIfVisible(FRAMEBUFFER *fb, UINT32 r, UINT32 fg, UINT32 bg
     CHAR16 *ln = Doc.Grid[r];
     UINT32 lineBodyH = FONT_SZ_MUL(ActiveFontLineHeight());
 
-    if (sy >= (INT32)G_docViewportBot || sy + (INT32)lineBodyH <= 0)
+    if (sy < 0 || sy >= (INT32)G_docViewportBot || sy + (INT32)lineBodyH <= 0)
         return;
     yu = (UINT32)sy;
     px = G_pageContentX0;
@@ -903,7 +927,7 @@ static VOID RepaintDocLineCursorBand(FRAMEBUFFER *fb, UINT32 line, UINT32 bgColo
     UINT32 cw;
     UINT32 yu;
 
-    if (sy >= (INT32)G_docViewportBot || sy + (INT32)lineBodyH <= 0)
+    if (sy < 0 || sy >= (INT32)G_docViewportBot || sy + (INT32)lineBodyH <= 0)
         return;
 
     if (CursorMode == CURSOR_BAR || CursorMode == CURSOR_BAR_BLINK)
@@ -1547,6 +1571,7 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
 
     UpdatePageLayoutFromFb(fb);
     EnsureCursorVisibleScroll(fb);
+    KickFirmwareWatchdog();
 
     /*
      * docDirty: repaint document + cursor. Otherwise only overlays (e.g. F7 log
@@ -1567,6 +1592,8 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
             for (UINT32 line = 0; line < PAGE_ROWS; line++) {
                 DrawGridRowIfVisible(fb, line, fgColor, bgColor);
                 LastLinePaintedRight[line] = LinePaintRightX(fb, Doc.Grid[line], line);
+                if ((line & 15) == 15)
+                    KickFirmwareWatchdog();
             }
             RepaintFull = FALSE;
         } else {
@@ -1582,13 +1609,14 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
                 CHAR16 *ln = Doc.Grid[line];
                 UINT32 yu;
 
-                if (sy >= (INT32)G_docViewportBot || sy + (INT32)lineBodyH <= 0)
+                if (sy < 0 || sy >= (INT32)G_docViewportBot || sy + (INT32)lineBodyH <= 0)
                     continue;
                 yu = (UINT32)sy;
                 clearR = LinePaintRightX(fb, ln, line);
                 if (line < PAGE_ROWS && LastLinePaintedRight[line] > clearR)
                     clearR = LastLinePaintedRight[line];
-                DrawRect(fb, G_pageContentX0, yu, clearR - G_pageContentX0, lineBodyH, bgColor);
+                if (clearR > G_pageContentX0)
+                    DrawRect(fb, G_pageContentX0, yu, clearR - G_pageContentX0, lineBodyH, bgColor);
                 DrawGridRowIfVisible(fb, line, fgColor, bgColor);
                 if (line < PAGE_ROWS)
                     LastLinePaintedRight[line] = LinePaintRightX(fb, ln, line);
@@ -1598,7 +1626,7 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
         if (CursorShouldDrawThisFrame() && !ShowHelp) {
             INT32 csy = RowTextScreenY(Doc.CursorRow);
 
-            if (csy < (INT32)G_docViewportBot && csy + (INT32)lineBodyH > 0) {
+            if (csy >= 0 && csy < (INT32)G_docViewportBot && csy + (INT32)lineBodyH > 0) {
                 UINT32 yu = (UINT32)csy;
                 UINT32 cx = DocCursorPixelX();
                 UINT32 cwBar = CursorBarThickness();
@@ -1636,6 +1664,7 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
         }
     }
 
+    KickFirmwareWatchdog();
     FlipFramebuffer(fb);
     return EFI_SUCCESS;
 }
