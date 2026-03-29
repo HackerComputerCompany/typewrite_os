@@ -28,6 +28,7 @@ cd .. && ./start-qemu.sh
 | Doc | Role |
 |-----|------|
 | [`uefi-app/README.md`](uefi-app/README.md) | Keys, architecture diagrams, build notes |
+| [`fonts/README.md`](fonts/README.md) | Nine bundled fonts, licenses, `convert_font.py` |
 | [`BUILD_SYSTEM.md`](BUILD_SYSTEM.md) | PE32+, objcopy, QEMU |
 | [`GRAPHICS_DEBUG.md`](GRAPHICS_DEBUG.md) | GOP pitch / framebuffer |
 | [`AGENTS.md`](AGENTS.md) | Repo map and agent conventions |

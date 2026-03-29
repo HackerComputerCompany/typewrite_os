@@ -8,6 +8,7 @@ A minimalist **typewriter-style** writing environment (Freewrite-inspired), expl
 ## Where to look first
 
 - **[`MILESTONE.md`](MILESTONE.md)** — **Current milestone:** beta-ready UEFI typewriter (what works, how to run, doc index).
+- **[`fonts/README.md`](fonts/README.md)** — Typefaces bundled for the UEFI app (**F2** cycles nine), licenses, how to regenerate bitmap headers.
 - **[`AGENTS.md`](AGENTS.md)** — Return-to-context summary for you and coding agents (tracks, build commands, open issues).
 - **[`BUILD_SYSTEM.md`](BUILD_SYSTEM.md)** — Valid PE32+ EFI build (`objcopy`, linker flags), QEMU.
 - **[`GRAPHICS_DEBUG.md`](GRAPHICS_DEBUG.md)** — GOP / framebuffer status on QEMU vs real hardware.
