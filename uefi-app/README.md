@@ -4,6 +4,8 @@
 
 This branch (`uefi-app-experiment`) explores making Typewrite a native UEFI application instead of a Linux-based OS.
 
+> **Important**: See [BUILD_SYSTEM.md](../BUILD_SYSTEM.md) for detailed build troubleshooting and the critical fix for producing valid PE32+ binaries.
+
 ## Architecture
 
 ```mermaid
