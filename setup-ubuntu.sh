@@ -1,8 +1,11 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Setup script for Ubuntu 22.04 to build Typewrite OS UEFI application
-# Run this on the build host
+# Run this from anywhere; uses this repo as the working directory.
 
-set -e
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
 echo "=== Installing build dependencies ==="
 sudo apt-get update
@@ -21,7 +24,6 @@ sudo apt-get install -y \
     qemu-system-x86
 
 echo "=== Cloning EDK II ==="
-cd /ironwolf4TB/data01/projects/typewrite_os
 if [ ! -d "edk2" ]; then
     git clone https://github.com/tianocore/edk2.git
     cd edk2

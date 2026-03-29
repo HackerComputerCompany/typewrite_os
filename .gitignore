@@ -6,6 +6,7 @@
 /buildroot-2024.02/.config.old
 /buildroot-2024.02/.br-external.mk
 /buildroot-2024.02/.stamp
+/buildroot-2024.02/..config.tmp
 /buildroot-2024.02/.git
 /buildroot-2024.02/docs/
 /buildroot-2024.02/.gitignore

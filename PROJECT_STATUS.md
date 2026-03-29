@@ -28,7 +28,7 @@ make
 # Optional: ./start-qemu.sh from repo root
 ```
 
-**Note:** `uefi-app/Makefile` sets `EFIDIR` to a local gnu-efi path; change it if your tree differs.
+**Note:** `uefi-app/Makefile` defaults `EFIDIR` to **`../gnu-efi`** (sibling of this repo). Override with `export EFIDIR=...` if needed.
 
 ---
 
@@ -42,9 +42,9 @@ Originally: minimal **x86_64** image with framebuffer typewrite app (FreeType, d
 
 ### Gap in this repository
 
-The Buildroot package expects application sources at **`/ironwolf4TB/data01/projects/typewrite_os/typewrite`** (`TYPEWRITE_SITE` in `typewrite.mk`). The **`typewrite/` directory is not present** in this workspace. To resume the Linux build:
+The Buildroot recipe uses **`TYPEWRITE_SITE = $(TOPDIR)/../typewrite`** (the **`typewrite/`** directory at the **repo root**, next to **`buildroot-2024.02/`**). That **`typewrite/` directory is not present** in this workspace. To resume the Linux build:
 
-1. Restore the `typewrite` sources (or repoint `TYPEWRITE_SITE` to their location), then
+1. Restore the `typewrite` sources under the repo root (or change `TYPEWRITE_SITE` in `typewrite.mk`), then
 2. Run a normal Buildroot build with the intended defconfig.
 
 Historical detail (FreeType app, unit tests, host `make`) is preserved in older notes below for reference.

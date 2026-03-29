@@ -11,7 +11,7 @@ Use this file when you (or an assistant) return to the repo after time away. It 
 | Track | Role | Buildable in this repo? |
 |--------|------|-------------------------|
 | **Native UEFI** | Single `Typewriter.efi` — boots from firmware, no Linux | **Yes** — primary active work under `uefi-app/` |
-| **Linux + Buildroot** | Minimal distro + framebuffer typewrite app (FreeType, etc.) | **Partially** — Buildroot tree and package recipes exist; the **`typewrite/` application source tree is not present** here. `buildroot-2024.02/package/typewrite/typewrite.mk` still sets `TYPEWRITE_SITE` to `.../typewrite_os/typewrite`; restore or repoint that path before expecting Buildroot to build the app. |
+| **Linux + Buildroot** | Minimal distro + framebuffer typewrite app (FreeType, etc.) | **Partially** — Buildroot tree and package recipes exist; the **`typewrite/` application source tree is not present** here. `typewrite.mk` uses **`TYPEWRITE_SITE = $(TOPDIR)/../typewrite`** (repo root); restore sources there or change `TYPEWRITE_SITE` before expecting Buildroot to build the app. |
 
 Documentation elsewhere may still describe only the Linux path (`PROJECT_STATUS.md` history, `FEATURES.md`). **Authoritative “what works now”** for firmware: **`MILESTONE.md`**, `uefi-app/README.md`, **`fonts/README.md`** (faces + licenses), `BUILD_SYSTEM.md`, `GRAPHICS_DEBUG.md`.
 
@@ -68,6 +68,6 @@ Invalid PE output used to make the firmware report **“Unsupported format”**.
 
 - Prefer **small, task-focused diffs**; do not “clean up” unrelated code.
 - After changing the EFI build, verify **`Typewriter.efi`** is still valid PE32+ (see `BUILD_SYSTEM.md`).
-- If adding Linux app sources back, align **`typewrite.mk`** `TYPEWRITE_SITE` with the real path and update this file.
+- If adding Linux app sources back, put them at **`typewrite/`** next to **`buildroot-2024.02/`** (default **`TYPEWRITE_SITE`**) or update **`typewrite.mk`** and this file.
 
 Last reviewed: **2026-03-29** (nine-font selection + `fonts/README.md`).

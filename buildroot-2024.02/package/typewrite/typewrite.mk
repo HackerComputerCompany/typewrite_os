@@ -5,7 +5,8 @@
 ################################################################################
 
 TYPEWRITE_VERSION = 1.0
-TYPEWRITE_SITE = /ironwolf4TB/data01/projects/typewrite_os/typewrite
+# Repo layout: typewrite_os/buildroot-2024.02 → typewrite app at repo root ../typewrite
+TYPEWRITE_SITE = $(TOPDIR)/../typewrite
 TYPEWRITE_SITE_METHOD = local
 TYPEWRITE_DEPENDENCIES = freetype
 TYPEWRITE_INSTALL_TARGET = YES
