@@ -4,8 +4,8 @@
  * A native UEFI typewriter experience with:
  * - Bitmap font rendering (Virgil, Inter, + retro / typewriter faces)
  * - Typewriter-style input with visual feedback
- * - F8/F9 save/load per slot/page (TWSnPmm.TXT); five slots; F10 switch; F11/F12 pages;
- *   PgUp/PgDn; arrows move cursor; Ins line numbers; autoload Typewriter.txt only
+ * - F1 settings menu (font, scale, save/load, slots, pages, toggles); PgUp/PgDn pages;
+ *   arrows move cursor; autoload Typewriter.txt only
  * - LCD-style clock HUD
  * - Multiple view modes
  * 
@@ -258,7 +258,8 @@ typedef enum {
 } FONT_KIND;
 
 static FONT_KIND CurrentFontKind = FONT_COURIER_PRIME;
-static BOOLEAN ShowHelp = FALSE;
+static BOOLEAN ShowMenu = FALSE;
+static UINT32 MenuSelRow = 0;
 static BOOLEAN KeyDebugMode = FALSE;
 
 #define KEY_DBG_LINES 8
@@ -889,7 +890,7 @@ static UINT32 LineCursorRightEdgePx(const CHAR16 *ln, UINT32 rowIdx) {
     UINT32 cx;
     UINT32 cw;
 
-    if (Doc.CursorRow != rowIdx || ShowHelp)
+    if (Doc.CursorRow != rowIdx || ShowMenu)
         return 0;
     cx = DocCursorPixelX();
     if (CursorMode == CURSOR_BAR || CursorMode == CURSOR_BAR_BLINK)
@@ -1037,40 +1038,153 @@ static VOID RepaintDocLineCursorBand(FRAMEBUFFER *fb, UINT32 line, UINT32 bgColo
     }
 }
 
-static VOID DrawHelpOverlay(FRAMEBUFFER *fb) {
+static VOID CopyDocToRamPage(UINT32 idx);
+static EFI_STATUS TypewriterSaveCurrentSlotPage(EFI_HANDLE img);
+static EFI_STATUS TypewriterLoadCurrentSlotPage(EFI_HANDLE img);
+static VOID SlotCycleNext(EFI_HANDLE img);
+static VOID PageGoNext(EFI_HANDLE img);
+static VOID PageGoPrev(EFI_HANDLE img);
+static VOID FileOpSetBannerOk(const CHAR16 *msg);
+static VOID FileOpSetBannerErr(const CHAR16 *msg, EFI_STATUS st);
+
+#define MENU_ITEM_COUNT 12
+#define MENU_FIRST_ITEM_LINE 4
+
+static const CHAR16 *const kMenuFontLabels[FONT_NUM] = {
+    L"Virgil", L"Helvetica", L"Special Elite", L"Courier Prime", L"VT323",
+    L"Press Start 2P", L"IBM Plex Mono", L"Share Tech Mono", L"Simple",
+};
+
+static const CHAR16 *const kMenuBgLabels[10] = {
+    L"Dark", L"Cream", L"Blue", L"Brown", L"Green", L"Maroon", L"Purple", L"Teal", L"Olive", L"Navy",
+};
+
+static const CHAR16 *const kMenuCursorLabels[CURSOR_MODE_NUM] = {
+    L"bar", L"bar blink", L"block", L"block blink", L"hidden",
+};
+
+static VOID MenuFormatScale(CHAR16 *buf, UINTN bufChars) {
+    UINT32 w = FontScaleTwice / 2;
+    UINT32 f = (FontScaleTwice % 2) ? 5 : 0;
+
+    UnicodeSPrint(buf, bufChars, L"%u.%u×", w, f);
+}
+
+static VOID MenuActivate(UINT32 item) {
+    CHAR16 b[64];
+    EFI_STATUS fst;
+
+    switch (item) {
+        case 0:
+            CurrentFontKind = (FONT_KIND)((CurrentFontKind + 1) % FONT_NUM);
+            ReflowAllLines();
+            MarkFullRepaint();
+            break;
+        case 1:
+            if (FontScaleTwice < 12)
+                FontScaleTwice++;
+            ReflowAllLines();
+            MarkFullRepaint();
+            break;
+        case 2:
+            if (FontScaleTwice > 2)
+                FontScaleTwice--;
+            ReflowAllLines();
+            MarkFullRepaint();
+            break;
+        case 3:
+            CurrentBgColor = (CurrentBgColor + 1) % 10;
+            MarkFullRepaint();
+            break;
+        case 4:
+            CursorMode = (CursorMode + 1) % CURSOR_MODE_NUM;
+            CursorBlinkAccumUs = 0;
+            CursorBlinkPhase = TRUE;
+            MarkDirtyRange(Doc.CursorRow, Doc.CursorRow);
+            MarkFullRepaint();
+            break;
+        case 5:
+            KeyDebugMode = !KeyDebugMode;
+            MarkFullRepaint();
+            break;
+        case 6:
+            ShowLineNumbers = !ShowLineNumbers;
+            MarkFullRepaint();
+            break;
+        case 7:
+            fst = TypewriterSaveCurrentSlotPage(BootImageHandle);
+            if (!EFI_ERROR(fst)) {
+                UnicodeSPrint(b, sizeof(b), L"Saved TWS%uP%02u", SaveSlotIndex + 1, ActiveRamPageIndex + 1);
+                FileOpSetBannerOk(b);
+            } else
+                FileOpSetBannerErr(L"Save failed", fst);
+            Print(L"[Typewrite] save %r\n", fst);
+            MarkFullRepaint();
+            break;
+        case 8:
+            fst = TypewriterLoadCurrentSlotPage(BootImageHandle);
+            if (!EFI_ERROR(fst)) {
+                CopyDocToRamPage(ActiveRamPageIndex);
+                UnicodeSPrint(b, sizeof(b), L"Loaded TWS%uP%02u", SaveSlotIndex + 1, ActiveRamPageIndex + 1);
+                FileOpSetBannerOk(b);
+            } else
+                FileOpSetBannerErr(L"Load failed", fst);
+            Print(L"[Typewrite] load %r\n", fst);
+            MarkFullRepaint();
+            break;
+        case 9:
+            SlotCycleNext(BootImageHandle);
+            break;
+        case 10:
+            PageGoNext(BootImageHandle);
+            MarkFullRepaint();
+            break;
+        case 11:
+            PageGoPrev(BootImageHandle);
+            MarkFullRepaint();
+            break;
+        default:
+            break;
+    }
+    Doc.Modified = TRUE;
+    HudNeedPaint = TRUE;
+}
+
+static VOID DrawMenuOverlay(FRAMEBUFFER *fb) {
     UINT32 hf = RGB(28, 28, 32);
     UINT32 hb = RGB(230, 224, 210);
     UINT32 hd = RGB(72, 72, 88);
-    static const CHAR16 *const helpLines[] = {
-        L"Typewrite OS - Help",
-        L"F1   Toggle this help",
-        L"F2   Cycle font (9): Virgil, Inter, Special Elite,",
-        L"     Courier Prime, VT323, Press Start 2P,",
-        L"     IBM Plex Mono, Share Tech Mono, Simple",
-        L"F3   Increase font scale (half steps, 1.0×–6.0×)",
-        L"F6   Decrease font scale",
-        L"F4   Cycle background color",
-        L"F5   Cycle cursor (default: blinking block)",
-        L"F7   Toggle key debug (scan/unicode log)",
-        L"F8   Save current page as TWS{slot}P{page}.TXT (UTF-8, boot volume)",
-        L"F9   Load that file for current slot/page",
-        L"F10  Next save slot (1–5); writes all pages, then loads new slot",
-        L"F11  Save page & go to next (or new) page; PgDn same",
-        L"F12  Save & previous page; PgUp same",
-        L"↑↓←→ Move cursor (type only at cursor; arrows do not edit cells)",
-        L"Ins  Toggle line numbers (gutter, muted color)",
-        L"Boot: loads Typewriter.txt if present (TWS* pages: use F9 / F11)",
-        L"ESC  Close help; quit app when help is hidden",
-    };
-    UINT32 n = sizeof(helpLines) / sizeof(helpLines[0]);
+    UINT32 hi = RGB(88, 118, 188);
+    UINT32 hs = RGB(252, 252, 255);
+    CHAR16 lines[20][100];
+    UINT32 n = 0;
     UINT32 step = LineAdvance();
     UINT32 margin = FONT_SZ_MUL(6);
     UINT32 inner = FONT_SZ_MUL(5);
     UINT32 maxTw = 0;
     UINT32 i;
+    CHAR16 sc[16];
+
+    StrCpy(lines[n++], L"Typewrite OS — Settings");
+    StrCpy(lines[n++], L"↑↓ highlight   Space or Enter: apply   F1 or ESC: close");
+    StrCpy(lines[n++], L"PgUp / PgDn: pages · ←→↑↓: move cursor in the document");
+    StrCpy(lines[n++], L" ");
+    UnicodeSPrint(lines[n++], sizeof(lines[0]), L"Font (cycle) — %ls", kMenuFontLabels[CurrentFontKind]);
+    MenuFormatScale(sc, sizeof(sc));
+    UnicodeSPrint(lines[n++], sizeof(lines[0]), L"Larger font — now %ls", sc);
+    UnicodeSPrint(lines[n++], sizeof(lines[0]), L"Smaller font — now %ls", sc);
+    UnicodeSPrint(lines[n++], sizeof(lines[0]), L"Background (cycle) — %ls", kMenuBgLabels[CurrentBgColor]);
+    UnicodeSPrint(lines[n++], sizeof(lines[0]), L"Cursor (cycle) — %ls", kMenuCursorLabels[CursorMode]);
+    UnicodeSPrint(lines[n++], sizeof(lines[0]), L"Key debug overlay — %ls", KeyDebugMode ? L"on" : L"off");
+    UnicodeSPrint(lines[n++], sizeof(lines[0]), L"Line numbers — %ls", ShowLineNumbers ? L"on" : L"off");
+    StrCpy(lines[n++], L"Save current page (UTF-8, boot volume)");
+    StrCpy(lines[n++], L"Load current page");
+    StrCpy(lines[n++], L"Next save slot (1–5)");
+    StrCpy(lines[n++], L"Next page (same as PgDn)");
+    StrCpy(lines[n++], L"Previous page (same as PgUp)");
 
     for (i = 0; i < n; i++) {
-        UINT32 w = StringPixelWidthChars(helpLines[i]);
+        UINT32 w = StringPixelWidthChars(lines[i]);
 
         if (w > maxTw)
             maxTw = w;
@@ -1095,8 +1209,18 @@ static VOID DrawHelpOverlay(FRAMEBUFFER *fb) {
 
                 DrawRect(fb, bx - 2, by - 2, bw + 4, bh + 4, hd);
                 DrawRect(fb, bx, by, bw, bh, hb);
+                if (MenuSelRow >= MENU_ITEM_COUNT)
+                    MenuSelRow = MENU_ITEM_COUNT - 1;
                 for (i = 0; i < n; i++) {
-                    DrawString(fb, lx, ly, (CHAR16 *)helpLines[i], hf, hb);
+                    UINT32 fg = hf;
+                    UINT32 bg = hb;
+
+                    if (i == MENU_FIRST_ITEM_LINE + MenuSelRow) {
+                        DrawRect(fb, bx + 2, ly - 1, bw - 4, step + 2, hi);
+                        fg = hs;
+                        bg = hi;
+                    }
+                    DrawString(fb, lx, ly, lines[i], fg, bg);
                     ly += step;
                 }
             }
@@ -1683,7 +1807,7 @@ static VOID TypewriterLoadBytesIntoDoc(const UINT8 *data, UINTN len) {
 
 /*
  * Boot autoload: Typewriter.txt only. Scanning TWS1P01.TXT… on some OVMF/QEMU FAT
- * stacks has hung indefinitely on the first Open; multipage slot files use F9/F11.
+ * stacks has hung indefinitely on the first Open; multipage slot files use menu/PgDn.
  */
 static VOID TypewriterAutoloadIfPresent(EFI_HANDLE img) {
     EFI_STATUS st;
@@ -1816,7 +1940,7 @@ static VOID DrawKeyDebugOverlay(FRAMEBUFFER *fb) {
     UINT32 y0 = (panelH + 24 < fb->Height) ? fb->Height - panelH - 24 : TOP_MARGIN;
     DrawRect(fb, 4, y0 - 4, fb->Width - 8, panelH, bg);
     UINT32 ly = y0 + 8;
-    DrawString(fb, 12, ly, L"[F7] Key debug — last keys (serial too)", hdr, bg);
+    DrawString(fb, 12, ly, L"Key debug — last keys (F1 menu · serial)", hdr, bg);
     ly += row;
     for (UINT32 i = 0; i < KEY_DBG_LINES && ly + row < fb->Height - 8; i++) {
         DrawString(fb, 12, ly, KeyDbgLines[i], fg, bg);
@@ -1839,17 +1963,17 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
     KickFirmwareWatchdog();
 
     /*
-     * docDirty: repaint document + cursor. Otherwise only overlays (e.g. F7 log
+     * docDirty: repaint document + cursor. Otherwise only overlays (e.g. key-debug
      * refresh without re-clearing the frame).
      */
     BOOLEAN docDirty =
-        RepaintFull || ShowHelp || (DirtyLineTop <= DirtyLineBottom);
+        RepaintFull || ShowMenu || (DirtyLineTop <= DirtyLineBottom);
     BOOLEAN cursorBlinkOnly =
-        CursorBlinkRedraw && !docDirty && !ShowHelp && CursorWantsBlinkTimer();
+        CursorBlinkRedraw && !docDirty && !ShowMenu && CursorWantsBlinkTimer();
 
     if (docDirty) {
-        clearedAllForHud = RepaintFull || ShowHelp;
-        if (RepaintFull || ShowHelp) {
+        clearedAllForHud = RepaintFull || ShowMenu;
+        if (RepaintFull || ShowMenu) {
             DrawRect(fb, 0, 0, fb->Width, fb->Height, OFF_PAGE_COLOR);
             if (hudY < fb->Height)
                 DrawRect(fb, 0, hudY, fb->Width, fb->Height - hudY, bgColor);
@@ -1888,7 +2012,7 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
             }
             (void)prevPainted;
         }
-        if (CursorShouldDrawThisFrame() && !ShowHelp) {
+        if (CursorShouldDrawThisFrame() && !ShowMenu) {
             INT32 csy = RowTextScreenY(Doc.CursorRow);
 
             if (csy >= 0 && csy < (INT32)G_docViewportBot && csy + (INT32)lineBodyH > 0) {
@@ -1912,11 +2036,11 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
         CursorBlinkRedraw = FALSE;
     }
 
-    if (KeyDebugMode && !ShowHelp)
+    if (KeyDebugMode && !ShowMenu)
         DrawKeyDebugOverlay(fb);
 
-    if (ShowHelp)
-        DrawHelpOverlay(fb);
+    if (ShowMenu)
+        DrawMenuOverlay(fb);
 
     {
         BOOLEAN needHud = HudNeedPaint || clearedAllForHud;
@@ -1945,8 +2069,8 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
      */
     if (key->ScanCode == SCAN_ESC ||
         (key->ScanCode == SCAN_NULL && key->UnicodeChar == 0x001b)) {
-        if (ShowHelp) {
-            ShowHelp = FALSE;
+        if (ShowMenu) {
+            ShowMenu = FALSE;
             MarkFullRepaint();
             Doc.Modified = TRUE;
             return EFI_SUCCESS;
@@ -1955,104 +2079,40 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
         return EFI_SUCCESS;
     }
 
-    if (key->ScanCode == SCAN_INSERT && key->UnicodeChar == 0) {
-        ShowLineNumbers = !ShowLineNumbers;
+    if (key->ScanCode == SCAN_F1) {
+        if (ShowMenu) {
+            ShowMenu = FALSE;
+        } else {
+            ShowMenu = TRUE;
+            MenuSelRow = 0;
+        }
         MarkFullRepaint();
         Doc.Modified = TRUE;
-        HudNeedPaint = TRUE;
+        KickFirmwareWatchdog();
         return EFI_SUCCESS;
     }
 
-    if (key->ScanCode >= SCAN_F1 && key->ScanCode <= SCAN_F12) {
-        switch (key->ScanCode) {
-            case SCAN_F1:  /* Help */
-                ShowHelp = !ShowHelp;
-                MarkFullRepaint();
-                Doc.Modified = TRUE;
-                break;
-            case SCAN_F2:  /* Cycle font */
-                CurrentFontKind = (FONT_KIND)((CurrentFontKind + 1) % FONT_NUM);
-                ReflowAllLines();
-                MarkFullRepaint();
-                Doc.Modified = TRUE;
-                break;
-            case SCAN_F3:  /* Increase font / scale (half steps: 1.0 … 6.0×) */
-                if (FontScaleTwice < 12)
-                    FontScaleTwice++;
-                ReflowAllLines();
-                MarkFullRepaint();
-                Doc.Modified = TRUE;
-                break;
-            case SCAN_F4:  /* Cycle background */
-                CurrentBgColor = (CurrentBgColor + 1) % 10;
-                MarkFullRepaint();
-                Doc.Modified = TRUE;
-                break;
-            case SCAN_F5:  /* Cycle cursor style */
-                CursorMode = (CursorMode + 1) % CURSOR_MODE_NUM;
-                CursorBlinkAccumUs = 0;
-                CursorBlinkPhase = TRUE;
-                MarkDirtyRange(Doc.CursorRow, Doc.CursorRow);
-                Doc.Modified = TRUE;
-                break;
-            case SCAN_F6:  /* Decrease font / scale */
-                if (FontScaleTwice > 2)
-                    FontScaleTwice--;
-                ReflowAllLines();
-                MarkFullRepaint();
-                Doc.Modified = TRUE;
-                break;
-            case SCAN_F7:  /* Toggle key debug overlay + serial log */
-                KeyDebugMode = !KeyDebugMode;
-                MarkFullRepaint();
-                Doc.Modified = TRUE;
-                break;
-            case SCAN_F8: {
-                CHAR16 b[64];
-                EFI_STATUS fst = TypewriterSaveCurrentSlotPage(BootImageHandle);
-
-                if (!EFI_ERROR(fst)) {
-                    UnicodeSPrint(b, sizeof(b), L"Saved TWS%uP%02u", SaveSlotIndex + 1,
-                                  ActiveRamPageIndex + 1);
-                    FileOpSetBannerOk(b);
-                } else
-                    FileOpSetBannerErr(L"Save failed", fst);
-                Print(L"[Typewrite] save %r\n", fst);
-                MarkFullRepaint();
-                HudNeedPaint = TRUE;
-                Doc.Modified = TRUE;
-                break;
-            }
-            case SCAN_F9: {
-                CHAR16 b[64];
-                EFI_STATUS fst = TypewriterLoadCurrentSlotPage(BootImageHandle);
-
-                if (!EFI_ERROR(fst)) {
-                    CopyDocToRamPage(ActiveRamPageIndex);
-                    UnicodeSPrint(b, sizeof(b), L"Loaded TWS%uP%02u", SaveSlotIndex + 1,
-                                  ActiveRamPageIndex + 1);
-                    FileOpSetBannerOk(b);
-                } else
-                    FileOpSetBannerErr(L"Load failed", fst);
-                Print(L"[Typewrite] load %r\n", fst);
-                Doc.Modified = TRUE;
-                HudNeedPaint = TRUE;
-                break;
-            }
-            case SCAN_F10:
-                SlotCycleNext(BootImageHandle);
-                HudNeedPaint = TRUE;
-                break;
-            case SCAN_F11:
-                PageGoNext(BootImageHandle);
-                MarkFullRepaint();
-                HudNeedPaint = TRUE;
-                break;
-            case SCAN_F12:
-                PageGoPrev(BootImageHandle);
-                MarkFullRepaint();
-                HudNeedPaint = TRUE;
-                break;
+    if (ShowMenu) {
+        if (key->ScanCode == SCAN_UP && key->UnicodeChar == 0) {
+            if (MenuSelRow > 0)
+                MenuSelRow--;
+            MarkFullRepaint();
+            Doc.Modified = TRUE;
+            KickFirmwareWatchdog();
+            return EFI_SUCCESS;
+        }
+        if (key->ScanCode == SCAN_DOWN && key->UnicodeChar == 0) {
+            if (MenuSelRow + 1 < MENU_ITEM_COUNT)
+                MenuSelRow++;
+            MarkFullRepaint();
+            Doc.Modified = TRUE;
+            KickFirmwareWatchdog();
+            return EFI_SUCCESS;
+        }
+        if (key->UnicodeChar == L' ' || key->UnicodeChar == 0x0D || key->UnicodeChar == 0x0A) {
+            MenuActivate(MenuSelRow);
+            KickFirmwareWatchdog();
+            return EFI_SUCCESS;
         }
         KickFirmwareWatchdog();
         return EFI_SUCCESS;
@@ -2186,7 +2246,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     Print(L"\r\n========================================\r\n");
     Print(L"  Typewrite OS v1.0\r\n");
     Print(L"  UEFI Typewriter Application\r\n");
-    Print(L"  F1 help  F8 save  F9 load  F10 slot  F11 next pg  F12 prev  Ins line#\r\n");
+    Print(L"  F1 settings menu · PgUp/PgDn pages · arrows move cursor\r\n");
     Print(L"========================================\r\n\r\n");
     
     EFI_GUID gopGuid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
@@ -2339,7 +2399,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
                     FileOpBannerRemainUs -= stallUs;
                 }
             }
-            if (!ShowHelp && CursorWantsBlinkTimer()) {
+            if (!ShowMenu && CursorWantsBlinkTimer()) {
                 CursorBlinkAccumUs += stallUs;
                 while (CursorBlinkAccumUs >= CURSOR_BLINK_PERIOD_US) {
                     CursorBlinkAccumUs -= CURSOR_BLINK_PERIOD_US;
