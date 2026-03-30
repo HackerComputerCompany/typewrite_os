@@ -1087,8 +1087,9 @@ static VOID PageGoNext(EFI_HANDLE img);
 static VOID PageGoPrev(EFI_HANDLE img);
 static VOID FileOpSetBannerOk(const CHAR16 *msg);
 static VOID FileOpSetBannerErr(const CHAR16 *msg, EFI_STATUS st);
+static VOID TypewriterSaveSettings(EFI_HANDLE img);
 
-#define MENU_ITEM_COUNT 14
+#define MENU_ITEM_COUNT 15
 #define MENU_FIRST_ITEM_LINE 4
 
 static const CHAR16 *const kMenuFontLabels[FONT_NUM] = {
@@ -1197,6 +1198,12 @@ static VOID MenuActivate(UINT32 item) {
             PageGoPrev(BootImageHandle);
             MarkFullRepaint();
             break;
+        case 14:
+            TypewriterSaveSettings(BootImageHandle);
+            if (RT != NULL && RT->ResetSystem != NULL)
+                RT->ResetSystem(EfiResetShutdown, EFI_SUCCESS, 0, NULL);
+            Running = FALSE;
+            break;
         default:
             break;
     }
@@ -1241,6 +1248,7 @@ static VOID DrawMenuOverlay(FRAMEBUFFER *fb) {
     StrCpy(lines[n++], L"Next save slot (1–5)");
     StrCpy(lines[n++], L"Next page (same as PgDn)");
     StrCpy(lines[n++], L"Previous page (same as PgUp)");
+    StrCpy(lines[n++], L"Shutdown");
 
     for (i = 0; i < n; i++) {
         UINT32 w = StringPixelWidthChars(lines[i]);
