@@ -5,7 +5,8 @@
  * - Bitmap font rendering (Virgil, Inter, + retro / typewriter faces)
  * - Typewriter-style input with visual feedback
  * - F1 settings menu; Letter 50–65 cols / 60 lines (1" margins) or 80 cols margins off;
- *   PgUp/PgDn pages; arrows move cursor; autoload Typewriter.txt only
+ *   PgUp/PgDn pages; arrows move cursor; autoload Typewriter.txt only;
+ *   Settings → Resolution: cycle GOP modes with 10s try/confirm (ESC or timeout reverts)
  * - LCD-style clock HUD
  * - Multiple view modes
  * 
@@ -246,6 +247,8 @@ typedef struct {
 
 static EFI_GRAPHICS_OUTPUT_PROTOCOL *Gop;
 static EFI_HANDLE BootImageHandle;
+static FRAMEBUFFER *G_fb = NULL;
+static BOOLEAN G_isAppleHw = FALSE;
 static BOOLEAN TwLoggedFirstFrame = FALSE;
 static CHAR16 FileOpBanner[96];
 static UINT32 FileOpBannerRemainUs = 0;
@@ -346,6 +349,14 @@ static BOOLEAN PageMarginsEnabled = TRUE;
 /* Characters per line when margins on (50–65); pitch fills 6.5" printable width. */
 static UINT32 PageColsMargined = PAGE_COLS_MARGINS_DEFAULT;
 static UINT32 G_lineNumGutterPx = 0;
+
+/* GOP resolution change (try/confirm with rollback). */
+static BOOLEAN ResConfirmActive = FALSE;
+static UINT32 ResPrevMode = 0;
+static UINT32 ResTryMode = 0;
+static UINT64 ResConfirmDeadlineUs = 0;
+static UINT32 SettingsGopMode = 0;
+static BOOLEAN SettingsGopModeValid = FALSE;
 
 /* Page layout (recomputed from GOP + font; document uses fixed column pitch). */
 static UINT32 G_docViewportBot = 600;
@@ -550,6 +561,7 @@ static VOID ReflowAllLines(VOID) {
 
 /* GOP front buffer (hardware). When non-NULL, fb->PixelData points at a Pool back buffer. */
 static UINT8 *FbFront = NULL;
+static UINT8 *FbPool = NULL;
 static UINTN FbCopyBytes = 0;
 /*
  * Apple UEFI: raw framebuffer writes often hang or show nothing — firmware expects
@@ -557,6 +569,10 @@ static UINTN FbCopyBytes = 0;
  * regressed to black screen in tests — GRAPHICS_DEBUG.md).
  */
 static BOOLEAN GopUseBlt = FALSE;
+
+static VOID FileOpSetBannerOk(const CHAR16 *msg);
+static VOID FileOpSetBannerErr(const CHAR16 *msg, EFI_STATUS st);
+static VOID TypewriterSaveSettings(EFI_HANDLE img);
 
 static BOOLEAN IsAppleSystem(VOID) {
     CHAR16 *v = (ST != NULL) ? ST->FirmwareVendor : NULL;
@@ -631,6 +647,156 @@ static VOID FlipFramebuffer(FRAMEBUFFER *fb) {
     if (FbCopyBytes == 0 || FbFront == NULL || fb->PixelData == FbFront)
         return;
     CopyMem(FbFront, fb->PixelData, FbCopyBytes);
+}
+
+static EFI_STATUS TwReinitFramebufferFromGopMode(FRAMEBUFFER *fb) {
+    if (Gop == NULL || Gop->Mode == NULL || Gop->Mode->Info == NULL || fb == NULL)
+        return EFI_NOT_READY;
+
+    fb->Width = Gop->Mode->Info->HorizontalResolution;
+    fb->Height = Gop->Mode->Info->VerticalResolution;
+    {
+        UINT32 ppl = Gop->Mode->Info->PixelsPerScanLine;
+        if (ppl == 0 || ppl < fb->Width)
+            ppl = fb->Width;
+        fb->Pitch = ppl * 4;
+    }
+
+    if (FbPool != NULL) {
+        FreePool(FbPool);
+        FbPool = NULL;
+    }
+    FbFront = (UINT8 *)(UINTN)Gop->Mode->FrameBufferBase;
+    fb->PixelData = FbFront;
+    FbCopyBytes = 0;
+
+    if (G_isAppleHw && Gop->Blt) {
+        UINTN nbytes = (UINTN)fb->Width * (UINTN)fb->Height * 4;
+        UINT8 *pool = AllocatePool(nbytes);
+
+        if (pool) {
+            GopUseBlt = TRUE;
+            FbPool = pool;
+            fb->PixelData = pool;
+            fb->Pitch = fb->Width * 4;
+            fb->PixelFormat = PixelBlueGreenRedReserved8BitPerColor;
+            fb->RedMask = 0xFF;
+            FbFront = NULL;
+        } else {
+            GopUseBlt = FALSE;
+            Print(L"Warning: GOP Blt back-buffer alloc failed; using linear FB\r\n");
+        }
+    } else
+        GopUseBlt = FALSE;
+
+    if (!GopUseBlt) {
+        fb->PixelFormat = Gop->Mode->Info->PixelFormat;
+        if (fb->PixelFormat == PixelBlueGreenRedReserved8BitPerColor) {
+            fb->RedMask = 0xFF;
+        } else if (fb->PixelFormat == PixelRedGreenBlueReserved8BitPerColor) {
+            fb->RedMask = 0xFF0000;
+        } else if (fb->PixelFormat == PixelBitMask) {
+            fb->RedMask = Gop->Mode->Info->PixelInformation.RedMask;
+        } else {
+            fb->RedMask = 0xFF;
+        }
+        FbCopyBytes = (UINTN)fb->Pitch * (UINTN)fb->Height;
+    }
+
+    UpdatePageLayoutFromFb(fb);
+    MarkFullRepaint();
+    HudNeedPaint = TRUE;
+    Doc.Modified = TRUE;
+    return EFI_SUCCESS;
+}
+
+static BOOLEAN TwModeUsable(const EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *info) {
+    if (info == NULL)
+        return FALSE;
+    if (info->HorizontalResolution < 640 || info->VerticalResolution < 480)
+        return FALSE;
+    if (info->HorizontalResolution > 4096 || info->VerticalResolution > 4096)
+        return FALSE;
+    return TRUE;
+}
+
+static UINT32 TwNextGopMode(UINT32 curMode) {
+    UINT32 maxm = (Gop != NULL && Gop->Mode != NULL) ? Gop->Mode->MaxMode : 0;
+    UINT32 i;
+
+    if (maxm == 0)
+        return curMode;
+    for (i = 1; i <= maxm; i++) {
+        UINT32 m = (curMode + i) % maxm;
+        EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *info = NULL;
+        UINTN sz = 0;
+        EFI_STATUS st = uefi_call_wrapper(Gop->QueryMode, 4, Gop, m, &sz, &info);
+
+        if (!EFI_ERROR(st) && TwModeUsable(info)) {
+            if (info)
+                FreePool(info);
+            return m;
+        }
+        if (info)
+            FreePool(info);
+    }
+    return curMode;
+}
+
+static VOID TwTryResolutionMode(UINT32 mode) {
+    EFI_STATUS st;
+
+    if (Gop == NULL || Gop->SetMode == NULL || Gop->Mode == NULL)
+        return;
+    if (G_fb == NULL)
+        return;
+    if (ResConfirmActive)
+        return;
+
+    ResPrevMode = Gop->Mode->Mode;
+    ResTryMode = mode;
+    if (ResTryMode == ResPrevMode) {
+        FileOpSetBannerOk(L"No other GOP mode (same as current)");
+        HudNeedPaint = TRUE;
+        return;
+    }
+
+    st = uefi_call_wrapper(Gop->SetMode, 2, Gop, ResTryMode);
+    if (EFI_ERROR(st)) {
+        FileOpSetBannerErr(L"SetMode failed", st);
+        return;
+    }
+
+    (void)TwReinitFramebufferFromGopMode(G_fb);
+
+    ResConfirmActive = TRUE;
+    ResConfirmDeadlineUs = SessionElapsedUs + 10000000ULL; /* 10s */
+    ShowMenu = FALSE;
+    MarkFullRepaint();
+    Doc.Modified = TRUE;
+}
+
+static VOID TwRollbackResolution(VOID) {
+    if (!ResConfirmActive)
+        return;
+    if (Gop && Gop->SetMode && Gop->Mode) {
+        (void)uefi_call_wrapper(Gop->SetMode, 2, Gop, ResPrevMode);
+        if (G_fb)
+            (void)TwReinitFramebufferFromGopMode(G_fb);
+    }
+    ResConfirmActive = FALSE;
+    MarkFullRepaint();
+    Doc.Modified = TRUE;
+}
+
+static VOID TwConfirmResolution(VOID) {
+    ResConfirmActive = FALSE;
+    SettingsGopMode = (Gop && Gop->Mode) ? Gop->Mode->Mode : ResTryMode;
+    SettingsGopModeValid = TRUE;
+    TypewriterSaveSettings(BootImageHandle);
+    FileOpSetBannerOk(L"Resolution kept");
+    MarkFullRepaint();
+    Doc.Modified = TRUE;
 }
 
 EFI_STATUS DrawPixel(FRAMEBUFFER *fb, UINT32 x, UINT32 y, UINT32 color) {
@@ -1085,11 +1251,8 @@ static EFI_STATUS TypewriterLoadCurrentSlotPage(EFI_HANDLE img);
 static VOID SlotCycleNext(EFI_HANDLE img);
 static VOID PageGoNext(EFI_HANDLE img);
 static VOID PageGoPrev(EFI_HANDLE img);
-static VOID FileOpSetBannerOk(const CHAR16 *msg);
-static VOID FileOpSetBannerErr(const CHAR16 *msg, EFI_STATUS st);
-static VOID TypewriterSaveSettings(EFI_HANDLE img);
 
-#define MENU_ITEM_COUNT 15
+#define MENU_ITEM_COUNT 16
 #define MENU_FIRST_ITEM_LINE 4
 
 static const CHAR16 *const kMenuFontLabels[FONT_NUM] = {
@@ -1204,6 +1367,10 @@ static VOID MenuActivate(UINT32 item) {
                 RT->ResetSystem(EfiResetShutdown, EFI_SUCCESS, 0, NULL);
             Running = FALSE;
             break;
+        case 15:
+            if (Gop && Gop->Mode)
+                TwTryResolutionMode(TwNextGopMode(Gop->Mode->Mode));
+            break;
         default:
             break;
     }
@@ -1249,6 +1416,11 @@ static VOID DrawMenuOverlay(FRAMEBUFFER *fb) {
     StrCpy(lines[n++], L"Next page (same as PgDn)");
     StrCpy(lines[n++], L"Previous page (same as PgUp)");
     StrCpy(lines[n++], L"Shutdown");
+    {
+        UINT32 w = (Gop && Gop->Mode && Gop->Mode->Info) ? Gop->Mode->Info->HorizontalResolution : 0;
+        UINT32 h = (Gop && Gop->Mode && Gop->Mode->Info) ? Gop->Mode->Info->VerticalResolution : 0;
+        UnicodeSPrint(lines[n++], sizeof(lines[0]), L"Resolution (try next) — %ux%u", w, h);
+    }
 
     for (i = 0; i < n; i++) {
         UINT32 w = StringPixelWidthChars(lines[i]);
@@ -1712,6 +1884,10 @@ static VOID TypewriterApplySettingsLine(const CHAR8 *line, UINTN linelen) {
             ShowLineNumbers = (v != 0);
         else if (i == 4 && CompareMem(line, "slot", 4) == 0)
             SaveSlotIndex = v;
+        else if (i == 8 && CompareMem(line, "gop_mode", 8) == 0) {
+            SettingsGopMode = v;
+            SettingsGopModeValid = TRUE;
+        }
         return;
     }
 }
@@ -1832,6 +2008,8 @@ static VOID TypewriterSaveSettings(EFI_HANDLE img) {
     used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"linenums",
                                 ShowLineNumbers ? 1U : 0U);
     used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"slot", SaveSlotIndex);
+    if (SettingsGopModeValid)
+        used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"gop_mode", SettingsGopMode);
 
     wlen = used;
     st = uefi_call_wrapper(f->Write, 3, f, &wlen, buf);
@@ -2229,6 +2407,62 @@ static VOID DrawKeyDebugOverlay(FRAMEBUFFER *fb) {
     }
 }
 
+static VOID DrawResolutionConfirmOverlay(FRAMEBUFFER *fb) {
+    UINT32 hf = RGB(28, 28, 32);
+    UINT32 hb = RGB(230, 224, 210);
+    UINT32 hd = RGB(72, 72, 88);
+    UINT32 hi = RGB(188, 88, 88);
+    UINT32 hs = RGB(252, 252, 255);
+    CHAR16 lines[8][110];
+    UINT32 n = 0;
+    UINT32 step = LineAdvance();
+    UINT32 margin = FONT_SZ_MUL(6);
+    UINT32 inner = FONT_SZ_MUL(5);
+    UINT32 maxTw = 0;
+    UINT32 i;
+    UINT64 remainUs = (ResConfirmDeadlineUs > SessionElapsedUs) ? (ResConfirmDeadlineUs - SessionElapsedUs) : 0;
+    UINT32 remainS = (UINT32)((remainUs + 999999ULL) / 1000000ULL);
+    UINT32 curW = (Gop && Gop->Mode && Gop->Mode->Info) ? Gop->Mode->Info->HorizontalResolution : 0;
+    UINT32 curH = (Gop && Gop->Mode && Gop->Mode->Info) ? Gop->Mode->Info->VerticalResolution : 0;
+
+    UnicodeSPrint(lines[n++], sizeof(lines[0]), L"Keep this resolution?  (%u s)", remainS);
+    StrCpy(lines[n++], L"Space/Enter: keep   ESC: revert   (auto-revert on timeout)");
+    UnicodeSPrint(lines[n++], sizeof(lines[0]), L"Current: %ux%u", curW, curH);
+    StrCpy(lines[n++], L" ");
+    StrCpy(lines[n++], L"If the screen is unreadable, wait to auto-revert.");
+
+    for (i = 0; i < n; i++) {
+        UINT32 w = StringPixelWidthChars(lines[i]);
+        if (w > maxTw)
+            maxTw = w;
+    }
+
+    {
+        UINT32 bw = maxTw + inner * 2;
+        UINT32 bh = n * step + inner * 2;
+        UINT32 bx = (fb->Width > bw) ? (fb->Width - bw) / 2 : margin;
+        UINT32 by = (fb->Height > bh) ? (fb->Height - bh) / 2 : margin;
+        UINT32 lx = bx + inner;
+        UINT32 ly = by + inner;
+
+        DrawRect(fb, bx - 2, by - 2, bw + 4, bh + 4, hd);
+        DrawRect(fb, bx, by, bw, bh, hb);
+
+        for (i = 0; i < n; i++) {
+            UINT32 fg = hf;
+            UINT32 bg = hb;
+
+            if (i == 0) {
+                DrawRect(fb, bx + 2, ly - 1, bw - 4, step + 2, hi);
+                fg = hs;
+                bg = hi;
+            }
+            DrawString(fb, lx, ly, lines[i], fg, bg);
+            ly += step;
+        }
+    }
+}
+
 EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
     UINT32 bgColor = COLORS[CurrentBgColor];
     UINT32 fgColor = (CurrentBgColor == 1) ? RGB(30, 30, 30) : RGB(240, 240, 230);
@@ -2320,6 +2554,9 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
     if (KeyDebugMode && !ShowMenu)
         DrawKeyDebugOverlay(fb);
 
+    if (ResConfirmActive)
+        DrawResolutionConfirmOverlay(fb);
+
     if (ShowMenu)
         DrawMenuOverlay(fb);
 
@@ -2350,6 +2587,10 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
      */
     if (key->ScanCode == SCAN_ESC ||
         (key->ScanCode == SCAN_NULL && key->UnicodeChar == 0x001b)) {
+        if (ResConfirmActive) {
+            TwRollbackResolution();
+            return EFI_SUCCESS;
+        }
         if (ShowMenu) {
             ShowMenu = FALSE;
             MarkFullRepaint();
@@ -2361,6 +2602,8 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
     }
 
     if (key->ScanCode == SCAN_F1) {
+        if (ResConfirmActive)
+            return EFI_SUCCESS;
         if (ShowMenu) {
             ShowMenu = FALSE;
         } else {
@@ -2396,6 +2639,14 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
             return EFI_SUCCESS;
         }
         KickFirmwareWatchdog();
+        return EFI_SUCCESS;
+    }
+
+    if (ResConfirmActive) {
+        if (key->UnicodeChar == L' ' || key->UnicodeChar == 0x0D || key->UnicodeChar == 0x0A) {
+            TwConfirmResolution();
+            return EFI_SUCCESS;
+        }
         return EFI_SUCCESS;
     }
 
@@ -2538,6 +2789,11 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         Print(L"Error: GOP not found (status=%r)\n", status);
         return status;
     }
+    /* Saved gop_mode from another machine or older firmware — ignore if out of range. */
+    if (SettingsGopModeValid && Gop->Mode != NULL && SettingsGopMode >= Gop->Mode->MaxMode) {
+        SettingsGopModeValid = FALSE;
+        Print(L"[TW] settings gop_mode out of range for this GOP, ignored\r\n");
+    }
     Print(L"[TW] GOP locate ok mode=%u %ux%u ppl=%u\r\n",
           Gop->Mode->Mode,
           Gop->Mode->Info->HorizontalResolution,
@@ -2545,8 +2801,12 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
           Gop->Mode->Info->PixelsPerScanLine);
 
     BOOLEAN apple_hw = IsAppleSystem();
+    G_isAppleHw = apple_hw;
     {
         UINT32 wantMode = apple_hw ? ApplePickGopMode(Gop) : Gop->Mode->Mode;
+
+        if (SettingsGopModeValid && SettingsGopMode < Gop->Mode->MaxMode)
+            wantMode = SettingsGopMode;
 
         /* gnu-efi: SetMode arity is 2 (per apps/bltgrid.c, not 1). */
         status = uefi_call_wrapper(Gop->SetMode, 2, Gop, wantMode);
@@ -2564,55 +2824,9 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     Print(L"[TW] SetMode done (apple_hw=%u)\r\n", (UINT32)apple_hw);
 
     FRAMEBUFFER fb;
-    fb.Width = Gop->Mode->Info->HorizontalResolution;
-    fb.Height = Gop->Mode->Info->VerticalResolution;
-    /*
-     * PixelsPerScanLine can be 0 on some firmware; Pitch must never be 0 or all
-     * DrawPixel addressing breaks (black screen / single column).
-     */
-    {
-        UINT32 ppl = Gop->Mode->Info->PixelsPerScanLine;
-        if (ppl == 0 || ppl < fb.Width)
-            ppl = fb.Width;
-        fb.Pitch = ppl * 4;
-    }
-    GopUseBlt = FALSE;
-    FbFront = (UINT8 *)(UINTN)Gop->Mode->FrameBufferBase;
-    fb.PixelData = FbFront;
-    /*
-     * Non-Apple: direct GOP FB (Blt → black on some OVMF builds — GRAPHICS_DEBUG.md).
-     * Apple: pool buffer + EfiBltBufferToVideo (linear FB writes are unreliable).
-     */
-    FbCopyBytes = 0;
-    if (apple_hw && Gop->Blt) {
-        UINTN nbytes = (UINTN)fb.Width * (UINTN)fb.Height * 4;
-        UINT8 *pool = AllocatePool(nbytes);
-
-        if (pool) {
-            GopUseBlt = TRUE;
-            fb.PixelData = pool;
-            fb.Pitch = fb.Width * 4;
-            /* Blt pixel buffer is EFI_GRAPHICS_OUTPUT_BLT_PIXEL layout (BGRx). */
-            fb.PixelFormat = PixelBlueGreenRedReserved8BitPerColor;
-            fb.RedMask = 0xFF;
-            FbFront = NULL;
-        } else {
-            Print(L"Warning: GOP Blt back-buffer alloc failed; using linear FB\n");
-        }
-    }
-
-    if (!GopUseBlt) {
-        fb.PixelFormat = Gop->Mode->Info->PixelFormat;
-        if (fb.PixelFormat == PixelBlueGreenRedReserved8BitPerColor) {
-            fb.RedMask = 0xFF;
-        } else if (fb.PixelFormat == PixelRedGreenBlueReserved8BitPerColor) {
-            fb.RedMask = 0xFF0000;
-        } else if (fb.PixelFormat == PixelBitMask) {
-            fb.RedMask = Gop->Mode->Info->PixelInformation.RedMask;
-        } else {
-            fb.RedMask = 0xFF;
-        }
-    }
+    ZeroMem(&fb, sizeof(fb));
+    (void)TwReinitFramebufferFromGopMode(&fb);
+    G_fb = &fb;
 
     Print(L"[TW] fb init fmt=%u blt=%u base=%lx\r\n",
           (UINT32)fb.PixelFormat, (UINT32)GopUseBlt, (UINTN)Gop->Mode->FrameBufferBase);
@@ -2688,6 +2902,17 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
                     CursorBlinkAccumUs -= CURSOR_BLINK_PERIOD_US;
                     CursorBlinkPhase = !CursorBlinkPhase;
                     CursorBlinkRedraw = TRUE;
+                    Doc.Modified = TRUE;
+                }
+            }
+
+            if (ResConfirmActive) {
+                if (SessionElapsedUs >= ResConfirmDeadlineUs) {
+                    TwRollbackResolution();
+                    FileOpSetBannerOk(L"Resolution reverted");
+                    HudNeedPaint = TRUE;
+                } else {
+                    /* Keep countdown live. */
                     Doc.Modified = TRUE;
                 }
             }
