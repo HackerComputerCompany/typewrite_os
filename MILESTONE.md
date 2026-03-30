@@ -6,13 +6,13 @@ This milestone marks a **usable beta** of the native **UEFI** editor (`Typewrite
 
 ## What works
 
-- **GOP text editor** — `uefi-app/main.c`: document buffer, cursor, Enter / Tab / Backspace / printable ASCII, **word wrap** at left/right margins.
-- **Fonts** — **Nine faces** via **F2**: Virgil, Inter (sans), **Special Elite** (typewriter), **Courier Prime** (typewriter mono), **VT323** (terminal), **Press Start 2P** (8-bit), **IBM Plex Mono**, **Share Tech Mono**, plus built-in **simple**; all proportional/universal bitmaps from `fonts/convert_font.py` with **baseline-aligned** `bitmap_top` for descenders. Sources and licenses: [`fonts/README.md`](fonts/README.md).
-- **Scale** — **F3 / F6** scale glyph “fat pixels” and advances (1–6); line step follows **line box + leading**.
-- **Spacing** — word space width is **3×** the normal per-font advance; adjustable via `SPACE_ADVANCE_MULT` in `main.c`.
-- **Flicker** — **incremental** repaint (dirty horizontal stripes) for normal typing; full clears for help, palette/font/scale changes, and first paint.
-- **Input** — **SCAN_ESC** (`0x17`) for **ESC** (not confused with **Up**); **F7** key-debug overlay + serial `Print` for scan/Unicode diagnosis.
-- **Cursor** — **F5** cycles five modes: bar solid, bar blink (~0.5 s), block solid, block blink, hidden.
+- **GOP text editor** — `uefi-app/main.c`: **page grid** (up to **80×60** storage; **50–65** active columns with Letter margins), cursor, arrows, **PgUp/PgDn** pages, Enter / Tab / Backspace / printable BMP; **splash**, **session timer** HUD, **slot/page** files (`TWSnPmm.TXT`), autoload **`Typewriter.txt`**, **`Typewriter.settings`**.
+- **F1 settings menu** — Font, scale (half-steps **1.0×–6.0×**), background, cursor (five modes), key-debug, line numbers, margins, chars/line, save/load, slot/page navigation, shutdown, **GOP resolution (try next)** with **10 s confirm** (Space/Enter keep + save `gop_mode`; ESC/timeout revert). See [`uefi-app/README.md`](uefi-app/README.md).
+- **Fonts** — **Nine faces** from the menu: Virgil, Inter (sans), **Special Elite**, **Courier Prime**, **VT323**, **Press Start 2P**, **IBM Plex Mono**, **Share Tech Mono**, **simple**; `fonts/convert_font.py`, **`bitmap_top`** baselines. [`fonts/README.md`](fonts/README.md).
+- **Spacing** — space character advance **3×** (`SPACE_ADVANCE_MULT`); column pitch from printable width.
+- **Flicker** — **incremental** row bands where possible; full repaints for menu, resolution changes, and layout toggles.
+- **Input** — **SCAN_ESC** for quit (not **Up**); optional key-debug from menu.
+- **GOP** — **Apple**: pool + **`Blt`**; **else** direct FB. **`TwReinitFramebufferFromGopMode`** after **`SetMode`** (boot or resolution flow). Saved **`gop_mode`** ignored if out of range on this firmware.
 - **Build & ship** — From `uefi-app/`, default **`make`** runs **ship**: build, sync `fs/Typewriter.efi`, **commit + push** when `uefi-app/` (and tracked root files) change. **`make all`** is compile-only (**`start-qemu.sh`** uses this).
 - **Fonts in repo** — Canonical headers live under **`fonts/`** (`virgil.h`, `helvetica.h`); regenerate with `fonts/convert_font.py` after TTF changes.
 
@@ -35,8 +35,8 @@ cd .. && ./start-qemu.sh
 
 ## Not in scope for this milestone
 
-- Linux **Buildroot** app sources are not bundled; `FEATURES.md` still skews Linux-product. UEFI behavior is **insert/overstrike-limited** (Backspace deletes on current line; not full Linux typewriter rules).
-- Save/load to firmware variables or files, arrow-key cursor movement, and rich typewriter rules remain **future work**.
+- Linux **Buildroot** app sources are not bundled; `FEATURES.md` still skews Linux-product. UEFI behavior is **grid / simplified** vs full Linux typewriter rules in `FEATURES.md`.
+- High-DPI **PNG/TIFF export**, **multi-partition USB** layout for a separate data volume, and other installer-scale features remain **future work**.
 
 ---
 

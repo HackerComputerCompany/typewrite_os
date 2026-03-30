@@ -86,15 +86,37 @@ For QEMU, run [`../start-qemu.sh`](../start-qemu.sh) from the repo root (it runs
 
 | Key | Action |
 |-----|--------|
-| **F1** | Toggle on-screen **help** |
-| **F2** | **Cycle font** (9): Virgil, Inter (sans), Special Elite, Courier Prime, VT323, Press Start 2P, IBM Plex Mono, Share Tech Mono, simple — see [`../fonts/README.md`](../fonts/README.md) |
-| **F3** / **F6** | Increase / decrease **font scale** in **half steps** (effective **1.0× … 6.0×**). At end of a row, further typing wraps to the next row of the grid. |
-| **F4** | Cycle background color |
-| **F5** | **Cycle cursor:** bar (solid) → bar (blink ~0.5s) → block (solid) → block (blink) → hidden |
-| **F7** | Toggle **key debug**: last 8 keys as `SC=` scan code / `UC=` Unicode on-screen and on the firmware **serial** console (`[KeyDbg]`) |
-| **F8** | **Save** the document as **`Typewriter.txt`** (UTF-8, LF line endings) on the **boot volume** (same FAT volume as the `.efi`). Status appears in the bottom HUD and on serial (`[Typewrite] save`). |
-| **F9** | **Load** **`Typewriter.txt`** from the boot volume (replaces the in-memory buffer). |
-| **ESC** | Close help if open; otherwise **exit** (uses UEFI **SCAN_ESC** `0x0017`, not Up Arrow `0x0001`) |
+| **F1** | Open / close the **settings menu** (highlight row with **↑/↓**, **Space** or **Enter** to apply). Ignored while a **resolution confirm** dialog is showing. |
+| **ESC** | If **resolution confirm** is active: **revert** to the previous GOP mode. If the **menu** is open: close it. Otherwise **exit** the app (UEFI **SCAN_ESC** `0x0017`, not Up Arrow `0x0001`). |
+| **← → ↑ ↓** | Move the **cursor** in the page grid (navigation only; does not open the menu). |
+| **PgUp** / **PgDn** | **Previous** / **next** page (saves current page to slot files, same as menu items). |
+| **Printable keys** | Type into the grid; **Enter** next row; **Backspace** / **Tab** as usual. |
+
+### Settings menu rows (F1)
+
+Roughly in order: **font** (cycle 9 faces, see [`../fonts/README.md`](../fonts/README.md)), **larger / smaller** scale (half-steps **1.0×–6.0×**), **background**, **cursor** style (bar / block / blink / hidden), **key debug** overlay, **line numbers**, **page margins** (Letter vs full width), **chars per line** (50–65 with margins), **save** / **load** current page file, **next save slot**, **next** / **previous** page, **shutdown** (writes settings then `ResetSystem`), **Resolution (try next)** — see below.
+
+### GOP resolution (try / confirm / revert)
+
+From the menu, **Resolution (try next)** picks the **next usable** GOP mode (skips tiny/huge modes; see `TwModeUsable` in `main.c`). The firmware switches mode; you then get a **10 second** confirmation overlay:
+
+- **Space** or **Enter**: keep the mode, write **`gop_mode=`** into **`Typewriter.settings`**, and use it on the next boot (if still valid).
+- **ESC** or **timeout**: revert to the previous mode (no settings change).
+
+On **Apple** firmware, drawing uses **pool + `Blt`**; after any **`SetMode`**, **`TwReinitFramebufferFromGopMode`** reallocates the back buffer and rebinds pitch/format. On **non-Apple**, the linear framebuffer path is unchanged.
+
+### `Typewriter.settings` (boot volume, next to `Typewriter.txt`)
+
+ASCII key/value lines (also written after successful saves / shutdown as configured in code), including:
+
+| Key | Meaning |
+|-----|--------|
+| `margins` | `1` = Letter margins + active column count; `0` = full width |
+| `cols_margined` | 50–65 |
+| `font` | `FONT_KIND` index |
+| `scale_twice` | 2–12 → scale = value/2 |
+| `bg`, `cursor`, `keydbg`, `linenums`, `slot` | As named |
+| **`gop_mode`** | GOP mode index to prefer at boot; **ignored** if `>= MaxMode` on this machine (prevents bad values from another PC) |
 
 ### Status HUD (clock)
 
@@ -102,7 +124,7 @@ A **centered** **HH:MM** readout uses a fixed **7-segment** style (not the docum
 
 ### Page memory model (`main.c`)
 
-- **`Doc.Grid[PAGE_ROWS][PAGE_COLS+1]`** — one page, space-padded rows, NUL after column 50.
+- **`Doc.Grid[PAGE_ROWS][PAGE_COLS_MAX+1]`** — one page in RAM, space-padded rows, NUL-terminated.
 - **`TYPEWRITER_PAGE`** matches that grid shape for a future **multi-page** buffer (only one page is loaded in RAM today).
 - **Save** trims **trailing blank lines**; **load** fills the grid and places the caret after the last character.
 

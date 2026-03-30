@@ -35,7 +35,7 @@ Invalid PE output used to make the firmware report **“Unsupported format”**.
 
 ## Open problems (UEFI / graphics)
 
-- **`GRAPHICS_DEBUG.md`**: Bitmap font decode is fixed (proportional stride, baseline via `bitmap_top`, etc.). **Direct GOP framebuffer** drawing (off-screen pool + `CopyMem` reverted — black screen on some OVMF builds). **GOP pitch** must not be 0 (`PixelsPerScanLine` clamp). Typing uses **incremental** stripe repaint to limit flicker; future **`Blt()`** possible.
+- **`GRAPHICS_DEBUG.md`**: Bitmap font decode is fixed (proportional stride, baseline via `bitmap_top`, etc.). **Direct GOP framebuffer** drawing (off-screen pool + `CopyMem` reverted — black screen on some OVMF builds). **GOP pitch** must not be 0 (`PixelsPerScanLine` clamp). **Apple** uses pool + **`Blt`**; **non-Apple** direct FB. **F1 menu → Resolution** cycles modes with **try / 10s confirm / auto-revert**; **`gop_mode`** in **`Typewriter.settings`** when kept. Typing uses **incremental** stripe repaint; future **`Blt()`** for non-Apple if needed.
 
 ## Key paths
 
@@ -70,4 +70,4 @@ Invalid PE output used to make the firmware report **“Unsupported format”**.
 - After changing the EFI build, verify **`Typewriter.efi`** is still valid PE32+ (see `BUILD_SYSTEM.md`).
 - If adding Linux app sources back, put them at **`typewrite/`** next to **`buildroot-2024.02/`** (default **`TYPEWRITE_SITE`**) or update **`typewrite.mk`** and this file.
 
-Last reviewed: **2026-03-29** (nine-font selection + `fonts/README.md`).
+Last reviewed: **2026-03-30** (F1 settings menu, GOP resolution try/confirm + `gop_mode`, `uefi-app/README.md`).

@@ -51,6 +51,15 @@ The **square** tests used tight loops writing many pixels and did not use the fo
 
 Also corrected **`SetMode` `uefi_call_wrapper` arity** to **2** (matches gnu-efi `apps/bltgrid.c`); arity **1** was wrong and may confuse some firmware.
 
+### Runtime GOP mode changes (settings menu)
+
+The app can **cycle GOP modes** from **F1 → Resolution (try next)**. Flow:
+
+1. **`TwNextGopMode`** queries **`QueryMode`** and skips unusable sizes (below **640×480** or above **4096×4096**).
+2. **`SetMode`** is applied; **`TwReinitFramebufferFromGopMode`** rebuilds **`FRAMEBUFFER`** (pitch clamp, Apple pool + **`Blt`** vs direct FB — same split as cold boot).
+3. A **10 s** confirmation overlay: **Space/Enter** keeps the mode and persists **`gop_mode`** in **`Typewriter.settings`**; **ESC** or **timeout** calls **`SetMode(ResPrevMode)`** and re-inits the FB again.
+4. On boot, a saved **`gop_mode`** is applied only if it is **less than `MaxMode`** for this GOP; otherwise it is **ignored** (e.g. settings moved from another machine).
+
 Earlier MacBook tests: tiny draws and some GOP paths behaved badly; **bitmap glyph decode bugs above are fixed** in software.
 
 ### Long-run stability (unexpected reboot after typing)
@@ -103,7 +112,7 @@ Document buffers are fixed (**`MAX_LINES` × `MAX_CHARS_PER_LINE`**); there is n
 - Main app: `uefi-app/main.c`
 - Font data: `simple_font_data[]` in `main.c`; `virgil.h` / `helvetica.h`
 - `DrawPixel`, `DrawCharVirgil`, `DrawCharHelvetica`, `DrawCharSimple`: `uefi-app/main.c`
-- Framebuffer init: `efi_main` after GOP `SetMode`
+- Framebuffer init: `efi_main` after GOP `SetMode`; **`TwReinitFramebufferFromGopMode`** after any later **`SetMode`**
 
 ## App entry (2026-03-29)
 
