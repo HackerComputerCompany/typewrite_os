@@ -9,11 +9,14 @@ UEFI_DIR="${SCRIPT_DIR}/uefi-app"
 EFI_BUILT="${UEFI_DIR}/Typewriter.efi"
 EFI_IN_FS="${UEFI_DIR}/fs/Typewriter.efi"
 STARTUP_NSH="${UEFI_DIR}/fs/startup.nsh"
+FAT_IMG="${UEFI_DIR}/twfs.img"
+FAT_IMG_MB="${FAT_IMG_MB:-64}"
 OVMF_VARS_LOCAL="${SCRIPT_DIR}/ovmf_vars.fd"
 SERIAL_LOG="${UEFI_DIR}/serial.log"
 
 DO_BUILD=1
 FRESH_VARS=0
+FRESH_FS=0
 SERIAL_STDIO=0
 
 usage() {
@@ -27,7 +30,8 @@ SYNOPSIS
 DESCRIPTION
     Runs from the repository root. By default:
       1. make -C uefi-app all      (compile only; use bare make in uefi-app to commit+push)
-      2. cp Typewriter.efi         → uefi-app/fs/ (QEMU synthetic FAT drive)
+      2. cp Typewriter.efi         → uefi-app/fs/ (staging folder for the FAT image)
+      3. Builds/updates a real writable FAT image (uefi-app/twfs.img)
       3. Ensures uefi-app/fs/startup.nsh runs Typewriter.efi in the UEFI Shell
       4. Launches qemu-system-x86_64 with OVMF pflash + FAT + serial log
 
@@ -38,6 +42,7 @@ OPTIONS
     --no-build       Skip make; use existing uefi-app/Typewriter.efi (must exist).
     --fresh-vars     Delete ./ovmf_vars.fd and recreate from the template (reset
                      NVRAM / boot entries).
+    --fresh-fs       Recreate uefi-app/twfs.img from scratch (wipes saved pages/settings).
     --serial-stdio   Send guest COM1 to this terminal (firmware + Print output).
                      Does not write uefi-app/serial.log (use shell redirection if needed).
     --sdl            Use SDL instead of GTK (often works when the GTK window hangs
@@ -62,7 +67,8 @@ ENVIRONMENT
 
 FILES (paths relative to repo root)
     uefi-app/Typewriter.efi   Built binary (make output).
-    uefi-app/fs/              FAT contents for QEMU (Typewriter.efi + startup.nsh).
+    uefi-app/fs/              Staging folder (Typewriter.efi + startup.nsh + any test files).
+    uefi-app/twfs.img          Writable FAT image used by QEMU (real disk, persistent).
     ovmf_vars.fd              Writable UEFI variable store (git may track or ignore).
     uefi-app/serial.log       Serial port output from the guest.
 
@@ -75,6 +81,7 @@ EXAMPLES
     ./start-qemu.sh --sdl
     ./start-qemu.sh --serial-stdio
     ./start-qemu.sh --no-build --fresh-vars
+    ./start-qemu.sh --fresh-fs
     QEMU_DISPLAY=none ./start-qemu.sh
     OVMF_CODE=/usr/share/OVMF/OVMF_CODE.fd ./start-qemu.sh
 
@@ -87,6 +94,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --no-build) DO_BUILD=0; shift ;;
         --fresh-vars) FRESH_VARS=1; shift ;;
+        --fresh-fs) FRESH_FS=1; shift ;;
         --serial-stdio) SERIAL_STDIO=1; shift ;;
         --sdl) QEMU_DISPLAY=sdl; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -152,6 +160,88 @@ init_ovmf_vars() {
     cp "$code_path" "$OVMF_VARS_LOCAL"
 }
 
+have_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+sync_fat_image_mtools() {
+    # Requires mtools (mcopy, mmd). No root needed.
+    local img="$1"
+    local src="$2"
+
+    # Recreate filesystem each time: simplest + avoids weird metadata deltas.
+    dd if=/dev/zero of="$img" bs=1M count="$FAT_IMG_MB" status=none
+    mkfs.fat -F 32 -n TYPEWRITE "$img" >/dev/null
+
+    # Create basic dirs and copy everything under staging root.
+    mmd -i "$img" ::/EFI >/dev/null 2>&1 || true
+    # Recursive copy, preserve directory structure.
+    mcopy -i "$img" -s -n "$src"/* ::/ >/dev/null 2>&1 || true
+}
+
+sync_fat_image_loopmount() {
+    # Fallback when mtools is unavailable. Needs mount permissions (root/sudo).
+    local img="$1"
+    local src="$2"
+    local mnt
+
+    mnt="$(mktemp -d)"
+    trap 'sudo -n umount "$mnt" >/dev/null 2>&1 || true; rmdir "$mnt" >/dev/null 2>&1 || true' RETURN
+
+    dd if=/dev/zero of="$img" bs=1M count="$FAT_IMG_MB" status=none
+    mkfs.fat -F 32 -n TYPEWRITE "$img" >/dev/null
+
+    if ! sudo -n true 2>/dev/null; then
+        echo "Error: need passwordless sudo for loop-mount, or install mtools." >&2
+        echo "Try: sudo apt install mtools" >&2
+        exit 1
+    fi
+
+    sudo -n mount -o loop,uid="$(id -u)",gid="$(id -g)" "$img" "$mnt" >/dev/null
+    cp -a "$src"/. "$mnt"/
+    sync
+    sudo -n umount "$mnt" >/dev/null
+    rmdir "$mnt" >/dev/null 2>&1 || true
+    trap - RETURN
+}
+
+ensure_fat_image() {
+    local src="${UEFI_DIR}/fs"
+    local tmp=""
+
+    if [[ "$FRESH_FS" -eq 1 ]]; then
+        rm -f "$FAT_IMG"
+    fi
+
+    if [[ ! -d "$src" ]]; then
+        echo "Error: missing staging folder $src" >&2
+        exit 1
+    fi
+
+    # FAT is case-insensitive. If staging has both EFI/BOOT and EFI/boot, copy will fail.
+    # Prefer EFI/BOOT and drop EFI/boot in the image.
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp" >/dev/null 2>&1 || true' RETURN
+    cp -a "$src"/. "$tmp"/
+    if [[ -d "$tmp/EFI/BOOT" && -d "$tmp/EFI/boot" ]]; then
+        rm -rf "$tmp/EFI/boot"
+    fi
+
+    # Always (re)sync to make the image match staging contents.
+    if have_cmd mcopy && have_cmd mmd; then
+        sync_fat_image_mtools "$FAT_IMG" "$tmp"
+        return 0
+    fi
+
+    if have_cmd sudo; then
+        echo "Note: mtools not found; using sudo loop-mount to build FAT image." >&2
+        sync_fat_image_loopmount "$FAT_IMG" "$tmp"
+        return 0
+    fi
+
+    echo "Error: need either mtools (mcopy/mmd) or sudo for loop-mount image sync." >&2
+    echo "Install mtools: sudo apt install mtools" >&2
+    exit 1
+}
+
 if [[ ! -d "$UEFI_DIR" ]]; then
     echo "Error: missing $UEFI_DIR" >&2
     exit 1
@@ -177,6 +267,8 @@ if [[ ! -f "$STARTUP_NSH" ]]; then
     echo "Typewriter.efi" >"$STARTUP_NSH"
     echo "Created $STARTUP_NSH (auto-runs Typewriter.efi in UEFI Shell)"
 fi
+
+ensure_fat_image
 
 if ! OVMF_CODE_PATH="$(resolve_ovmf_code)"; then
     echo "Error: OVMF firmware not found. Install ovmf (Debian/Ubuntu) or set OVMF_CODE." >&2
@@ -226,7 +318,7 @@ fi
 echo "Starting QEMU with UEFI..."
 echo "  OVMF code:  $OVMF_CODE_PATH"
 echo "  OVMF vars:  $OVMF_VARS_LOCAL"
-echo "  FAT folder: ${UEFI_DIR}/fs"
+echo "  FAT image:  $FAT_IMG"
 if [[ "$SERIAL_STDIO" -eq 1 ]]; then
     echo "  Serial:     stdio (this terminal — firmware and Print output)"
 else
@@ -253,7 +345,7 @@ exec qemu-system-x86_64 \
     "${MACHINE_ARGS[@]}" \
     -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE_PATH" \
     -drive if=pflash,format=raw,file="$OVMF_VARS_LOCAL" \
-    -drive format=raw,file=fat:rw:"${UEFI_DIR}/fs" \
+    -drive if=ide,format=raw,file="$FAT_IMG" \
     -m 256M \
     -net none \
     -display "$QEMU_DISPLAY" \
