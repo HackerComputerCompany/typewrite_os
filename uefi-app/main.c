@@ -5,7 +5,7 @@
  * - Bitmap font rendering (Virgil, Inter, + retro / typewriter faces)
  * - Typewriter-style input with visual feedback
  * - F8/F9 save/load per slot/page (TWSnPmm.TXT); five slots; F10 switch; F11/F12 pages;
- *   PgUp/PgDn; arrows move cursor; Ins line numbers; autoload TWS1Pxx then Typewriter.txt
+ *   PgUp/PgDn; arrows move cursor; Ins line numbers; autoload Typewriter.txt only
  * - LCD-style clock HUD
  * - Multiple view modes
  * 
@@ -235,6 +235,7 @@ typedef struct {
 
 static EFI_GRAPHICS_OUTPUT_PROTOCOL *Gop;
 static EFI_HANDLE BootImageHandle;
+static BOOLEAN TwLoggedFirstFrame = FALSE;
 static CHAR16 FileOpBanner[96];
 static UINT32 FileOpBannerRemainUs = 0;
 static BOOLEAN HudNeedPaint = FALSE;
@@ -1058,7 +1059,7 @@ static VOID DrawHelpOverlay(FRAMEBUFFER *fb) {
         L"F12  Save & previous page; PgUp same",
         L"↑↓←→ Move cursor (type only at cursor; arrows do not edit cells)",
         L"Ins  Toggle line numbers (gutter, muted color)",
-        L"Boot: TWS1P01.TXT, P02… if present; else Typewriter.txt",
+        L"Boot: loads Typewriter.txt if present (TWS* pages: use F9 / F11)",
         L"ESC  Close help; quit app when help is hidden",
     };
     UINT32 n = sizeof(helpLines) / sizeof(helpLines[0]);
@@ -1141,8 +1142,9 @@ static UINT32 StringPixelWidthChars(const CHAR16 *s) {
     return w;
 }
 
-/* Splash (~4 s) or any key */
-#define SPLASH_TIMEOUT_US 4000000
+/* Splash: fixed ~4 s stall only (no ConIn — OVMF/QEMU key paths have hung for users). */
+#define SPLASH_STALL_SLICES 80
+#define SPLASH_STALL_US     50000
 
 static VOID DrawSplashScreen(FRAMEBUFFER *fb) {
     UINT32 bg = RGB(20, 22, 28);
@@ -1178,7 +1180,7 @@ static VOID DrawSplashScreen(FRAMEBUFFER *fb) {
         DrawString(fb, x, y, t, muted, bg);
     }
     {
-        CHAR16 *t = L"Press any key to start";
+        CHAR16 *t = L"Starting in ~4 seconds…";
         UINT32 tw = StringPixelWidthChars(t);
         UINT32 x = (fb->Width > tw) ? (fb->Width - tw) / 2 : LEFT_MARGIN;
         UINT32 y = fb->Height / 2 + rowStep;
@@ -1187,45 +1189,34 @@ static VOID DrawSplashScreen(FRAMEBUFFER *fb) {
     }
 }
 
-/*
- * OVMF/QEMU: calling ReadKeyStroke without a signaled WaitForKey can block forever or
- * return garbage in a tight loop. Poll CheckEvent(WaitForKey) first; only then read.
- */
 static VOID RunSplashScreen(FRAMEBUFFER *fb) {
-    EFI_INPUT_KEY key;
-    UINT64 elapsed = 0;
-    EFI_STATUS ev;
-    BOOLEAN canKey = FALSE;
+    UINT32 i;
+    BOOLEAN apple = IsAppleSystem();
 
-    if (ST != NULL && ST->ConIn != NULL && ST->ConIn->Reset != NULL)
-        (void)uefi_call_wrapper(ST->ConIn->Reset, 2, ST->ConIn, FALSE);
+    Print(L"[TW] splash: begin (stall-only, no console input)\r\n");
+    Print(L"[TW] splash: fb %ux%u pitch %u blt=%u apple=%u\r\n",
+          fb->Width, fb->Height, fb->Pitch, (UINT32)GopUseBlt, (UINT32)apple);
 
+    Print(L"[TW] splash: DrawSplashScreen\r\n");
     DrawSplashScreen(fb);
+    Print(L"[TW] splash: draw ok\r\n");
+
+    Print(L"[TW] splash: FlipFramebuffer\r\n");
     FlipFramebuffer(fb);
+    Print(L"[TW] splash: flip ok\r\n");
     KickFirmwareWatchdog();
 
-    if (ST != NULL && ST->ConIn != NULL && BS != NULL && BS->CheckEvent != NULL &&
-        ST->ConIn->WaitForKey != NULL && ST->ConIn->ReadKeyStroke != NULL)
-        canKey = TRUE;
-
-    while (elapsed < (UINT64)SPLASH_TIMEOUT_US) {
-        if (canKey) {
-            ev = uefi_call_wrapper(BS->CheckEvent, 1, ST->ConIn->WaitForKey);
-            if (!EFI_ERROR(ev)) {
-                (void)uefi_call_wrapper(ST->ConIn->ReadKeyStroke, 2, ST->ConIn, &key);
-                break;
-            }
-        }
+    Print(L"[TW] splash: stall %u x %u us (~4 s)\r\n", SPLASH_STALL_SLICES, SPLASH_STALL_US);
+    for (i = 0; i < SPLASH_STALL_SLICES; i++) {
+        if (i > 0 && (i % 20) == 0)
+            Print(L"[TW] splash: ~%u s\r\n", i / 20);
         KickFirmwareWatchdog();
         if (BS != NULL && BS->Stall != NULL)
-            uefi_call_wrapper(BS->Stall, 1, 50000);
+            uefi_call_wrapper(BS->Stall, 1, SPLASH_STALL_US);
         else
             break;
-        elapsed += 50000ULL;
     }
-
-    if (ST != NULL && ST->ConIn != NULL && ST->ConIn->Reset != NULL)
-        (void)uefi_call_wrapper(ST->ConIn->Reset, 2, ST->ConIn, FALSE);
+    Print(L"[TW] splash: end\r\n");
 }
 
 VOID InitDocument(VOID) {
@@ -1691,35 +1682,15 @@ static VOID TypewriterLoadBytesIntoDoc(const UINT8 *data, UINTN len) {
 }
 
 /*
- * Boot: prefer TWS1P01.TXT, TWS1P02.TXT, … then legacy Typewriter.txt.
- * Missing files are silent; other errors show in the HUD.
+ * Boot autoload: Typewriter.txt only. Scanning TWS1P01.TXT… on some OVMF/QEMU FAT
+ * stacks has hung indefinitely on the first Open; multipage slot files use F9/F11.
  */
 static VOID TypewriterAutoloadIfPresent(EFI_HANDLE img) {
-    UINT32 n = 0;
-    UINT32 p;
-    CHAR16 path[48];
     EFI_STATUS st;
 
-    for (p = 1; p <= MAX_RAM_PAGES; p++) {
-        TypewriterFormatPagePath(path, sizeof(path), 0, p);
-        st = TypewriterLoadDocFromPath(img, path);
-        if (EFI_ERROR(st))
-            break;
-        CopyDocToRamPage(n);
-        n++;
-    }
-
-    if (n > 0) {
-        RamPageCount = n;
-        ActiveRamPageIndex = 0;
-        SaveSlotIndex = 0;
-        CopyRamPageToDoc(0);
-        FileOpSetBannerOk(L"Loaded slot 1 (pages)");
-        Print(L"[Typewrite] startup: loaded %u page(s) from TWS1Pxx.TXT\r\n", n);
-        return;
-    }
-
+    Print(L"[TW] autoload: TypewriterLoadDocFromPath(Typewriter.txt)\r\n");
     st = TypewriterLoadDocFromPath(img, TYPEWRITER_DOC_FILENAME);
+    Print(L"[TW] autoload: returned %r\r\n", st);
     if (!EFI_ERROR(st)) {
         RamPageCount = 1;
         ActiveRamPageIndex = 0;
@@ -1733,7 +1704,9 @@ static VOID TypewriterAutoloadIfPresent(EFI_HANDLE img) {
     if (st != EFI_NOT_FOUND) {
         FileOpSetBannerErr(L"Startup load failed", st);
         Print(L"[Typewrite] startup load %r\r\n", st);
-    }
+    } else
+        Print(L"[TW] autoload: Typewriter.txt not found (ok)\r\n");
+
     RamPageCount = 1;
     ActiveRamPageIndex = 0;
     SaveSlotIndex = 0;
@@ -2222,6 +2195,11 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         Print(L"Error: GOP not found (status=%r)\n", status);
         return status;
     }
+    Print(L"[TW] GOP locate ok mode=%u %ux%u ppl=%u\r\n",
+          Gop->Mode->Mode,
+          Gop->Mode->Info->HorizontalResolution,
+          Gop->Mode->Info->VerticalResolution,
+          Gop->Mode->Info->PixelsPerScanLine);
 
     BOOLEAN apple_hw = IsAppleSystem();
     {
@@ -2240,6 +2218,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         if (apple_hw)
             uefi_call_wrapper(ST->ConOut->EnableCursor, 2, ST->ConOut, FALSE);
     }
+    Print(L"[TW] SetMode done (apple_hw=%u)\r\n", (UINT32)apple_hw);
 
     FRAMEBUFFER fb;
     fb.Width = Gop->Mode->Info->HorizontalResolution;
@@ -2292,21 +2271,35 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         }
     }
 
+    Print(L"[TW] fb init fmt=%u blt=%u base=%lx\r\n",
+          (UINT32)fb.PixelFormat, (UINT32)GopUseBlt, (UINTN)Gop->Mode->FrameBufferBase);
+
+    Print(L"[TW] UpdatePageLayoutFromFb\r\n");
     UpdatePageLayoutFromFb(&fb);
+    Print(L"[TW] RunSplashScreen\r\n");
     RunSplashScreen(&fb);
+    Print(L"[TW] splash returned\r\n");
     CursorBlinkPhase = TRUE;
     CursorBlinkAccumUs = 0;
 
+    Print(L"[TW] InitDocument\r\n");
     InitDocument();
+    Print(L"[TW] TypewriterAutoloadIfPresent\r\n");
     TypewriterAutoloadIfPresent(ImageHandle);
+    Print(L"[TW] autoload returned\r\n");
     SessionElapsedUs = 0;
     LastHudSessionMinute = (UINT32)-1;
     HudNeedPaint = TRUE;
 
+    Print(L"[TW] entering main loop (serial: lines tagged [TW])\r\n");
     while (Running) {
         KickFirmwareWatchdog();
         if (Doc.Modified || HudNeedPaint) {
             RenderDocument(&fb);
+            if (!TwLoggedFirstFrame) {
+                TwLoggedFirstFrame = TRUE;
+                Print(L"[TW] first RenderDocument complete\r\n");
+            }
             Doc.Modified = FALSE;
         }
         
