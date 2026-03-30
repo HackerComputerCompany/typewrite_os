@@ -4,7 +4,7 @@
  * A native UEFI typewriter experience with:
  * - Bitmap font rendering (Virgil, Inter, + retro / typewriter faces)
  * - Typewriter-style input with visual feedback
- * - F1 settings menu; Letter layout 65×60 at 10 cpi (1" margins) or 80 cols margins off;
+ * - F1 settings menu; Letter 50–65 cols / 60 lines (1" margins) or 80 cols margins off;
  *   PgUp/PgDn pages; arrows move cursor; autoload Typewriter.txt only
  * - LCD-style clock HUD
  * - Multiple view modes
@@ -26,7 +26,8 @@
 #include <ibm_plex_mono.h>
 #include <share_tech_mono.h>
 
-#define TYPEWRITER_DOC_FILENAME L"Typewriter.txt"
+#define TYPEWRITER_DOC_FILENAME       L"Typewriter.txt"
+#define TYPEWRITER_SETTINGS_FILENAME L"Typewriter.settings"
 #define DOC_FILE_MAX_BYTES      (128 * 1024)
 #define LCD_STATUS_ROW_H        34
 #define LCD_STATUS_MARGIN_BOT   6
@@ -183,22 +184,28 @@ static const UINT32 simple_font_offsets[] = {
 };
 
 /*
- * One in-memory page: US Letter body — 9" × 6.5" printable with 1" margins (60 × 65 cells
- * at 6 lpi × 10 cpi); margins off uses the full grid width (80 cols = 8" at 10 cpi).
+ * One in-memory page: US Letter body — 9" × 6.5" printable with 1" margins (60 lines);
+ * active columns with margins are 50–65 (pitch = 6.5" / cols). Margins off: 80 cols in 8".
  * Up to MAX_RAM_PAGES per session; disk files TWS{slot}P{nn}.TXT (slot 1–5, page 01–99).
  */
-#define PAGE_COLS_WITH_MARGINS 65
+#define PAGE_COLS_MARGINS_MIN  50
+#define PAGE_COLS_MARGINS_MAX  65
+#define PAGE_COLS_MARGINS_DEFAULT 58
 #define PAGE_COLS_FULL_WIDTH   80
 #define PAGE_COLS_MAX          PAGE_COLS_FULL_WIDTH
 #define PAGE_ROWS              60
+/* Printable width in inches (numerator/denominator) for pitch math. */
+#define PAGE_PRINTABLE_W_MARGINS_NUM 13  /* 6.5" */
+#define PAGE_PRINTABLE_W_MARGINS_DEN 2
+#define PAGE_PRINTABLE_W_FULL_NUM    8  /* 8" */
+#define PAGE_PRINTABLE_W_FULL_DEN      1
 /* Vertical pitch: PAGE_BODY_HEIGHT_INCH / PAGE_ROWS (e.g. 9" / 60 lines). */
 #define PAGE_BODY_HEIGHT_INCH 9
 #define PAGE_CELLS (PAGE_COLS_MAX * PAGE_ROWS)
-#define TEN_CPI 10
 #define SAVE_SLOT_COUNT 5
 #define MAX_RAM_PAGES 32
 
-/* Logical ~96 DPI for 10 cpi / 6 lpi layout when GOP gives no physical size. */
+/* Logical ~96 DPI for page pitch / 6 lpi layout when GOP gives no physical size. */
 #define FONT_ASSUMED_DPI 96
 
 #define OFF_PAGE_COLOR RGB(6, 6, 8)
@@ -336,6 +343,8 @@ static UINT32 ActiveRamPageIndex = 0;
 static UINT32 SaveSlotIndex = 0;
 static BOOLEAN ShowLineNumbers = FALSE;
 static BOOLEAN PageMarginsEnabled = TRUE;
+/* Characters per line when margins on (50–65); pitch fills 6.5" printable width. */
+static UINT32 PageColsMargined = PAGE_COLS_MARGINS_DEFAULT;
 static UINT32 G_lineNumGutterPx = 0;
 
 /* Page layout (recomputed from GOP + font; document uses fixed column pitch). */
@@ -397,7 +406,23 @@ static UINT32 GridRowLastUsedCol(const CHAR16 *row) {
 }
 
 static UINT32 PageColsActive(VOID) {
-    return PageMarginsEnabled ? PAGE_COLS_WITH_MARGINS : PAGE_COLS_FULL_WIDTH;
+    return PageMarginsEnabled ? PageColsMargined : PAGE_COLS_FULL_WIDTH;
+}
+
+static VOID ClampPageColsMargined(VOID) {
+    if (PageColsMargined < PAGE_COLS_MARGINS_MIN)
+        PageColsMargined = PAGE_COLS_MARGINS_MIN;
+    if (PageColsMargined > PAGE_COLS_MARGINS_MAX)
+        PageColsMargined = PAGE_COLS_MARGINS_MAX;
+}
+
+static VOID ClampCursorToActiveCols(VOID) {
+    UINT32 mx = PageColsActive();
+
+    if (mx == 0)
+        return;
+    if (Doc.CursorCol >= mx)
+        Doc.CursorCol = mx - 1;
 }
 
 static VOID UpdatePageLayoutFromFb(const FRAMEBUFFER *fb) {
@@ -420,10 +445,21 @@ static VOID UpdatePageLayoutFromFb(const FRAMEBUFFER *fb) {
     } else
         G_pageMarginPx = 0;
 
-    /* 10 characters per inch (horizontal pitch). */
-    G_pageColPitch = (FONT_SZ_MUL(FONT_ASSUMED_DPI) + TEN_CPI / 2) / TEN_CPI;
-    if (G_pageColPitch < FONT_PIXEL_KERN())
-        G_pageColPitch = FONT_PIXEL_KERN();
+    /* Horizontal pitch: fill printable width evenly (6.5" with margins, 8" full width). */
+    {
+        UINT32 dpi = FONT_SZ_MUL(FONT_ASSUMED_DPI);
+        UINT32 printableW;
+
+        if (PageMarginsEnabled) {
+            printableW = (dpi * PAGE_PRINTABLE_W_MARGINS_NUM) / PAGE_PRINTABLE_W_MARGINS_DEN;
+            G_pageColPitch = (printableW + cols / 2) / cols;
+        } else {
+            printableW = (dpi * PAGE_PRINTABLE_W_FULL_NUM) / PAGE_PRINTABLE_W_FULL_DEN;
+            G_pageColPitch = (printableW + PAGE_COLS_FULL_WIDTH / 2) / PAGE_COLS_FULL_WIDTH;
+        }
+        if (G_pageColPitch < FONT_PIXEL_KERN())
+            G_pageColPitch = FONT_PIXEL_KERN();
+    }
 
     /* 60 lines in PAGE_BODY_HEIGHT_INCH" (US Letter body with 1" top + bottom margins). */
     G_lineStep =
@@ -1052,7 +1088,7 @@ static VOID PageGoPrev(EFI_HANDLE img);
 static VOID FileOpSetBannerOk(const CHAR16 *msg);
 static VOID FileOpSetBannerErr(const CHAR16 *msg, EFI_STATUS st);
 
-#define MENU_ITEM_COUNT 13
+#define MENU_ITEM_COUNT 14
 #define MENU_FIRST_ITEM_LINE 4
 
 static const CHAR16 *const kMenuFontLabels[FONT_NUM] = {
@@ -1118,15 +1154,18 @@ static VOID MenuActivate(UINT32 item) {
             break;
         case 7:
             PageMarginsEnabled = !PageMarginsEnabled;
-            {
-                UINT32 mx = PageColsActive();
-
-                if (Doc.CursorCol >= mx)
-                    Doc.CursorCol = mx - 1;
-            }
+            ClampCursorToActiveCols();
             MarkFullRepaint();
             break;
         case 8:
+            PageColsMargined++;
+            if (PageColsMargined > PAGE_COLS_MARGINS_MAX)
+                PageColsMargined = PAGE_COLS_MARGINS_MIN;
+            ClampPageColsMargined();
+            ClampCursorToActiveCols();
+            MarkFullRepaint();
+            break;
+        case 9:
             fst = TypewriterSaveCurrentSlotPage(BootImageHandle);
             if (!EFI_ERROR(fst)) {
                 UnicodeSPrint(b, sizeof(b), L"Saved TWS%uP%02u", SaveSlotIndex + 1, ActiveRamPageIndex + 1);
@@ -1136,7 +1175,7 @@ static VOID MenuActivate(UINT32 item) {
             Print(L"[Typewrite] save %r\n", fst);
             MarkFullRepaint();
             break;
-        case 9:
+        case 10:
             fst = TypewriterLoadCurrentSlotPage(BootImageHandle);
             if (!EFI_ERROR(fst)) {
                 CopyDocToRamPage(ActiveRamPageIndex);
@@ -1147,14 +1186,14 @@ static VOID MenuActivate(UINT32 item) {
             Print(L"[Typewrite] load %r\n", fst);
             MarkFullRepaint();
             break;
-        case 10:
+        case 11:
             SlotCycleNext(BootImageHandle);
             break;
-        case 11:
+        case 12:
             PageGoNext(BootImageHandle);
             MarkFullRepaint();
             break;
-        case 12:
+        case 13:
             PageGoPrev(BootImageHandle);
             MarkFullRepaint();
             break;
@@ -1193,7 +1232,10 @@ static VOID DrawMenuOverlay(FRAMEBUFFER *fb) {
     UnicodeSPrint(lines[n++], sizeof(lines[0]), L"Key debug overlay — %ls", KeyDebugMode ? L"on" : L"off");
     UnicodeSPrint(lines[n++], sizeof(lines[0]), L"Line numbers — %ls", ShowLineNumbers ? L"on" : L"off");
     UnicodeSPrint(lines[n++], sizeof(lines[0]), L"Page margins (Letter) — %ls",
-                  PageMarginsEnabled ? L"on · 65 cols / 9\"×6.5\"" : L"off · 80 cols full width");
+                  PageMarginsEnabled ? L"on · 6.5\" line" : L"off · 80 cols / 8\"");
+    UnicodeSPrint(lines[n++], sizeof(lines[0]),
+                  L"Chars per line (margins, %u–%u) — %u", PAGE_COLS_MARGINS_MIN,
+                  PAGE_COLS_MARGINS_MAX, PageColsMargined);
     StrCpy(lines[n++], L"Save current page (UTF-8, boot volume)");
     StrCpy(lines[n++], L"Load current page");
     StrCpy(lines[n++], L"Next save slot (1–5)");
@@ -1575,20 +1617,225 @@ static VOID CopyDocToRamPage(UINT32 idx) {
 }
 
 static VOID CopyRamPageToDoc(UINT32 idx) {
-    UINT32 mx = PageColsActive();
-
     CopyMem(Doc.Grid, RamPages[idx].Grid, sizeof(Doc.Grid));
     Doc.CursorCol = RamPages[idx].CursorCol;
     Doc.CursorRow = RamPages[idx].CursorRow;
     Doc.ScrollYPx = RamPages[idx].ScrollYPx;
-    if (Doc.CursorCol >= mx)
-        Doc.CursorCol = (mx > 0) ? mx - 1 : 0;
+    ClampCursorToActiveCols();
     Doc.Modified = TRUE;
     MarkFullRepaint();
 }
 
+static BOOLEAN TwParseDecimal(const CHAR8 *s, UINTN len, UINT32 *out) {
+    UINT32 v = 0;
+    UINTN i;
+
+    if (len == 0)
+        return FALSE;
+    for (i = 0; i < len; i++) {
+        if (s[i] < '0' || s[i] > '9')
+            return FALSE;
+        v = v * 10 + (UINT32)(s[i] - '0');
+    }
+    *out = v;
+    return TRUE;
+}
+
+static UINTN TwAppendSettingsUint(UINT8 *buf, UINTN cap, UINTN used, UINT32 val) {
+    CHAR8 tmp[12];
+    UINTN n = 0;
+
+    if (used >= cap)
+        return used;
+    if (val == 0) {
+        if (used + 1 <= cap)
+            buf[used++] = (UINT8)'0';
+        return used;
+    }
+    while (val > 0 && n < sizeof(tmp)) {
+        tmp[n++] = (CHAR8)('0' + (val % 10));
+        val /= 10;
+    }
+    while (n > 0 && used < cap)
+        buf[used++] = (UINT8)tmp[--n];
+    return used;
+}
+
+static UINTN TwAppendSettingsLine(UINT8 *buf, UINTN cap, UINTN used, const CHAR8 *key, UINT32 val) {
+    while (*key && used + 1 < cap)
+        buf[used++] = (UINT8)*key++;
+    if (used + 2 >= cap)
+        return used;
+    buf[used++] = (UINT8)'=';
+    used = TwAppendSettingsUint(buf, cap, used, val);
+    if (used + 2 <= cap) {
+        buf[used++] = (UINT8)'\r';
+        buf[used++] = (UINT8)'\n';
+    }
+    return used;
+}
+
+static VOID TypewriterApplySettingsLine(const CHAR8 *line, UINTN linelen) {
+    UINTN i;
+    UINT32 v;
+
+    for (i = 0; i < linelen; i++) {
+        if (line[i] != '=')
+            continue;
+        if (i == 0)
+            return;
+        if (!TwParseDecimal(line + i + 1, linelen - i - 1, &v))
+            return;
+        if (i == 7 && CompareMem(line, "margins", 7) == 0)
+            PageMarginsEnabled = (v != 0);
+        else if (i == 13 && CompareMem(line, "cols_margined", 13) == 0)
+            PageColsMargined = v;
+        else if (i == 4 && CompareMem(line, "font", 4) == 0)
+            CurrentFontKind = (FONT_KIND)v;
+        else if (i == 11 && CompareMem(line, "scale_twice", 11) == 0)
+            FontScaleTwice = v;
+        else if (i == 2 && CompareMem(line, "bg", 2) == 0)
+            CurrentBgColor = v;
+        else if (i == 6 && CompareMem(line, "cursor", 6) == 0)
+            CursorMode = (CURSOR_MODE)v;
+        else if (i == 6 && CompareMem(line, "keydbg", 6) == 0)
+            KeyDebugMode = (v != 0);
+        else if (i == 8 && CompareMem(line, "linenums", 8) == 0)
+            ShowLineNumbers = (v != 0);
+        else if (i == 4 && CompareMem(line, "slot", 4) == 0)
+            SaveSlotIndex = v;
+        return;
+    }
+}
+
+static VOID TypewriterLoadSettingsIfPresent(EFI_HANDLE img) {
+    EFI_GUID liGuid = EFI_LOADED_IMAGE_PROTOCOL_GUID;
+    EFI_LOADED_IMAGE_PROTOCOL *li = NULL;
+    EFI_FILE *root = NULL;
+    EFI_FILE *f = NULL;
+    EFI_STATUS st;
+    UINT8 *buf = NULL;
+    UINTN sz;
+    UINTN pos = 0;
+    UINTN lineStart = 0;
+
+    st = uefi_call_wrapper(BS->HandleProtocol, 3, img, &liGuid, (VOID **)&li);
+    if (EFI_ERROR(st) || li == NULL || li->DeviceHandle == NULL)
+        return;
+
+    root = LibOpenRoot(li->DeviceHandle);
+    if (root == NULL)
+        return;
+
+    st = uefi_call_wrapper(root->Open, 5, root, &f, (CHAR16 *)TYPEWRITER_SETTINGS_FILENAME,
+                           EFI_FILE_MODE_READ, (UINT64)0);
+    if (EFI_ERROR(st)) {
+        uefi_call_wrapper(root->Close, 1, root);
+        return;
+    }
+
+    buf = AllocatePool(2048);
+    if (buf == NULL) {
+        uefi_call_wrapper(f->Close, 1, f);
+        uefi_call_wrapper(root->Close, 1, root);
+        return;
+    }
+    sz = 2047;
+    st = uefi_call_wrapper(f->Read, 3, f, &sz, buf);
+    uefi_call_wrapper(f->Close, 1, f);
+    uefi_call_wrapper(root->Close, 1, root);
+    if (EFI_ERROR(st) || sz == 0) {
+        FreePool(buf);
+        return;
+    }
+    if (sz >= 3 && buf[0] == 0xEF && buf[1] == 0xBB && buf[2] == 0xBF)
+        pos = 3;
+    lineStart = pos;
+    while (pos <= sz) {
+        if (pos == sz || buf[pos] == '\n') {
+            UINTN lineEnd = pos;
+
+            while (lineEnd > lineStart &&
+                   (buf[lineEnd - 1] == '\r' || buf[lineEnd - 1] == ' ' || buf[lineEnd - 1] == '\t'))
+                lineEnd--;
+            if (lineEnd > lineStart && buf[lineStart] != '#')
+                TypewriterApplySettingsLine((CHAR8 *)buf + lineStart, lineEnd - lineStart);
+            lineStart = pos + 1;
+        }
+        pos++;
+    }
+    FreePool(buf);
+
+    ClampPageColsMargined();
+    if (CurrentFontKind >= FONT_NUM)
+        CurrentFontKind = FONT_COURIER_PRIME;
+    if (FontScaleTwice < 2)
+        FontScaleTwice = 2;
+    if (FontScaleTwice > 12)
+        FontScaleTwice = 12;
+    if (CurrentBgColor >= 10)
+        CurrentBgColor = 1;
+    if (CursorMode >= CURSOR_MODE_NUM)
+        CursorMode = CURSOR_BLOCK_BLINK;
+    if (SaveSlotIndex >= SAVE_SLOT_COUNT)
+        SaveSlotIndex = 0;
+}
+
+static VOID TypewriterSaveSettings(EFI_HANDLE img) {
+    EFI_GUID liGuid = EFI_LOADED_IMAGE_PROTOCOL_GUID;
+    EFI_LOADED_IMAGE_PROTOCOL *li = NULL;
+    EFI_FILE *root = NULL;
+    EFI_FILE *f = NULL;
+    EFI_STATUS st;
+    UINT8 buf[384];
+    UINTN used = 0;
+    UINTN wlen;
+
+    st = uefi_call_wrapper(BS->HandleProtocol, 3, img, &liGuid, (VOID **)&li);
+    if (EFI_ERROR(st) || li == NULL || li->DeviceHandle == NULL)
+        return;
+
+    root = LibOpenRoot(li->DeviceHandle);
+    if (root == NULL)
+        return;
+
+    if (!EFI_ERROR(uefi_call_wrapper(root->Open, 5, root, &f, (CHAR16 *)TYPEWRITER_SETTINGS_FILENAME,
+                                     EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, (UINT64)0))) {
+        uefi_call_wrapper(f->Delete, 1, f);
+        f = NULL;
+    }
+    st = uefi_call_wrapper(root->Open, 5, root, &f, (CHAR16 *)TYPEWRITER_SETTINGS_FILENAME,
+                           EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_CREATE,
+                           (UINT64)0);
+    if (EFI_ERROR(st)) {
+        uefi_call_wrapper(root->Close, 1, root);
+        return;
+    }
+
+    used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"margins",
+                                PageMarginsEnabled ? 1U : 0U);
+    used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"cols_margined", PageColsMargined);
+    used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"font", (UINT32)CurrentFontKind);
+    used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"scale_twice", FontScaleTwice);
+    used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"bg", CurrentBgColor);
+    used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"cursor", CursorMode);
+    used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"keydbg",
+                                KeyDebugMode ? 1U : 0U);
+    used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"linenums",
+                                ShowLineNumbers ? 1U : 0U);
+    used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"slot", SaveSlotIndex);
+
+    wlen = used;
+    st = uefi_call_wrapper(f->Write, 3, f, &wlen, buf);
+    (void)st;
+    uefi_call_wrapper(f->Flush, 1, f);
+    uefi_call_wrapper(f->Close, 1, f);
+    uefi_call_wrapper(root->Close, 1, root);
+}
+
 static EFI_STATUS TypewriterSaveGridToPath(EFI_HANDLE img, const CHAR16 *filename,
-                                           const CHAR16 (*grid)[PAGE_COLS_MAX + 1]) {
+                                           const CHAR16 (*grid)[PAGE_COLS_MAX + 1],
+                                           BOOLEAN persistSettings) {
     EFI_GUID liGuid = EFI_LOADED_IMAGE_PROTOCOL_GUID;
     EFI_LOADED_IMAGE_PROTOCOL *li = NULL;
     EFI_FILE *root = NULL;
@@ -1663,6 +1910,8 @@ static EFI_STATUS TypewriterSaveGridToPath(EFI_HANDLE img, const CHAR16 *filenam
     uefi_call_wrapper(f->Close, 1, f);
     uefi_call_wrapper(root->Close, 1, root);
     FreePool(buf);
+    if (!EFI_ERROR(st) && persistSettings)
+        TypewriterSaveSettings(img);
     return st;
 }
 
@@ -1671,7 +1920,7 @@ static EFI_STATUS TypewriterSaveCurrentSlotPage(EFI_HANDLE img) {
 
     CopyDocToRamPage(ActiveRamPageIndex);
     TypewriterFormatPagePath(path, sizeof(path), SaveSlotIndex, ActiveRamPageIndex + 1);
-    return TypewriterSaveGridToPath(img, path, RamPages[ActiveRamPageIndex].Grid);
+    return TypewriterSaveGridToPath(img, path, RamPages[ActiveRamPageIndex].Grid, TRUE);
 }
 
 static EFI_STATUS TypewriterLoadDocFromPath(EFI_HANDLE img, const CHAR16 *filename) {
@@ -1730,10 +1979,11 @@ static EFI_STATUS TypewriterFlushRamToSlot(EFI_HANDLE img, UINT32 slot0) {
 
     for (i = 0; i < RamPageCount; i++) {
         TypewriterFormatPagePath(path, sizeof(path), slot0, i + 1);
-        st = TypewriterSaveGridToPath(img, path, RamPages[i].Grid);
+        st = TypewriterSaveGridToPath(img, path, RamPages[i].Grid, FALSE);
         if (EFI_ERROR(st))
             return st;
     }
+    TypewriterSaveSettings(img);
     return EFI_SUCCESS;
 }
 
@@ -1824,6 +2074,7 @@ static VOID TypewriterLoadBytesIntoDoc(const UINT8 *data, UINTN len) {
         Doc.CursorRow = ly;
         Doc.CursorCol = (lastCol < lim) ? lastCol : lim - 1;
     }
+    ClampCursorToActiveCols();
     MarkFullRepaint();
 }
 
@@ -1870,7 +2121,7 @@ static VOID PageGoNext(EFI_HANDLE img) {
     }
     CopyDocToRamPage(cur);
     TypewriterFormatPagePath(path, sizeof(path), SaveSlotIndex, cur + 1);
-    st = TypewriterSaveGridToPath(img, path, RamPages[cur].Grid);
+    st = TypewriterSaveGridToPath(img, path, RamPages[cur].Grid, TRUE);
     if (EFI_ERROR(st)) {
         FileOpSetBannerErr(L"Page save failed", st);
         return;
@@ -1897,7 +2148,7 @@ static VOID PageGoPrev(EFI_HANDLE img) {
 
     CopyDocToRamPage(cur);
     TypewriterFormatPagePath(path, sizeof(path), SaveSlotIndex, cur + 1);
-    st = TypewriterSaveGridToPath(img, path, RamPages[cur].Grid);
+    st = TypewriterSaveGridToPath(img, path, RamPages[cur].Grid, TRUE);
     if (EFI_ERROR(st))
         FileOpSetBannerErr(L"Page save failed", st);
     if (cur == 0) {
@@ -2264,6 +2515,8 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     InitializeLib(ImageHandle, SystemTable);
     KickFirmwareWatchdog();
     BootImageHandle = ImageHandle;
+
+    TypewriterLoadSettingsIfPresent(ImageHandle);
 
     Print(L"\r\n========================================\r\n");
     Print(L"  Typewrite OS v1.0\r\n");
