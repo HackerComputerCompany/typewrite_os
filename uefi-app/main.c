@@ -4,8 +4,8 @@
  * A native UEFI typewriter experience with:
  * - Bitmap font rendering (Virgil, Inter, + retro / typewriter faces)
  * - Typewriter-style input with visual feedback
- * - F1 settings menu (font, scale, save/load, slots, pages, toggles); PgUp/PgDn pages;
- *   arrows move cursor; autoload Typewriter.txt only
+ * - F1 settings menu; Letter layout 65×60 at 10 cpi (1" margins) or 80 cols margins off;
+ *   PgUp/PgDn pages; arrows move cursor; autoload Typewriter.txt only
  * - LCD-style clock HUD
  * - Multiple view modes
  * 
@@ -183,19 +183,23 @@ static const UINT32 simple_font_offsets[] = {
 };
 
 /*
- * One in-memory page: US Letter–style grid (~6.5" × ~9" printable at ~10 cpi × ~60 lines).
+ * One in-memory page: US Letter body — 9" × 6.5" printable with 1" margins (60 × 65 cells
+ * at 6 lpi × 10 cpi); margins off uses the full grid width (80 cols = 8" at 10 cpi).
  * Up to MAX_RAM_PAGES per session; disk files TWS{slot}P{nn}.TXT (slot 1–5, page 01–99).
  */
-#define PAGE_COLS 50
-#define PAGE_ROWS 60
-#define PAGE_CELLS (PAGE_COLS * PAGE_ROWS)
+#define PAGE_COLS_WITH_MARGINS 65
+#define PAGE_COLS_FULL_WIDTH   80
+#define PAGE_COLS_MAX          PAGE_COLS_FULL_WIDTH
+#define PAGE_ROWS              60
+/* Vertical pitch: PAGE_BODY_HEIGHT_INCH / PAGE_ROWS (e.g. 9" / 60 lines). */
+#define PAGE_BODY_HEIGHT_INCH 9
+#define PAGE_CELLS (PAGE_COLS_MAX * PAGE_ROWS)
+#define TEN_CPI 10
 #define SAVE_SLOT_COUNT 5
 #define MAX_RAM_PAGES 32
 
-/* Logical ~96 DPI for 1" margins when GOP gives no physical size. */
+/* Logical ~96 DPI for 10 cpi / 6 lpi layout when GOP gives no physical size. */
 #define FONT_ASSUMED_DPI 96
-#define PAGE_MARGIN_INCH_NUM 1
-#define PAGE_MARGIN_INCH_DEN 1
 
 #define OFF_PAGE_COLOR RGB(6, 6, 8)
 
@@ -219,7 +223,7 @@ typedef struct {
 } FRAMEBUFFER;
 
 typedef struct {
-    CHAR16 Grid[PAGE_ROWS][PAGE_COLS + 1];
+    CHAR16 Grid[PAGE_ROWS][PAGE_COLS_MAX + 1];
     UINT32 CursorCol;
     UINT32 CursorRow;
     UINT32 ScrollYPx;
@@ -227,7 +231,7 @@ typedef struct {
 } DOCUMENT;
 
 typedef struct {
-    CHAR16 Grid[PAGE_ROWS][PAGE_COLS + 1];
+    CHAR16 Grid[PAGE_ROWS][PAGE_COLS_MAX + 1];
     UINT32 CursorCol;
     UINT32 CursorRow;
     UINT32 ScrollYPx;
@@ -331,6 +335,7 @@ static UINT32 RamPageCount = 1;
 static UINT32 ActiveRamPageIndex = 0;
 static UINT32 SaveSlotIndex = 0;
 static BOOLEAN ShowLineNumbers = FALSE;
+static BOOLEAN PageMarginsEnabled = TRUE;
 static UINT32 G_lineNumGutterPx = 0;
 
 /* Page layout (recomputed from GOP + font; document uses fixed column pitch). */
@@ -384,57 +389,53 @@ static UINT32 GridRowLastUsedCol(const CHAR16 *row) {
     UINT32 c;
     UINT32 last = 0;
 
-    for (c = 0; c < PAGE_COLS; c++) {
+    for (c = 0; c < PAGE_COLS_MAX; c++) {
         if (row[c] != L' ' && row[c] != 0)
             last = c + 1;
     }
     return last;
 }
 
-static UINT32 ComputePageColPitch(VOID) {
-    UINT32 m = GlyphAdvance(L'M');
-    UINT32 w;
-    CHAR16 ch;
-
-    w = GlyphAdvance(L'W');
-    if (w > m)
-        m = w;
-    w = GlyphAdvance(L'm');
-    if (w > m)
-        m = w;
-    for (ch = L'0'; ch <= L'9'; ch++) {
-        w = GlyphAdvance(ch);
-        if (w > m)
-            m = w;
-    }
-    w = GlyphAdvance(L'n');
-    if (w > m)
-        m = w;
-    if (m < FONT_PIXEL_KERN())
-        m = FONT_PIXEL_KERN();
-    return m;
+static UINT32 PageColsActive(VOID) {
+    return PageMarginsEnabled ? PAGE_COLS_WITH_MARGINS : PAGE_COLS_FULL_WIDTH;
 }
 
 static VOID UpdatePageLayoutFromFb(const FRAMEBUFFER *fb) {
-    UINT32 inch;
     UINT32 contentW;
     UINT32 contentH;
+    UINT32 cols = PageColsActive();
 
     G_docViewportBot = (fb->Height > LCD_STATUS_ROW_H + LCD_STATUS_MARGIN_BOT + 4)
                            ? fb->Height - LCD_STATUS_ROW_H - LCD_STATUS_MARGIN_BOT
                            : fb->Height;
 
-    inch = (FONT_ASSUMED_DPI * PAGE_MARGIN_INCH_NUM) / PAGE_MARGIN_INCH_DEN;
-    if (inch > fb->Width / 6)
-        inch = fb->Width / 6;
-    if (inch > G_docViewportBot / 6)
-        inch = G_docViewportBot / 6;
-    if (inch < 16)
-        inch = 16;
-    G_pageMarginPx = inch;
+    if (PageMarginsEnabled) {
+        G_pageMarginPx = FONT_SZ_MUL(FONT_ASSUMED_DPI);
+        if (G_pageMarginPx > fb->Width / 6)
+            G_pageMarginPx = fb->Width / 6;
+        if (G_pageMarginPx > G_docViewportBot / 6)
+            G_pageMarginPx = G_docViewportBot / 6;
+        if (G_pageMarginPx < 16)
+            G_pageMarginPx = 16;
+    } else
+        G_pageMarginPx = 0;
 
-    G_pageColPitch = ComputePageColPitch();
-    G_lineStep = LineAdvance();
+    /* 10 characters per inch (horizontal pitch). */
+    G_pageColPitch = (FONT_SZ_MUL(FONT_ASSUMED_DPI) + TEN_CPI / 2) / TEN_CPI;
+    if (G_pageColPitch < FONT_PIXEL_KERN())
+        G_pageColPitch = FONT_PIXEL_KERN();
+
+    /* 60 lines in PAGE_BODY_HEIGHT_INCH" (US Letter body with 1" top + bottom margins). */
+    G_lineStep =
+        (FONT_SZ_MUL(FONT_ASSUMED_DPI) * PAGE_BODY_HEIGHT_INCH + PAGE_ROWS / 2) / PAGE_ROWS;
+    if (G_lineStep < 4)
+        G_lineStep = 4;
+    {
+        UINT32 minStep = LineAdvance();
+
+        if (G_lineStep < minStep)
+            G_lineStep = minStep;
+    }
 
     G_lineNumGutterPx = 0;
     if (ShowLineNumbers) {
@@ -447,16 +448,21 @@ static VOID UpdatePageLayoutFromFb(const FRAMEBUFFER *fb) {
             G_lineNumGutterPx = FONT_SZ_MUL(24);
     }
 
-    contentW = PAGE_COLS * G_pageColPitch;
+    contentW = cols * G_pageColPitch;
     contentH = PAGE_ROWS * G_lineStep;
-    G_pageTotalW = 2 * G_pageMarginPx + contentW + G_lineNumGutterPx;
-    G_pageTotalH = 2 * G_pageMarginPx + contentH;
+    G_pageTotalW = (PageMarginsEnabled ? 2 * G_pageMarginPx : 0) + contentW + G_lineNumGutterPx;
+    G_pageTotalH = (PageMarginsEnabled ? 2 * G_pageMarginPx : 0) + contentH;
 
-    G_pagePaperX = (fb->Width > G_pageTotalW) ? (fb->Width - G_pageTotalW) / 2 : 0;
+    if (PageMarginsEnabled)
+        G_pagePaperX = (fb->Width > G_pageTotalW) ? (fb->Width - G_pageTotalW) / 2 : 0;
+    else
+        G_pagePaperX = (fb->Width > contentW + G_lineNumGutterPx)
+                           ? (fb->Width - contentW - G_lineNumGutterPx) / 2
+                           : 0;
     G_pagePaperY = 0;
 
-    G_pageContentX0 = G_pagePaperX + G_pageMarginPx + G_lineNumGutterPx;
-    G_pageContentY0 = G_pagePaperY + G_pageMarginPx;
+    G_pageContentX0 = G_pagePaperX + (PageMarginsEnabled ? G_pageMarginPx : 0) + G_lineNumGutterPx;
+    G_pageContentY0 = G_pagePaperY + (PageMarginsEnabled ? G_pageMarginPx : 0);
 }
 
 static INT32 RowTextScreenY(UINT32 rowIdx) {
@@ -469,7 +475,7 @@ static UINT32 ContentXForCol(UINT32 col) {
 
 static UINT32 GridRowPaintRightScreenX(const CHAR16 *row) {
     (void)row;
-    return G_pageContentX0 + PAGE_COLS * G_pageColPitch;
+    return G_pageContentX0 + PageColsActive() * G_pageColPitch;
 }
 
 static VOID EnsureCursorVisibleScroll(const FRAMEBUFFER *fb) {
@@ -496,9 +502,9 @@ static VOID InitDocumentGridSpaces(VOID) {
     UINT32 c;
 
     for (r = 0; r < PAGE_ROWS; r++) {
-        for (c = 0; c < PAGE_COLS; c++)
+        for (c = 0; c < PAGE_COLS_MAX; c++)
             Doc.Grid[r][c] = L' ';
-        Doc.Grid[r][PAGE_COLS] = 0;
+        Doc.Grid[r][PAGE_COLS_MAX] = 0;
     }
 }
 
@@ -925,9 +931,7 @@ static VOID DrawGridRowIfVisible(FRAMEBUFFER *fb, UINT32 r, UINT32 fg, UINT32 bg
     UINT32 px;
     UINT32 i;
     CHAR16 *ln = Doc.Grid[r];
-    UINT32 lineBodyH = FONT_SZ_MUL(ActiveFontLineHeight());
-
-    if (sy < 0 || sy >= (INT32)G_docViewportBot || sy + (INT32)lineBodyH <= 0)
+    if (sy < 0 || sy >= (INT32)G_docViewportBot || sy + (INT32)G_lineStep <= 0)
         return;
     yu = (UINT32)sy;
     if (ShowLineNumbers && G_lineNumGutterPx > 0) {
@@ -940,9 +944,10 @@ static VOID DrawGridRowIfVisible(FRAMEBUFFER *fb, UINT32 r, UINT32 fg, UINT32 bg
         DrawString(fb, lnx, yu, lnbuf, LineNumberInk(), bg);
     }
     px = G_pageContentX0;
-    for (i = 0; i < PAGE_COLS; i++) {
+    for (i = 0; i < PageColsActive(); i++) {
         CHAR16 ch = ln[i] ? ln[i] : L' ';
 
+        DrawRect(fb, px, yu, G_pageColPitch, G_lineStep, bg);
         DrawCharOnDocLine(fb, px, yu, ch, fg, bg);
         px += G_pageColPitch;
     }
@@ -977,12 +982,11 @@ static VOID DrawClippedPaperFill(FRAMEBUFFER *fb, UINT32 paperBg, UINT32 clipBot
 static VOID RepaintDocLineCursorBand(FRAMEBUFFER *fb, UINT32 line, UINT32 bgColor, UINT32 fgColor) {
     CHAR16 *ln = Doc.Grid[line];
     INT32 sy = RowTextScreenY(line);
-    UINT32 lineBodyH = FONT_SZ_MUL(ActiveFontLineHeight());
     UINT32 cx = DocCursorPixelX();
     UINT32 cw;
     UINT32 yu;
 
-    if (sy < 0 || sy >= (INT32)G_docViewportBot || sy + (INT32)lineBodyH <= 0)
+    if (sy < 0 || sy >= (INT32)G_docViewportBot || sy + (INT32)G_lineStep <= 0)
         return;
 
     if (CursorMode == CURSOR_BAR || CursorMode == CURSOR_BAR_BLINK)
@@ -1001,7 +1005,7 @@ static VOID RepaintDocLineCursorBand(FRAMEBUFFER *fb, UINT32 line, UINT32 bgColo
         UINT32 i;
         CHAR16 ch;
 
-        for (i = 0; i < PAGE_COLS; i++) {
+        for (i = 0; i < PageColsActive(); i++) {
             UINT32 gL = px;
             UINT32 gR = px + G_pageColPitch;
 
@@ -1021,11 +1025,12 @@ static VOID RepaintDocLineCursorBand(FRAMEBUFFER *fb, UINT32 line, UINT32 bgColo
         if (drawR > fb->Width)
             drawR = fb->Width;
         yu = (UINT32)sy;
-        DrawRect(fb, drawL, yu, drawR - drawL, lineBodyH, bgColor);
+        DrawRect(fb, drawL, yu, drawR - drawL, G_lineStep, bgColor);
         if (firstCol != (UINT32)-1) {
             px = ContentXForCol(firstCol);
-            for (i = firstCol; i <= lastCol && i < PAGE_COLS; i++) {
+            for (i = firstCol; i <= lastCol && i < PageColsActive(); i++) {
                 ch = ln[i] ? ln[i] : L' ';
+                DrawRect(fb, px, yu, G_pageColPitch, G_lineStep, bgColor);
                 DrawCharOnDocLine(fb, px, yu, ch, fgColor, bgColor);
                 px += G_pageColPitch;
             }
@@ -1034,7 +1039,7 @@ static VOID RepaintDocLineCursorBand(FRAMEBUFFER *fb, UINT32 line, UINT32 bgColo
 
     if (CursorShouldDrawThisFrame()) {
         yu = (UINT32)sy;
-        DrawRect(fb, cx, yu, cw, lineBodyH, fgColor);
+        DrawRect(fb, cx, yu, cw, G_lineStep, fgColor);
     }
 }
 
@@ -1047,7 +1052,7 @@ static VOID PageGoPrev(EFI_HANDLE img);
 static VOID FileOpSetBannerOk(const CHAR16 *msg);
 static VOID FileOpSetBannerErr(const CHAR16 *msg, EFI_STATUS st);
 
-#define MENU_ITEM_COUNT 12
+#define MENU_ITEM_COUNT 13
 #define MENU_FIRST_ITEM_LINE 4
 
 static const CHAR16 *const kMenuFontLabels[FONT_NUM] = {
@@ -1112,6 +1117,16 @@ static VOID MenuActivate(UINT32 item) {
             MarkFullRepaint();
             break;
         case 7:
+            PageMarginsEnabled = !PageMarginsEnabled;
+            {
+                UINT32 mx = PageColsActive();
+
+                if (Doc.CursorCol >= mx)
+                    Doc.CursorCol = mx - 1;
+            }
+            MarkFullRepaint();
+            break;
+        case 8:
             fst = TypewriterSaveCurrentSlotPage(BootImageHandle);
             if (!EFI_ERROR(fst)) {
                 UnicodeSPrint(b, sizeof(b), L"Saved TWS%uP%02u", SaveSlotIndex + 1, ActiveRamPageIndex + 1);
@@ -1121,7 +1136,7 @@ static VOID MenuActivate(UINT32 item) {
             Print(L"[Typewrite] save %r\n", fst);
             MarkFullRepaint();
             break;
-        case 8:
+        case 9:
             fst = TypewriterLoadCurrentSlotPage(BootImageHandle);
             if (!EFI_ERROR(fst)) {
                 CopyDocToRamPage(ActiveRamPageIndex);
@@ -1132,14 +1147,14 @@ static VOID MenuActivate(UINT32 item) {
             Print(L"[Typewrite] load %r\n", fst);
             MarkFullRepaint();
             break;
-        case 9:
+        case 10:
             SlotCycleNext(BootImageHandle);
             break;
-        case 10:
+        case 11:
             PageGoNext(BootImageHandle);
             MarkFullRepaint();
             break;
-        case 11:
+        case 12:
             PageGoPrev(BootImageHandle);
             MarkFullRepaint();
             break;
@@ -1177,6 +1192,8 @@ static VOID DrawMenuOverlay(FRAMEBUFFER *fb) {
     UnicodeSPrint(lines[n++], sizeof(lines[0]), L"Cursor (cycle) — %ls", kMenuCursorLabels[CursorMode]);
     UnicodeSPrint(lines[n++], sizeof(lines[0]), L"Key debug overlay — %ls", KeyDebugMode ? L"on" : L"off");
     UnicodeSPrint(lines[n++], sizeof(lines[0]), L"Line numbers — %ls", ShowLineNumbers ? L"on" : L"off");
+    UnicodeSPrint(lines[n++], sizeof(lines[0]), L"Page margins (Letter) — %ls",
+                  PageMarginsEnabled ? L"on · 65 cols / 9\"×6.5\"" : L"off · 80 cols full width");
     StrCpy(lines[n++], L"Save current page (UTF-8, boot volume)");
     StrCpy(lines[n++], L"Load current page");
     StrCpy(lines[n++], L"Next save slot (1–5)");
@@ -1558,22 +1575,26 @@ static VOID CopyDocToRamPage(UINT32 idx) {
 }
 
 static VOID CopyRamPageToDoc(UINT32 idx) {
+    UINT32 mx = PageColsActive();
+
     CopyMem(Doc.Grid, RamPages[idx].Grid, sizeof(Doc.Grid));
     Doc.CursorCol = RamPages[idx].CursorCol;
     Doc.CursorRow = RamPages[idx].CursorRow;
     Doc.ScrollYPx = RamPages[idx].ScrollYPx;
+    if (Doc.CursorCol >= mx)
+        Doc.CursorCol = (mx > 0) ? mx - 1 : 0;
     Doc.Modified = TRUE;
     MarkFullRepaint();
 }
 
 static EFI_STATUS TypewriterSaveGridToPath(EFI_HANDLE img, const CHAR16 *filename,
-                                           const CHAR16 (*grid)[PAGE_COLS + 1]) {
+                                           const CHAR16 (*grid)[PAGE_COLS_MAX + 1]) {
     EFI_GUID liGuid = EFI_LOADED_IMAGE_PROTOCOL_GUID;
     EFI_LOADED_IMAGE_PROTOCOL *li = NULL;
     EFI_FILE *root = NULL;
     EFI_FILE *f = NULL;
     EFI_STATUS st;
-    UINTN cap = (UINTN)PAGE_ROWS * PAGE_COLS * 4 + PAGE_ROWS * 2 + 64;
+    UINTN cap = (UINTN)PAGE_ROWS * PAGE_COLS_MAX * 4 + PAGE_ROWS * 2 + 64;
     UINT8 *buf = NULL;
     UINTN used = 0;
     UINT32 L;
@@ -1774,9 +1795,9 @@ static VOID TypewriterLoadBytesIntoDoc(const UINT8 *data, UINTN len) {
         if (c == L'\n' || c == L'\r') {
             if (c == L'\r' && i < len && data[i] == '\n')
                 i++;
-            for (cpad = col; cpad < PAGE_COLS; cpad++)
+            for (cpad = col; cpad < PAGE_COLS_MAX; cpad++)
                 Doc.Grid[line][cpad] = L' ';
-            Doc.Grid[line][PAGE_COLS] = 0;
+            Doc.Grid[line][PAGE_COLS_MAX] = 0;
             line++;
             col = 0;
             if (line >= PAGE_ROWS)
@@ -1784,23 +1805,24 @@ static VOID TypewriterLoadBytesIntoDoc(const UINT8 *data, UINTN len) {
             continue;
         }
 
-        if (col < PAGE_COLS)
+        if (col < PAGE_COLS_MAX)
             Doc.Grid[line][col++] = c;
     }
 
     if (line < PAGE_ROWS) {
-        for (cpad = col; cpad < PAGE_COLS; cpad++)
+        for (cpad = col; cpad < PAGE_COLS_MAX; cpad++)
             Doc.Grid[line][cpad] = L' ';
-        Doc.Grid[line][PAGE_COLS] = 0;
+        Doc.Grid[line][PAGE_COLS_MAX] = 0;
     }
 
     ReflowAllLines();
     {
         UINT32 ly = (line < PAGE_ROWS) ? line : PAGE_ROWS - 1;
         UINT32 lastCol = GridRowLastUsedCol(Doc.Grid[ly]);
+        UINT32 lim = PageColsActive();
 
         Doc.CursorRow = ly;
-        Doc.CursorCol = (lastCol < PAGE_COLS) ? lastCol : PAGE_COLS - 1;
+        Doc.CursorCol = (lastCol < lim) ? lastCol : lim - 1;
     }
     MarkFullRepaint();
 }
@@ -2127,10 +2149,10 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
                 Doc.CursorCol--;
             else if (Doc.CursorRow > 0) {
                 Doc.CursorRow--;
-                Doc.CursorCol = PAGE_COLS - 1;
+                Doc.CursorCol = PageColsActive() - 1;
             }
         } else if (key->ScanCode == SCAN_RIGHT) {
-            if (Doc.CursorCol < PAGE_COLS - 1)
+            if (Doc.CursorCol < PageColsActive() - 1)
                 Doc.CursorCol++;
             else if (Doc.CursorRow < PAGE_ROWS - 1) {
                 Doc.CursorRow++;
@@ -2166,14 +2188,14 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
         if (Doc.CursorCol > 0) {
             Doc.CursorCol--;
             Doc.Grid[Doc.CursorRow][Doc.CursorCol] = L' ';
-            Doc.Grid[Doc.CursorRow][PAGE_COLS] = 0;
+            Doc.Grid[Doc.CursorRow][PAGE_COLS_MAX] = 0;
             MarkDirtyRange(Doc.CursorRow, Doc.CursorRow);
             Doc.Modified = TRUE;
         } else if (Doc.CursorRow > 0) {
             Doc.CursorRow--;
-            Doc.CursorCol = PAGE_COLS - 1;
+            Doc.CursorCol = PageColsActive() - 1;
             Doc.Grid[Doc.CursorRow][Doc.CursorCol] = L' ';
-            Doc.Grid[Doc.CursorRow][PAGE_COLS] = 0;
+            Doc.Grid[Doc.CursorRow][PAGE_COLS_MAX] = 0;
             MarkDirtyRange(Doc.CursorRow, Doc.CursorRow + 1);
             Doc.Modified = TRUE;
         }
@@ -2187,7 +2209,7 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
 
         for (k = 0; k < 4; k++) {
             Doc.Grid[Doc.CursorRow][Doc.CursorCol] = L' ';
-            if (Doc.CursorCol < PAGE_COLS - 1)
+            if (Doc.CursorCol < PageColsActive() - 1)
                 Doc.CursorCol++;
             else if (Doc.CursorRow < PAGE_ROWS - 1) {
                 Doc.CursorRow++;
@@ -2196,7 +2218,7 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
             } else
                 break;
         }
-        Doc.Grid[Doc.CursorRow][PAGE_COLS] = 0;
+        Doc.Grid[Doc.CursorRow][PAGE_COLS_MAX] = 0;
         MarkDirtyRange(r0, r1);
         Doc.Modified = TRUE;
         return EFI_SUCCESS;
@@ -2220,16 +2242,16 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
         UINT32 r1 = Doc.CursorRow;
 
         Doc.Grid[Doc.CursorRow][Doc.CursorCol] = key->UnicodeChar;
-        if (Doc.CursorCol < PAGE_COLS - 1)
+        if (Doc.CursorCol < PageColsActive() - 1)
             Doc.CursorCol++;
         else if (Doc.CursorRow < PAGE_ROWS - 1) {
             Doc.CursorRow++;
             Doc.CursorCol = 0;
             r1 = Doc.CursorRow;
         }
-        Doc.Grid[r0][PAGE_COLS] = 0;
+        Doc.Grid[r0][PAGE_COLS_MAX] = 0;
         if (r1 != r0)
-            Doc.Grid[r1][PAGE_COLS] = 0;
+            Doc.Grid[r1][PAGE_COLS_MAX] = 0;
         MarkDirtyRange(r0, r1);
         Doc.Modified = TRUE;
     }
@@ -2411,7 +2433,8 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         }
     }
     
-    Print(L"Typewriter exited. Page rows: %u cols: %u\n", PAGE_ROWS, PAGE_COLS);
+    Print(L"Typewriter exited. Page rows: %u cols: %u (grid max %u)\n", PAGE_ROWS,
+          PageColsActive(), PAGE_COLS_MAX);
     
     return EFI_SUCCESS;
 }
