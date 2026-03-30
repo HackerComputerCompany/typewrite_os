@@ -117,6 +117,9 @@ ASCII key/value lines (also written after successful saves / shutdown as configu
 | `scale_twice` | 2–12 → scale = value/2 |
 | `bg`, `cursor`, `keydbg`, `linenums`, `slot` | As named |
 | **`gop_mode`** | GOP mode index to prefer at boot; **ignored** if `>= MaxMode` on this machine (prevents bad values from another PC) |
+| **`autoload`** | `1` (default): after the **first editor frame**, try to open **`Typewriter.txt`**. `0`: skip that open entirely (workaround if firmware **hangs** in `Open()` while a splash bitmap is still visible — e.g. some Lenovo laptops). |
+
+Boot **serial** lines **`[TW] first RenderDocument complete`** then **`[TW] boot autoload (post first frame)`** then **`[TW] load: Open(read)…`** help confirm where a stall happens.
 
 ### Status HUD (clock)
 

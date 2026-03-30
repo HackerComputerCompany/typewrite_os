@@ -62,6 +62,18 @@ The app can **cycle GOP modes** from **F1 → Resolution (try next)**. Flow:
 
 Earlier MacBook tests: tiny draws and some GOP paths behaved badly; **bitmap glyph decode bugs above are fixed** in software.
 
+### Boot / FAT `Open()` hangs (splash never clears)
+
+Some **PC firmware** (reported on **ThinkPad T14-class** UEFI) can **hard-lock** inside **`EFI_FILE.Open`** when the **splash bitmap** is still the last thing drawn and **`Typewriter.txt` is missing** (or the volume is slow to probe). Symptom: frozen splash, no transition to the editor.
+
+**Mitigation in `main.c`:**
+
+1. **`Typewriter.txt` autoload runs only after the first successful `RenderDocument`** (empty editor + status HUD), so the user should see a live frame before any **read-only `Open`** on the document path.
+2. **`KickFirmwareWatchdog()`** immediately before/after **`Open`** and **`Read`** in **`TypewriterLoadDocFromPath`**.
+3. Settings key **`autoload=0`** skips the boot **`Typewriter.txt`** open; add it to **`Typewriter.settings`** on the stick (or create that file from another machine) if the machine still hangs after the first frame.
+
+Serial **`[TW]`** traces: **`first RenderDocument complete`** → **`boot autoload (post first frame)`** → **`load: Open(read)…`** → **`Open ->`** status (or hang pinpointed between lines).
+
 ### Long-run stability (unexpected reboot after typing)
 
 Many PCs enable a **firmware watchdog** during boot that **resets** the machine if the EFI image never clears it. **`main.c`** calls **`BootServices->SetWatchdogTimer(0, …)`** (timeout **0** = off per UEFI spec) after init and **once per main-loop iteration** so long sessions do not trip a **~5 minute** timer.

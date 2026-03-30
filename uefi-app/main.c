@@ -5,7 +5,8 @@
  * - Bitmap font rendering (Virgil, Inter, + retro / typewriter faces)
  * - Typewriter-style input with visual feedback
  * - F1 settings menu; Letter 50–65 cols / 60 lines (1" margins) or 80 cols margins off;
- *   PgUp/PgDn pages; arrows move cursor; autoload Typewriter.txt only;
+ *   PgUp/PgDn pages; arrows move cursor; autoload Typewriter.txt after first frame
+ *   (avoids firmware hangs on Open); optional autoload=0 in Typewriter.settings;
  *   Settings → Resolution: cycle GOP modes with 10s try/confirm (ESC or timeout reverts)
  * - LCD-style clock HUD
  * - Multiple view modes
@@ -249,7 +250,9 @@ static EFI_GRAPHICS_OUTPUT_PROTOCOL *Gop;
 static EFI_HANDLE BootImageHandle;
 static FRAMEBUFFER *G_fb = NULL;
 static BOOLEAN G_isAppleHw = FALSE;
-static BOOLEAN TwLoggedFirstFrame = FALSE;
+static BOOLEAN BootFirstPaintDone = FALSE;
+static BOOLEAN BootAutoloadPending = TRUE;
+static BOOLEAN SettingsAutoloadTxt = TRUE;
 static CHAR16 FileOpBanner[96];
 static UINT32 FileOpBannerRemainUs = 0;
 static BOOLEAN HudNeedPaint = FALSE;
@@ -1887,7 +1890,8 @@ static VOID TypewriterApplySettingsLine(const CHAR8 *line, UINTN linelen) {
         else if (i == 8 && CompareMem(line, "gop_mode", 8) == 0) {
             SettingsGopMode = v;
             SettingsGopModeValid = TRUE;
-        }
+        } else if (i == 8 && CompareMem(line, "autoload", 8) == 0)
+            SettingsAutoloadTxt = (v != 0);
         return;
     }
 }
@@ -2008,6 +2012,8 @@ static VOID TypewriterSaveSettings(EFI_HANDLE img) {
     used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"linenums",
                                 ShowLineNumbers ? 1U : 0U);
     used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"slot", SaveSlotIndex);
+    used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"autoload",
+                                SettingsAutoloadTxt ? 1U : 0U);
     if (SettingsGopModeValid)
         used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"gop_mode", SettingsGopMode);
 
@@ -2122,13 +2128,23 @@ static EFI_STATUS TypewriterLoadDocFromPath(EFI_HANDLE img, const CHAR16 *filena
     if (EFI_ERROR(st) || li == NULL || li->DeviceHandle == NULL)
         return (st != EFI_SUCCESS) ? st : EFI_NOT_READY;
 
+    KickFirmwareWatchdog();
     root = LibOpenRoot(li->DeviceHandle);
     if (root == NULL)
         return EFI_NO_MEDIA;
 
+    /*
+     * Some laptop firmware (e.g. Lenovo) has been observed to hard-hang inside
+     * Open() for a missing file while the splash bitmap is still visible. Caller
+     * should run autoload only after a first successful editor frame — see boot loop.
+     */
+    Print(L"[TW] load: Open(read)…\r\n");
+    KickFirmwareWatchdog();
     st = uefi_call_wrapper(root->Open, 5, root, &f, (CHAR16 *)filename, EFI_FILE_MODE_READ, (UINT64)0);
+    KickFirmwareWatchdog();
     if (EFI_ERROR(st)) {
         uefi_call_wrapper(root->Close, 1, root);
+        Print(L"[TW] load: Open -> %r\r\n", st);
         return st;
     }
 
@@ -2140,7 +2156,9 @@ static EFI_STATUS TypewriterLoadDocFromPath(EFI_HANDLE img, const CHAR16 *filena
     }
 
     sz = DOC_FILE_MAX_BYTES;
+    KickFirmwareWatchdog();
     st = uefi_call_wrapper(f->Read, 3, f, &sz, buf);
+    KickFirmwareWatchdog();
     if (!EFI_ERROR(st)) {
         buf[sz] = 0;
         TypewriterLoadBytesIntoDoc(buf, sz);
@@ -2841,9 +2859,11 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
 
     Print(L"[TW] InitDocument\r\n");
     InitDocument();
-    Print(L"[TW] TypewriterAutoloadIfPresent\r\n");
-    TypewriterAutoloadIfPresent(ImageHandle);
-    Print(L"[TW] autoload returned\r\n");
+    /*
+     * Defer TypewriterAutoloadIfPresent until after the first RenderDocument (boot loop).
+     * Synchronous Open() on the boot volume has hung some machines with the splash still
+     * on screen; painting the editor first narrows diagnosis and matches user expectations.
+     */
     SessionElapsedUs = 0;
     LastHudSessionMinute = (UINT32)-1;
     HudNeedPaint = TRUE;
@@ -2851,10 +2871,28 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     Print(L"[TW] entering main loop (serial: lines tagged [TW])\r\n");
     while (Running) {
         KickFirmwareWatchdog();
+        if (BootFirstPaintDone && BootAutoloadPending) {
+            BootAutoloadPending = FALSE;
+            Print(L"[TW] boot autoload (post first frame)\r\n");
+            KickFirmwareWatchdog();
+            if (SettingsAutoloadTxt) {
+                TypewriterAutoloadIfPresent(ImageHandle);
+                Print(L"[TW] autoload returned\r\n");
+            } else {
+                Print(L"[TW] autoload skipped (autoload=0 in settings)\r\n");
+                RamPageCount = 1;
+                ActiveRamPageIndex = 0;
+                SaveSlotIndex = 0;
+                CopyDocToRamPage(0);
+            }
+            KickFirmwareWatchdog();
+            Doc.Modified = TRUE;
+            HudNeedPaint = TRUE;
+        }
         if (Doc.Modified || HudNeedPaint) {
             RenderDocument(&fb);
-            if (!TwLoggedFirstFrame) {
-                TwLoggedFirstFrame = TRUE;
+            if (!BootFirstPaintDone) {
+                BootFirstPaintDone = TRUE;
                 Print(L"[TW] first RenderDocument complete\r\n");
             }
             Doc.Modified = FALSE;
