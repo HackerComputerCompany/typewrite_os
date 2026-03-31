@@ -43,6 +43,7 @@ Invalid PE output used to make the firmware report **“Unsupported format”**.
 |------|-----------|
 | `uefi-app/main.c` | Main UEFI application |
 | `uefi-app/Makefile` | EFI build; default **ship** (git); `make all` for compile only |
+| `uefi-vi/` | **`UefiVi.efi`** — text-console vi-like editor (no GOP); `make all` only |
 | `fonts/README.md` | **Nine UI fonts** (F2): sources, licenses, `convert_font.py` workflow |
 | `fonts/*.h`, `fonts/*.ttf` | Bitmap headers + upstream TTFs (Virgil, Inter, six OFL/Apache faces, etc.) |
 | `uefi-app/fs/` | QEMU FAT contents (e.g. copied `Typewriter.efi`) |
