@@ -13,9 +13,9 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") [options] /dev/sdX | /dev/nvme0n1
 
-  Builds the UEFI app (unless --no-build), syncs uefi-app/fs/Typewriter.efi,
-  then runs install-uefi-app.sh to wipe the target disk, create GPT + FAT32 ESP,
-  and install Typewriter.efi as efi/boot/bootx64.efi.
+  Builds Typewriter, UefiVi, and BootMenu (unless --no-build), syncs
+  uefi-app/fs/Typewriter.efi, then runs install-uefi-app.sh to wipe the target
+  disk and install efi/boot/bootx64.efi (menu) plus Typewriter.efi and UefiVi.efi.
 
 Options:
   --no-build   Skip "make -C uefi-app all" (use existing uefi-app/Typewriter.efi)
@@ -53,12 +53,22 @@ fi
 DEVICE="$1"
 
 if [[ "$NO_BUILD" -eq 0 ]]; then
-    echo "Building uefi-app (make all)..."
+    echo "Building uefi-app, uefi-vi, uefi-menu..."
     make -C "$ROOT/uefi-app" all
+    make -C "$ROOT/uefi-vi" all
+    make -C "$ROOT/uefi-menu" all
 fi
 
 if [[ ! -f "$ROOT/uefi-app/Typewriter.efi" ]]; then
     echo "Error: missing $ROOT/uefi-app/Typewriter.efi" >&2
+    exit 1
+fi
+if [[ ! -f "$ROOT/uefi-vi/UefiVi.efi" ]]; then
+    echo "Error: missing $ROOT/uefi-vi/UefiVi.efi" >&2
+    exit 1
+fi
+if [[ ! -f "$ROOT/uefi-menu/BootMenu.efi" ]]; then
+    echo "Error: missing $ROOT/uefi-menu/BootMenu.efi" >&2
     exit 1
 fi
 

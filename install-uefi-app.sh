@@ -6,22 +6,26 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-UEFI_APP="$SCRIPT_DIR/uefi-app/fs/Typewriter.efi"
+TYPEWRITER_EFI="$SCRIPT_DIR/uefi-app/Typewriter.efi"
+BOOT_MENU_EFI="$SCRIPT_DIR/uefi-menu/BootMenu.efi"
+UEFI_VI_EFI="$SCRIPT_DIR/uefi-vi/UefiVi.efi"
 
 usage() {
     cat <<EOF
 Usage: $(basename "$0") [options] /dev/sdX | /dev/nvme0n1 | /dev/mmcblk0
 
-  Wipes the target disk, creates GPT + FAT32 ESP, installs Typewriter.efi as
-  efi/boot/bootx64.efi (and Typewriter.efi).
+  Wipes the target disk, creates GPT + FAT32 ESP, installs:
+    efi/boot/bootx64.efi   → BootMenu.efi (chooser: typewriter vs UefiVi)
+    efi/boot/Typewriter.efi
+    efi/boot/UefiVi.efi
 
 Options:
   --yes, -y    Skip confirmation prompt (destructive)
   -h, --help   This help
 
-Build / refresh the .efi first, e.g.:
-  make -C uefi-app all && cp -f uefi-app/Typewriter.efi uefi-app/fs/Typewriter.efi
-Or use: ./write-typewriter-to-usb.sh /dev/sdX
+Build first (all three binaries), e.g.:
+  make -C uefi-app all && make -C uefi-vi all && make -C uefi-menu all
+Or: ./write-typewriter-to-usb.sh /dev/sdX
 EOF
 }
 
@@ -35,12 +39,19 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ ! -f "$UEFI_APP" ]]; then
-    echo "Error: Typewriter.efi not found at $UEFI_APP"
-    echo "Build the app first with:"
+if [[ ! -f "$TYPEWRITER_EFI" ]]; then
+    echo "Error: Typewriter.efi not found at $TYPEWRITER_EFI"
     echo "  make -C uefi-app all"
-    echo "  cp -f uefi-app/Typewriter.efi uefi-app/fs/Typewriter.efi"
-    echo "Or run: ./write-typewriter-to-usb.sh /dev/sdX"
+    exit 1
+fi
+if [[ ! -f "$BOOT_MENU_EFI" ]]; then
+    echo "Error: BootMenu.efi not found at $BOOT_MENU_EFI"
+    echo "  make -C uefi-menu all"
+    exit 1
+fi
+if [[ ! -f "$UEFI_VI_EFI" ]]; then
+    echo "Error: UefiVi.efi not found at $UEFI_VI_EFI"
+    echo "  make -C uefi-vi all"
     exit 1
 fi
 
@@ -75,8 +86,13 @@ echo "=========================================="
 echo "Typewrite OS - UEFI App USB Installer"
 echo "=========================================="
 echo ""
-echo "Source: $UEFI_APP"
-file "$UEFI_APP"
+echo "Sources:"
+echo "  Boot menu:  $BOOT_MENU_EFI"
+file "$BOOT_MENU_EFI"
+echo "  Typewriter: $TYPEWRITER_EFI"
+file "$TYPEWRITER_EFI"
+echo "  UefiVi:     $UEFI_VI_EFI"
+file "$UEFI_VI_EFI"
 echo ""
 echo "Target disk: $DEVICE  (ESP will be $PART)"
 echo ""
@@ -121,15 +137,13 @@ sudo mount "$PART" "$MOUNT_DIR"
 echo "Installing Typewrite OS..."
 sudo mkdir -p "$MOUNT_DIR/efi/boot"
 
-# Copy the UEFI application
-sudo cp "$UEFI_APP" "$MOUNT_DIR/efi/boot/Typewriter.efi"
+sudo cp "$BOOT_MENU_EFI" "$MOUNT_DIR/efi/boot/bootx64.efi"
+sudo cp "$TYPEWRITER_EFI" "$MOUNT_DIR/efi/boot/Typewriter.efi"
+sudo cp "$UEFI_VI_EFI" "$MOUNT_DIR/efi/boot/UefiVi.efi"
 
-# Also copy as bootx64.efi for direct boot
-sudo cp "$UEFI_APP" "$MOUNT_DIR/efi/boot/bootx64.efi"
-
-# Create startup script
+# UEFI Shell convenience: runs boot menu (same as firmware default path)
 sudo tee "$MOUNT_DIR/startup.nsh" > /dev/null << 'EOF'
-\efi\boot\Typewriter.efi
+\efi\boot\bootx64.efi
 EOF
 
 # Optional rEFInd-style menu (no icon path — avoids missing file on stick)
@@ -138,8 +152,16 @@ timeout 20
 default 0
 scanfor Manual,External
 
-menuentry "Typewrite OS" {
+menuentry "Typewrite OS (boot menu)" {
+    loader /efi/boot/bootx64.efi
+}
+
+menuentry "Typewrite graphical" {
     loader /efi/boot/Typewriter.efi
+}
+
+menuentry "UefiVi console editor" {
+    loader /efi/boot/UefiVi.efi
 }
 EOF
 

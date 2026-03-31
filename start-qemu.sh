@@ -22,24 +22,24 @@ SERIAL_STDIO=0
 usage() {
     cat <<'EOF'
 NAME
-    start-qemu.sh — build Typewriter.efi and run it under QEMU with OVMF (UEFI).
+    start-qemu.sh — build Typewrite UEFI apps and run them under QEMU + OVMF.
 
 SYNOPSIS
     ./start-qemu.sh [OPTION]...
 
 DESCRIPTION
     Runs from the repository root. By default:
-      1. make -C uefi-app all      (compile only; use bare make in uefi-app to commit+push)
-      2. cp Typewriter.efi         → uefi-app/fs/ (staging folder for the FAT image)
-      3. Builds/updates a real writable FAT image (uefi-app/twfs.img)
-      3. Ensures uefi-app/fs/startup.nsh runs Typewriter.efi in the UEFI Shell
+      1. make -C uefi-app, uefi-vi, uefi-menu   (compile only for uefi-app unless you use its ship target)
+      2. Stage uefi-app/fs/EFI/BOOT/bootx64.efi (BootMenu), Typewriter.efi, UefiVi.efi
+         (+ root Typewriter.efi copy, startup.nsh → efi\\boot\\bootx64.efi)
+      3. Build/update writable FAT image (uefi-app/twfs.img)
       4. Launches qemu-system-x86_64 with OVMF pflash + FAT + serial log
 
     Firmware: read-only code from the distro (or OVMF_CODE); writable NVRAM
     in ./ovmf_vars.fd (created from OVMF_VARS.fd template when missing).
 
 OPTIONS
-    --no-build       Skip make; use existing uefi-app/Typewriter.efi (must exist).
+    --no-build       Skip make; need existing Typewriter.efi, UefiVi.efi, BootMenu.efi.
     --fresh-vars     Delete ./ovmf_vars.fd and recreate from the template (reset
                      NVRAM / boot entries).
     --fresh-fs       Recreate uefi-app/twfs.img from scratch (wipes saved pages/settings).
@@ -66,8 +66,10 @@ ENVIRONMENT
                     its size doesn't match the system OVMF_VARS.fd template.
 
 FILES (paths relative to repo root)
-    uefi-app/Typewriter.efi   Built binary (make output).
-    uefi-app/fs/              Staging folder (Typewriter.efi + startup.nsh + any test files).
+    uefi-app/Typewriter.efi   Graphical app (make output).
+    uefi-vi/UefiVi.efi       Console editor.
+    uefi-menu/BootMenu.efi   Text boot menu.
+    uefi-app/fs/            Staging for twfs.img (EFI/BOOT/*.efi + startup.nsh + tests).
     uefi-app/twfs.img          Writable FAT image used by QEMU (real disk, persistent).
     ovmf_vars.fd              Writable UEFI variable store (git may track or ignore).
     uefi-app/serial.log       Serial port output from the guest.
@@ -248,8 +250,10 @@ if [[ ! -d "$UEFI_DIR" ]]; then
 fi
 
 if [[ "$DO_BUILD" -eq 1 ]]; then
-    echo "Building UEFI app (make -C uefi-app all)..."
+    echo "Building uefi-app, uefi-vi, uefi-menu..."
     make -C "$UEFI_DIR" all
+    make -C "${SCRIPT_DIR}/uefi-vi" all
+    make -C "${SCRIPT_DIR}/uefi-menu" all
 else
     echo "Skipping build (--no-build)."
 fi
@@ -259,14 +263,21 @@ if [[ ! -f "$EFI_BUILT" ]]; then
     exit 1
 fi
 
+MENU_BUILT="${SCRIPT_DIR}/uefi-menu/BootMenu.efi"
+VI_BUILT="${SCRIPT_DIR}/uefi-vi/UefiVi.efi"
+if [[ ! -f "$MENU_BUILT" || ! -f "$VI_BUILT" ]]; then
+    echo "Error: need $MENU_BUILT and $VI_BUILT (run without --no-build or: make -C uefi-menu all && make -C uefi-vi all)" >&2
+    exit 1
+fi
+
+mkdir -p "${UEFI_DIR}/fs/EFI/BOOT"
+cp -f "$MENU_BUILT" "${UEFI_DIR}/fs/EFI/BOOT/bootx64.efi"
+cp -f "$EFI_BUILT" "${UEFI_DIR}/fs/EFI/BOOT/Typewriter.efi"
+cp -f "$VI_BUILT" "${UEFI_DIR}/fs/EFI/BOOT/UefiVi.efi"
 mkdir -p "${UEFI_DIR}/fs"
 cp -f "$EFI_BUILT" "$EFI_IN_FS"
-echo "Synced $(basename "$EFI_BUILT") -> $EFI_IN_FS"
-
-if [[ ! -f "$STARTUP_NSH" ]]; then
-    echo "Typewriter.efi" >"$STARTUP_NSH"
-    echo "Created $STARTUP_NSH (auto-runs Typewriter.efi in UEFI Shell)"
-fi
+printf '%s\r\n' 'efi\boot\bootx64.efi' >"$STARTUP_NSH"
+echo "Synced FAT staging: EFI/BOOT/bootx64.efi (BootMenu), Typewriter.efi, UefiVi.efi; startup.nsh → menu"
 
 ensure_fat_image
 
