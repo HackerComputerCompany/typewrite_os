@@ -38,7 +38,7 @@ Start in fullscreen (EWMH `_NET_WM_STATE_FULLSCREEN`; applied after the window m
 - **F3**: cycle cursor modes (bar, blink bar, block, blink block, hidden)
 - **F4**: cycle background color schemes (UEFI set)
 - **F5**: toggle **line numbers** in the left gutter (muted ink, UEFI-style)
-- **F6**: toggle **page margins** — on: Letter-style inset “paper” on a dark surround; off: use the full window width for columns (centered block)
+- **F6**: toggle **page margins** — on: Letter-style inset “paper” on a dark surround; off: up to **80** columns (UEFI full-width mode), centered in the window
 - **F7**: cycle **characters per line** **50–65** when margins are on (default **58**, matching UEFI `cols_margined`)
 - **F11**: toggle fullscreen via EWMH — **often captured by the window manager** before this client sees it; use **`--fullscreen`** or your WM’s own fullscreen binding if F11 does nothing
 - **Ctrl+S**: save (first save defaults to `Typewriter.txt` in the current directory)

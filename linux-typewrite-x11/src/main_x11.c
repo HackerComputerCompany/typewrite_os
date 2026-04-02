@@ -39,6 +39,7 @@ static const char *const kBgLabels[10] = {
 #define COLS_MARGINED_MIN  50
 #define COLS_MARGINED_MAX  65
 #define COLS_MARGINED_DEFAULT 58
+#define PAGE_COLS_FULL_WIDTH 80 /* uefi-app/main.c active cols when margins off */
 
 typedef struct {
     int margin_px;
@@ -98,6 +99,8 @@ static void compute_view_layout(int win_w, int win_h, const TwBitmapFont *font, 
         L->rows = max_rows;
     } else {
         int max_cols = (win_w - gutter_px) / cell_w;
+        if (max_cols > PAGE_COLS_FULL_WIDTH)
+            max_cols = PAGE_COLS_FULL_WIDTH;
         if (max_cols < 1)
             max_cols = 1;
 
