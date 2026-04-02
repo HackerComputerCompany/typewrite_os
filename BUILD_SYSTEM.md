@@ -308,6 +308,7 @@ uefi-app/
 
 ## Changelog
 
+- **2026-04-02**: `linux-typewrite-x11/`: render with the **UEFI bitmap font set** (`fonts/*.h`), default **Special Elite**, preserve buffer across resizes, add save + 30s autosave, and add **F11 fullscreen** + cursor mode cycling.
 - **2026-04-02**: Boot menu now includes **TIC-80** (`TIC80.efi`) as menu item **[3]**; QEMU + USB install scripts optionally build/stage/copy `TIC80.efi` when TIC-80 UEFI static libs are present.
 - **2026-04-02**: Added Linux bring-up apps: `linux-typewrite/` (fbdev `/dev/fb0`) and `linux-typewrite-x11/` (Xlib) sharing a small text-buffer core + 8x8 font.
 - **2026-03-29**: **`start-qemu.sh`**: pick **KVM vs TCG** from **`/dev/kvm`** permissions (avoids KVM permission errors); **`QEMU_ACCEL`** override; **BUILD_SYSTEM.md** KVM group instructions.
