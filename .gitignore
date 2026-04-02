@@ -17,6 +17,7 @@
 /linux-typewrite/fbtypewrite
 /linux-typewrite-x11/x11typewrite
 /tic80-uefi/TIC80.efi
+/linux-typewrite-x11/Typewriter.txt
 
 # Build artifacts
 *.o
