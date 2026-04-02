@@ -2,7 +2,7 @@
 
 Simple X11/Xlib version of the typewrite bring-up app.
 
-It **reuses** the shared core and tiny font from `../linux-typewrite/src/`.
+It **reuses** the shared core and UEFI bitmap fonts from `../linux-typewrite/src/` and `fonts/*.h` (via gnu-efi include path in the `Makefile`).
 
 ### Build
 
@@ -18,19 +18,32 @@ make -C linux-typewrite-x11
 ./linux-typewrite-x11/x11typewrite
 ```
 
-Or choose a file:
+Choose a file:
 
 ```bash
 ./linux-typewrite-x11/x11typewrite -f MyDraft.txt
 ```
 
-Keys:
+Start in fullscreen (EWMH `_NET_WM_STATE_FULLSCREEN`; applied after the window maps):
+
+```bash
+./linux-typewrite-x11/x11typewrite --fullscreen
+```
+
+### Keys
+
 - **Esc**: exit
-- **F11**: toggle fullscreen
-- **F2**: cycle bundled fonts (same set as UEFI app)
+- **F1**: help (overlay)
+- **F2**: cycle bundled fonts (same set as the UEFI app)
 - **F3**: cycle cursor modes (bar, blink bar, block, blink block, hidden)
-- **Ctrl+S**: save (first save sets `Typewriter.txt` in current directory)
+- **F4**: cycle background color schemes (UEFI set)
+- **F5**: toggle **line numbers** in the left gutter (muted ink, UEFI-style)
+- **F6**: toggle **page margins** — on: Letter-style inset “paper” on a dark surround; off: use the full window width for columns (centered block)
+- **F7**: cycle **characters per line** **50–65** when margins are on (default **58**, matching UEFI `cols_margined`)
+- **F11**: toggle fullscreen via EWMH — **often captured by the window manager** before this client sees it; use **`--fullscreen`** or your WM’s own fullscreen binding if F11 does nothing
+- **Ctrl+S**: save (first save defaults to `Typewriter.txt` in the current directory)
 - **Backspace**: delete
 - **Enter**: newline
 - Printable ASCII: inserts into the buffer
 
+Autoloads `Typewriter.txt` if present when no `-f`/positional file is given; dirty buffers autosave every 30 seconds when a filename is set.
