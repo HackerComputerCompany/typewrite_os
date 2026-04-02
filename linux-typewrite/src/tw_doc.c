@@ -75,6 +75,7 @@ int twdoc_init(TwDoc *d, int cols, int rows) {
     d->cols = cols;
     d->rows = rows;
     d->cap_pages = 0;
+    d->insert_mode = 1;
     return twdoc_grow(d, 1);
 }
 
@@ -276,7 +277,10 @@ void twdoc_putc(TwDoc *d, char c) {
     if ((unsigned char)c < 32)
         return;
 
-    tw->cells[(size_t)tw->cy * (size_t)tw->cols + (size_t)tw->cx] = c;
+    char *row = tw->cells + (size_t)tw->cy * (size_t)tw->cols;
+    if (d->insert_mode && tw->cx < tw->cols - 1)
+        memmove(row + tw->cx + 1, row + tw->cx, (size_t)(tw->cols - tw->cx - 1));
+    row[tw->cx] = c;
     tw->cx++;
     if (tw->cx >= tw->cols) {
         tw->cx = 0;
@@ -303,7 +307,10 @@ void twdoc_backspace(TwDoc *d) {
         return;
     if (tw->cx > 0) {
         tw->cx--;
-        tw->cells[(size_t)tw->cy * (size_t)tw->cols + (size_t)tw->cx] = ' ';
+        char *row = tw->cells + (size_t)tw->cy * (size_t)tw->cols;
+        if (d->insert_mode && tw->cx < tw->cols - 1)
+            memmove(row + tw->cx, row + tw->cx + 1, (size_t)(tw->cols - tw->cx - 1));
+        row[tw->cols - 1] = ' ';
         return;
     }
     if (tw->cy > 0) {
@@ -327,6 +334,20 @@ void twdoc_backspace(TwDoc *d) {
     }
     tw->cx = 0;
     tw->cy = 0;
+}
+
+void twdoc_delete_forward(TwDoc *d) {
+    TwCore *tw = twdoc_cur(d);
+    if (!tw)
+        return;
+    char *row = tw->cells + (size_t)tw->cy * (size_t)tw->cols;
+    if (d->insert_mode && tw->cx < tw->cols - 1) {
+        memmove(row + tw->cx, row + tw->cx + 1, (size_t)(tw->cols - tw->cx - 1));
+        row[tw->cols - 1] = ' ';
+    } else {
+        if (tw->cx < tw->cols)
+            row[tw->cx] = ' ';
+    }
 }
 
 int twdoc_save(const char *path, const TwDoc *d) {

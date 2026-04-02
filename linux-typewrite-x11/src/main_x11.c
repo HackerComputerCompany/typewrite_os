@@ -357,6 +357,111 @@ static void net_wm_state(Display *dpy, int screen, Window win, Atom a_wm_state, 
     XFlush(dpy);
 }
 
+static int row_end_cx_for_move(const TwCore *tw, int row) {
+    int c = tw->cols - 1;
+    while (c >= 0 && tw->cells[(size_t)row * (size_t)tw->cols + (size_t)c] == ' ')
+        c--;
+    return (c < 0) ? 0 : c + 1;
+}
+
+static void doc_cursor_left(TwDoc *d) {
+    TwCore *t = twdoc_cur(d);
+    if (!t)
+        return;
+    if (t->cx > 0) {
+        t->cx--;
+        return;
+    }
+    if (t->cy > 0) {
+        t->cy--;
+        t->cx = t->cols - 1;
+        return;
+    }
+    if (d->cur_page > 0) {
+        d->cur_page--;
+        t = twdoc_cur(d);
+        t->cy = t->rows - 1;
+        t->cx = t->cols - 1;
+    }
+}
+
+static void doc_cursor_right(TwDoc *d) {
+    TwCore *t = twdoc_cur(d);
+    if (!t)
+        return;
+    if (t->cx < t->cols - 1) {
+        t->cx++;
+        return;
+    }
+    if (t->cy < t->rows - 1) {
+        t->cy++;
+        t->cx = 0;
+        return;
+    }
+    if (d->cur_page < d->n_pages - 1) {
+        d->cur_page++;
+        t = twdoc_cur(d);
+        t->cy = 0;
+        t->cx = 0;
+    }
+}
+
+static void doc_cursor_up(TwDoc *d) {
+    TwCore *t = twdoc_cur(d);
+    if (!t)
+        return;
+    if (t->cy > 0) {
+        t->cy--;
+        return;
+    }
+    if (d->cur_page > 0) {
+        d->cur_page--;
+        t = twdoc_cur(d);
+        t->cy = t->rows - 1;
+    }
+}
+
+static void doc_cursor_down(TwDoc *d) {
+    TwCore *t = twdoc_cur(d);
+    if (!t)
+        return;
+    if (t->cy < t->rows - 1) {
+        t->cy++;
+        return;
+    }
+    if (d->cur_page < d->n_pages - 1) {
+        d->cur_page++;
+        t = twdoc_cur(d);
+        t->cy = 0;
+    }
+}
+
+static void doc_cursor_home(TwDoc *d) {
+    TwCore *t = twdoc_cur(d);
+    if (t)
+        t->cx = 0;
+}
+
+static void doc_cursor_end(TwDoc *d) {
+    TwCore *t = twdoc_cur(d);
+    if (!t)
+        return;
+    int x = row_end_cx_for_move(t, t->cy);
+    if (x >= t->cols)
+        x = t->cols - 1;
+    t->cx = x;
+}
+
+static void doc_page_prev(TwDoc *d) {
+    if (d->cur_page > 0)
+        d->cur_page--;
+}
+
+static void doc_page_next(TwDoc *d) {
+    if (d->cur_page < d->n_pages - 1)
+        d->cur_page++;
+}
+
 int main(int argc, char **argv) {
     Display *dpy = NULL;
     int screen = 0;
@@ -429,7 +534,7 @@ int main(int argc, char **argv) {
     int page_margins = 1;
     LineNumMode line_num_mode = LINE_NUM_OFF;
     int cols_margined = COLS_MARGINED_DEFAULT;
-    int typewriter_mode = 0;
+    int typewriter_mode = 1;
 
     ViewLayout init_lay;
     compute_view_layout(w, h, font, page_margins, line_num_mode, cols_margined, &init_lay);
@@ -530,6 +635,36 @@ int main(int argc, char **argv) {
                 if (ks == XK_BackSpace) {
                     twdoc_backspace(&doc);
                     dirty = 1;
+                } else if (ks == XK_Delete || ks == XK_KP_Delete) {
+                    twdoc_delete_forward(&doc);
+                    dirty = 1;
+                } else if (ks == XK_Left || ks == XK_KP_Left) {
+                    doc_cursor_left(&doc);
+                    dirty = 1;
+                } else if (ks == XK_Right || ks == XK_KP_Right) {
+                    doc_cursor_right(&doc);
+                    dirty = 1;
+                } else if (ks == XK_Up || ks == XK_KP_Up) {
+                    doc_cursor_up(&doc);
+                    dirty = 1;
+                } else if (ks == XK_Down || ks == XK_KP_Down) {
+                    doc_cursor_down(&doc);
+                    dirty = 1;
+                } else if (ks == XK_Home || ks == XK_KP_Home) {
+                    doc_cursor_home(&doc);
+                    dirty = 1;
+                } else if (ks == XK_End || ks == XK_KP_End) {
+                    doc_cursor_end(&doc);
+                    dirty = 1;
+                } else if (ks == XK_Page_Up || ks == XK_KP_Page_Up) {
+                    doc_page_prev(&doc);
+                    dirty = 1;
+                } else if (ks == XK_Page_Down || ks == XK_KP_Page_Down) {
+                    doc_page_next(&doc);
+                    dirty = 1;
+                } else if (ks == XK_Insert) {
+                    doc.insert_mode = !doc.insert_mode;
+                    dirty = 1;
                 } else if (ks == XK_Tab) {
                     for (int ti = 0; ti < 4; ti++)
                         twdoc_putc(&doc, ' ');
@@ -599,7 +734,7 @@ int main(int argc, char **argv) {
             int step = (int)font->line_box;
             int inner = 8;
             int bw = (int)(font->max_width + 1) * 54 + inner * 2;
-            int bh = step * 17 + inner * 2;
+            int bh = step * 24 + inner * 2;
             int bx = (w > bw) ? (w - bw) / 2 : 10;
             int by = (h > bh) ? (h - bh) / 2 : 10;
 
@@ -631,7 +766,11 @@ int main(int argc, char **argv) {
                 draw_text_mono(back, w, h, x0, y0, font, b, fg, bg);
             }
             y0 += step;
-            draw_text_mono(back, w, h, x0, y0, font, "F8    typewriter view + red typing line", fg, bg); y0 += step;
+            draw_text_mono(back, w, h, x0, y0, font, "F8    typewriter view (default on)", fg, bg); y0 += step;
+            draw_text_mono(back, w, h, x0, y0, font, "Arrows move (cross pages at edges)", fg, bg); y0 += step;
+            draw_text_mono(back, w, h, x0, y0, font, "Home/End  line; PgUp/PgDn  page", fg, bg); y0 += step;
+            draw_text_mono(back, w, h, x0, y0, font, "Insert  toggle insert / typeover", fg, bg); y0 += step;
+            draw_text_mono(back, w, h, x0, y0, font, "Delete  delete forward", fg, bg); y0 += step;
             draw_text_mono(back, w, h, x0, y0, font, "F11   fullscreen (often taken by WM)", fg, bg); y0 += step;
             draw_text_mono(back, w, h, x0, y0, font, "      use: x11typewrite --fullscreen", fg, bg); y0 += step;
             draw_text_mono(back, w, h, x0, y0, font, "Ctrl+S save (autosave every 30s after)", fg, bg); y0 += step;

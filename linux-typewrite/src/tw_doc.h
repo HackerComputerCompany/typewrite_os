@@ -17,6 +17,7 @@ typedef struct {
     int cur_page;
     int cols;
     int rows;
+    int insert_mode; /* non-zero: insert (shift line right); 0: typeover */
 } TwDoc;
 
 int twdoc_init(TwDoc *d, int cols, int rows);
@@ -34,6 +35,7 @@ int twdoc_num_pages(const TwDoc *d);
 void twdoc_putc(TwDoc *d, char c);
 void twdoc_newline(TwDoc *d);
 void twdoc_backspace(TwDoc *d);
+void twdoc_delete_forward(TwDoc *d);
 
 void twdoc_clear(TwDoc *d);
 

@@ -308,6 +308,7 @@ uefi-app/
 
 ## Changelog
 
+- **2026-04-02**: `linux-typewrite-x11/`: **typewriter view on by default**; **arrow/Home/End/PgUp/PgDn** cursor movement across pages; **Insert** toggles **insert** vs **typeover** (default insert; line shift in `tw_doc`); **Delete** forward. README notes **PDF export** as planned.
 - **2026-04-02**: `linux-typewrite/` **`tw_doc`**: multi-page **`TwDoc`** (grid per page, `\f` between pages on save); **`linux-typewrite-x11`** uses it for **Page N of M** footer and to fix end-of-grid render glitches (no `scroll_up` past the last row).
 - **2026-04-02**: `linux-typewrite-x11/`: **Tab** inserts **four spaces**; **F5** cycles gutter **off** / **ascending line index** / **descending rows-remaining** (per buffer row).
 - **2026-04-02**: `linux-typewrite-x11/`: **F8** **typewriter view** — bottom-anchored typing with lines scrolling upward; **red horizontal rule** on the active row (drawn after the cursor).
