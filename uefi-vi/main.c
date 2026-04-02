@@ -7,16 +7,21 @@
 #include <efi.h>
 #include <efilib.h>
 #include <eficon.h>
+#include <efiprot.h>
 
 #define MAX_LINES   128
 #define MAX_COL     240
 #define FILE_CAP    (256 * 1024)
 #define COLON_MAX   32
+#define MAX_BROWSER_ENTRIES 96
+#define MAX_BROWSER_NAME    72
+#define BROWSER_READ_CHUNK  4096
 
 typedef enum {
     MODE_NORMAL = 0,
     MODE_INSERT,
-    MODE_COLON
+    MODE_COLON,
+    MODE_BROWSER
 } EDITOR_MODE;
 
 static CHAR16 Lines[MAX_LINES][MAX_COL + 1];
@@ -28,13 +33,22 @@ static EDITOR_MODE Mode = MODE_NORMAL;
 static BOOLEAN Dirty = FALSE;
 static BOOLEAN Running = TRUE;
 
-static CHAR16 FilePath[64];
+static CHAR16 FilePath[128];
+
+static CHAR16 BrowserCwd[120];
+static CHAR16 BrowserNames[MAX_BROWSER_ENTRIES][MAX_BROWSER_NAME];
+static BOOLEAN BrowserIsDir[MAX_BROWSER_ENTRIES];
+static UINT32 BrowserCount;
+static UINT32 BrowserSel;
+static UINT32 BrowserScroll;
 static CHAR16 ColonBuf[COLON_MAX];
 static UINT32 ColonLen;
 
 static UINT32 TermCols = 80;
 static UINT32 TermRows = 25;
 static EFI_HANDLE GImage;
+
+static EFI_STATUS LoadFile(EFI_HANDLE img);
 
 static VOID line_clear(UINT32 row) {
     UINT32 c;
@@ -148,7 +162,7 @@ static VOID DrawScreen(VOID) {
         Print(L"%s\r\n", sts);
     } else {
         UnicodeSPrint(sts, sizeof(sts),
-                      L"-- %s -- %s %s  [hjkl i a x :  ESC]",
+                      L"-- %s -- %s %s  [hjkl i a x o F2 :e :  ESC]",
                       (Mode == MODE_INSERT) ? L"INSERT" : L"NORMAL",
                       Dirty ? L"[+]" : L"",
                       FilePath);
@@ -194,6 +208,253 @@ static VOID ParseLoadOptionsFilename(EFI_HANDLE img, CHAR16 *out, UINTN outChars
 
     if (j == 0 || TokenLooksLikeEfiBinary(out))
         StrCpy(out, L"EDIT.TXT");
+}
+
+static VOID BrowserGoParent(VOID) {
+    INTN i;
+    UINTN n = StrLen(BrowserCwd);
+
+    if (n == 0)
+        return;
+    for (i = (INTN)n - 1; i >= 0; i--) {
+        if (BrowserCwd[i] == L'\\' || BrowserCwd[i] == L'/') {
+            BrowserCwd[i] = 0;
+            return;
+        }
+    }
+    BrowserCwd[0] = 0;
+}
+
+static BOOLEAN BrowserEntryOrderOk(UINT32 i, UINT32 j) {
+    /* true if entry i should appear before j (dirs first, then name). */
+    if (BrowserIsDir[i] && !BrowserIsDir[j])
+        return TRUE;
+    if (!BrowserIsDir[i] && BrowserIsDir[j])
+        return FALSE;
+    return StrCmp(BrowserNames[i], BrowserNames[j]) <= 0;
+}
+
+static VOID BrowserSwapEntries(UINT32 i, UINT32 j) {
+    CHAR16 tn[MAX_BROWSER_NAME];
+    BOOLEAN tb;
+
+    CopyMem(tn, BrowserNames[i], sizeof(tn));
+    tb = BrowserIsDir[i];
+    CopyMem(BrowserNames[i], BrowserNames[j], sizeof(BrowserNames[i]));
+    BrowserIsDir[i] = BrowserIsDir[j];
+    CopyMem(BrowserNames[j], tn, sizeof(BrowserNames[j]));
+    BrowserIsDir[j] = tb;
+}
+
+static VOID BrowserSortEntries(VOID) {
+    UINT32 i, j, k;
+
+    for (i = 0; i < BrowserCount; i++) {
+        j = i;
+        for (k = i + 1; k < BrowserCount; k++) {
+            if (!BrowserEntryOrderOk(j, k))
+                j = k;
+        }
+        if (j != i)
+            BrowserSwapEntries(i, j);
+    }
+}
+
+static VOID BrowserEnsureScroll(UINT32 viewH) {
+    if (viewH < 1)
+        viewH = 1;
+    if (BrowserSel < BrowserScroll)
+        BrowserScroll = BrowserSel;
+    if (BrowserCount > 0 && BrowserSel >= BrowserScroll + viewH)
+        BrowserScroll = BrowserSel - viewH + 1;
+}
+
+static EFI_STATUS BrowserRefresh(VOID) {
+    EFI_GUID g = EFI_LOADED_IMAGE_PROTOCOL_GUID;
+    EFI_LOADED_IMAGE_PROTOCOL *li = NULL;
+    EFI_FILE *root = NULL;
+    EFI_FILE *dir = NULL;
+    EFI_STATUS st;
+    UINT8 *InfoBuf = NULL;
+    UINTN ReadSize;
+
+    BrowserCount = 0;
+    st = uefi_call_wrapper(BS->HandleProtocol, 3, GImage, &g, (VOID **)&li);
+    if (EFI_ERROR(st) || li == NULL || li->DeviceHandle == NULL)
+        return EFI_NOT_READY;
+
+    root = LibOpenRoot(li->DeviceHandle);
+    if (root == NULL)
+        return EFI_NO_MEDIA;
+
+    if (BrowserCwd[0] == 0) {
+        dir = root;
+    } else {
+        st = uefi_call_wrapper(root->Open, 5, root, &dir, BrowserCwd, EFI_FILE_MODE_READ, (UINT64)0);
+        uefi_call_wrapper(root->Close, 1, root);
+        root = NULL;
+        if (EFI_ERROR(st))
+            return st;
+    }
+
+    st = uefi_call_wrapper(dir->SetPosition, 2, dir, 0);
+    if (EFI_ERROR(st)) {
+        uefi_call_wrapper(dir->Close, 1, dir);
+        return st;
+    }
+
+    InfoBuf = AllocatePool(BROWSER_READ_CHUNK);
+    if (InfoBuf == NULL) {
+        uefi_call_wrapper(dir->Close, 1, dir);
+        return EFI_OUT_OF_RESOURCES;
+    }
+
+    for (;;) {
+        ReadSize = BROWSER_READ_CHUNK;
+        st = uefi_call_wrapper(dir->Read, 3, dir, &ReadSize, InfoBuf);
+        if (EFI_ERROR(st))
+            break;
+        if (ReadSize == 0)
+            break;
+
+        if (ReadSize >= SIZE_OF_EFI_FILE_INFO + sizeof(CHAR16)) {
+            EFI_FILE_INFO *info = (EFI_FILE_INFO *)InfoBuf;
+            UINTN nl;
+
+            if (StrCmp(info->FileName, L".") == 0 || StrCmp(info->FileName, L"..") == 0)
+                continue;
+            if (BrowserCount >= MAX_BROWSER_ENTRIES)
+                break;
+
+            nl = StrLen(info->FileName);
+            if (nl >= MAX_BROWSER_NAME)
+                nl = MAX_BROWSER_NAME - 1;
+            CopyMem(BrowserNames[BrowserCount], info->FileName, nl * sizeof(CHAR16));
+            BrowserNames[BrowserCount][nl] = 0;
+            BrowserIsDir[BrowserCount] = (info->Attribute & EFI_FILE_DIRECTORY) != 0;
+            BrowserCount++;
+        }
+    }
+
+    FreePool(InfoBuf);
+    uefi_call_wrapper(dir->Close, 1, dir);
+
+    BrowserSortEntries();
+    if (BrowserCount > 0 && BrowserSel >= BrowserCount)
+        BrowserSel = BrowserCount - 1;
+    if (BrowserCount == 0)
+        BrowserSel = 0;
+    BrowserScroll = 0;
+    RefreshTermSize();
+    BrowserEnsureScroll((TermRows > 4) ? TermRows - 4 : TermRows - 2);
+    return EFI_SUCCESS;
+}
+
+static VOID BrowserEnterSubdir(const CHAR16 *name) {
+    if (BrowserCwd[0] == 0)
+        UnicodeSPrint(BrowserCwd, sizeof(BrowserCwd), L"%s", name);
+    else
+        UnicodeSPrint(BrowserCwd, sizeof(BrowserCwd), L"%s\\%s", BrowserCwd, name);
+    (void)BrowserRefresh();
+}
+
+static VOID EditorEnterBrowser(VOID) {
+    BrowserCwd[0] = 0;
+    BrowserSel = 0;
+    if (EFI_ERROR(BrowserRefresh())) {
+        Print(L"[UefiVi] cannot read directory\r\n");
+        uefi_call_wrapper(BS->Stall, 1, 1000000);
+        return;
+    }
+    Mode = MODE_BROWSER;
+}
+
+static VOID BrowserOpenSelected(VOID) {
+    EFI_STATUS st;
+    CHAR16 full[160];
+    const CHAR16 *name;
+
+    if (BrowserCount == 0 || BrowserSel >= BrowserCount)
+        return;
+
+    name = BrowserNames[BrowserSel];
+    if (BrowserIsDir[BrowserSel]) {
+        BrowserEnterSubdir(name);
+        return;
+    }
+
+    if (Dirty) {
+        Print(L"\r\n[UefiVi] buffer modified — :w or discard with :q! before opening another file\r\n");
+        uefi_call_wrapper(BS->Stall, 1, 2000000);
+        return;
+    }
+
+    if (BrowserCwd[0] == 0)
+        StrCpy(full, name);
+    else
+        UnicodeSPrint(full, sizeof(full), L"%s\\%s", BrowserCwd, name);
+
+    if (StrLen(full) >= sizeof(FilePath) / sizeof(CHAR16)) {
+        Print(L"\r\n[UefiVi] path too long\r\n");
+        uefi_call_wrapper(BS->Stall, 1, 1500000);
+        return;
+    }
+    StrCpy(FilePath, full);
+
+    st = LoadFile(GImage);
+    if (EFI_ERROR(st)) {
+        Print(L"\r\n[UefiVi] open failed: %r\r\n", st);
+        uefi_call_wrapper(BS->Stall, 1, 1500000);
+        return;
+    }
+
+    Mode = MODE_NORMAL;
+    ScrollRow = 0;
+}
+
+static VOID DrawBrowser(VOID) {
+    UINT32 viewH = (TermRows > 4) ? TermRows - 4 : TermRows - 2;
+    UINT32 cw = (TermCols > 2) ? TermCols - 2 : 78;
+    UINT32 i;
+    CHAR16 line[180];
+    CHAR16 prefix[24];
+
+    RefreshTermSize();
+    if (viewH < 1)
+        viewH = 1;
+    BrowserEnsureScroll(viewH);
+
+    uefi_call_wrapper(ST->ConOut->ClearScreen, 1, ST->ConOut);
+    Print(L"  UefiVi — file browser   j/k arrows  Enter=open  ESC=parent/exit  -=parent\r\n");
+    if (BrowserCwd[0])
+        Print(L"  \\%s\r\n\r\n", BrowserCwd);
+    else
+        Print(L"  \\(volume root)\r\n\r\n");
+
+    for (i = 0; i < viewH && BrowserScroll + i < BrowserCount; i++) {
+        UINT32 idx = BrowserScroll + i;
+        CHAR16 mark = (idx == BrowserSel) ? L'>' : L' ';
+        UINTN maxCopy;
+        UINTN plen;
+
+        if (BrowserIsDir[idx])
+            StrCpy(prefix, L"[DIR] ");
+        else
+            StrCpy(prefix, L"      ");
+
+        UnicodeSPrint(line, sizeof(line), L"%c %s%s", mark, prefix, BrowserNames[idx]);
+        plen = StrLen(line);
+        maxCopy = plen;
+        if (maxCopy > cw)
+            maxCopy = cw;
+        line[maxCopy] = 0;
+        Print(L"  %s\r\n", line);
+    }
+
+    if (BrowserCount == 0)
+        Print(L"  (empty directory)\r\n");
+
+    Print(L"\r\n  %u items\r\n", BrowserCount);
 }
 
 static UINTN Utf8EncodeOne(CHAR16 ch, UINT8 *dst, UINTN cap) {
@@ -500,6 +761,10 @@ static VOID HandleColonFinish(VOID) {
             Print(L"\r\n[UefiVi] dirty buffer; use :wq or :q!\r\n");
         else
             Running = FALSE;
+    } else if (StrCmp(ColonBuf, L"e") == 0 || StrCmp(ColonBuf, L"browse") == 0) {
+        ColonLen = 0;
+        EditorEnterBrowser();
+        return;
     } else if (ColonLen > 0)
         Print(L"\r\n[UefiVi] unknown command\r\n");
 
@@ -518,6 +783,14 @@ static VOID HandleKey(EFI_INPUT_KEY *key) {
         else if (Mode == MODE_COLON) {
             ColonLen = 0;
             Mode = MODE_NORMAL;
+        } else if (Mode == MODE_BROWSER) {
+            if (BrowserCwd[0] == 0)
+                Mode = MODE_NORMAL;
+            else {
+                BrowserGoParent();
+                BrowserSel = 0;
+                (VOID)BrowserRefresh();
+            }
         }
         return;
     }
@@ -534,6 +807,37 @@ static VOID HandleKey(EFI_INPUT_KEY *key) {
         }
         if (key->UnicodeChar >= 32 && key->UnicodeChar != 0x7f && ColonLen + 1 < COLON_MAX)
             ColonBuf[ColonLen++] = key->UnicodeChar;
+        return;
+    }
+
+    if (Mode == MODE_BROWSER) {
+        UINT32 bv;
+
+        RefreshTermSize();
+        bv = (TermRows > 4) ? TermRows - 4 : TermRows - 2;
+
+        if (key->UnicodeChar == L'-' || key->UnicodeChar == L'_') {
+            BrowserGoParent();
+            BrowserSel = 0;
+            (VOID)BrowserRefresh();
+            return;
+        }
+        if (key->UnicodeChar == L'j' || key->ScanCode == SCAN_DOWN) {
+            if (BrowserSel + 1 < BrowserCount)
+                BrowserSel++;
+            BrowserEnsureScroll(bv);
+            return;
+        }
+        if (key->UnicodeChar == L'k' || key->ScanCode == SCAN_UP) {
+            if (BrowserSel > 0)
+                BrowserSel--;
+            BrowserEnsureScroll(bv);
+            return;
+        }
+        if (key->UnicodeChar == 0x0d || key->UnicodeChar == 0x0a) {
+            BrowserOpenSelected();
+            return;
+        }
         return;
     }
 
@@ -565,6 +869,10 @@ static VOID HandleKey(EFI_INPUT_KEY *key) {
         Mode = MODE_INSERT;
         if (CursorCol < MAX_COL - 1)
             CursorCol++;
+        return;
+    }
+    if (key->UnicodeChar == L'o' || key->ScanCode == SCAN_F2) {
+        EditorEnterBrowser();
         return;
     }
     if (key->UnicodeChar == L'h' || key->ScanCode == SCAN_LEFT) {
@@ -618,7 +926,10 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         EFI_INPUT_KEY key;
         EFI_STATUS ks;
 
-        DrawScreen();
+        if (Mode == MODE_BROWSER)
+            DrawBrowser();
+        else
+            DrawScreen();
         for (;;) {
             ks = uefi_call_wrapper(ST->ConIn->ReadKeyStroke, 2, ST->ConIn, &key);
             if (!EFI_ERROR(ks)) {

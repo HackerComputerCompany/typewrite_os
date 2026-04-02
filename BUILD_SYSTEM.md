@@ -308,6 +308,8 @@ uefi-app/
 
 ## Changelog
 
+- **2026-04-02**: Boot menu now includes **TIC-80** (`TIC80.efi`) as menu item **[3]**; QEMU + USB install scripts optionally build/stage/copy `TIC80.efi` when TIC-80 UEFI static libs are present.
+- **2026-04-02**: Added Linux bring-up apps: `linux-typewrite/` (fbdev `/dev/fb0`) and `linux-typewrite-x11/` (Xlib) sharing a small text-buffer core + 8x8 font.
 - **2026-03-29**: **`start-qemu.sh`**: pick **KVM vs TCG** from **`/dev/kvm`** permissions (avoids KVM permission errors); **`QEMU_ACCEL`** override; **BUILD_SYSTEM.md** KVM group instructions.
 - **2026-03-29**: **`start-qemu.sh`**: default **`-machine q35`** + accel, default GTK **`gl=off`**, **`--sdl`** and **`--serial-stdio`**, pre-launch tips; **BUILD_SYSTEM.md** QEMU display troubleshooting.
 - **2026-03-29**: Removed redundant tracked **`buildroot.tar.gz`** (vendored tree remains under `buildroot-2024.02/`); local Buildroot **`output/`**, **`dl/`**, etc. are still safe to delete when present — they are build products, not source.

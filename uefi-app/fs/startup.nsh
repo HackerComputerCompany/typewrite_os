@@ -1,1 +1,1 @@
-Typewriter.efi
+efi\boot\bootx64.efi

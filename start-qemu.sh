@@ -30,8 +30,8 @@ SYNOPSIS
 DESCRIPTION
     Runs from the repository root. By default:
       1. make -C uefi-app, uefi-vi, uefi-menu   (compile only for uefi-app unless you use its ship target)
-      2. Stage uefi-app/fs/EFI/BOOT/bootx64.efi (BootMenu), Typewriter.efi, UefiVi.efi
-         (+ root Typewriter.efi copy, startup.nsh → efi\\boot\\bootx64.efi)
+      2. Stage uefi-app/fs/EFI/BOOT/bootx64.efi (BootMenu), Typewriter.efi, UefiVi.efi,
+         TIC80.efi when built (+ root Typewriter.efi copy, startup.nsh → efi\\boot\\bootx64.efi)
       3. Build/update writable FAT image (uefi-app/twfs.img)
       4. Launches qemu-system-x86_64 with OVMF pflash + FAT + serial log
 
@@ -39,7 +39,8 @@ DESCRIPTION
     in ./ovmf_vars.fd (created from OVMF_VARS.fd template when missing).
 
 OPTIONS
-    --no-build       Skip make; need existing Typewriter.efi, UefiVi.efi, BootMenu.efi.
+    --no-build       Skip make; need existing Typewriter.efi, UefiVi.efi, BootMenu.efi
+                     (TIC80.efi optional — copied if tic80-uefi/TIC80.efi exists).
     --fresh-vars     Delete ./ovmf_vars.fd and recreate from the template (reset
                      NVRAM / boot entries).
     --fresh-fs       Recreate uefi-app/twfs.img from scratch (wipes saved pages/settings).
@@ -68,7 +69,8 @@ ENVIRONMENT
 FILES (paths relative to repo root)
     uefi-app/Typewriter.efi   Graphical app (make output).
     uefi-vi/UefiVi.efi       Console editor.
-    uefi-menu/BootMenu.efi   Text boot menu.
+    uefi-menu/BootMenu.efi   Text boot menu (includes TIC-80 when TIC80.efi is staged).
+    tic80-uefi/TIC80.efi     Optional; built if ../TIC-80/build-uefi-smoke/lib/libtic80core.a exists.
     uefi-app/fs/            Staging for twfs.img (EFI/BOOT/*.efi + startup.nsh + tests).
     uefi-app/twfs.img          Writable FAT image used by QEMU (real disk, persistent).
     ovmf_vars.fd              Writable UEFI variable store (git may track or ignore).
@@ -249,11 +251,20 @@ if [[ ! -d "$UEFI_DIR" ]]; then
     exit 1
 fi
 
+TIC80_CORE="${SCRIPT_DIR}/../TIC-80/build-uefi-smoke/lib/libtic80core.a"
+TIC80_BUILT="${SCRIPT_DIR}/tic80-uefi/TIC80.efi"
+
 if [[ "$DO_BUILD" -eq 1 ]]; then
     echo "Building uefi-app, uefi-vi, uefi-menu..."
     make -C "$UEFI_DIR" all
     make -C "${SCRIPT_DIR}/uefi-vi" all
     make -C "${SCRIPT_DIR}/uefi-menu" all
+    if [[ -f "$TIC80_CORE" ]]; then
+        echo "Building tic80-uefi (TIC-80 core found)..."
+        make -C "${SCRIPT_DIR}/tic80-uefi" all
+    else
+        echo "Note: skip tic80-uefi — no TIC80 core at $TIC80_CORE (menu item 3 needs TIC80.efi)." >&2
+    fi
 else
     echo "Skipping build (--no-build)."
 fi
@@ -274,10 +285,19 @@ mkdir -p "${UEFI_DIR}/fs/EFI/BOOT"
 cp -f "$MENU_BUILT" "${UEFI_DIR}/fs/EFI/BOOT/bootx64.efi"
 cp -f "$EFI_BUILT" "${UEFI_DIR}/fs/EFI/BOOT/Typewriter.efi"
 cp -f "$VI_BUILT" "${UEFI_DIR}/fs/EFI/BOOT/UefiVi.efi"
+if [[ -f "$TIC80_BUILT" ]]; then
+    cp -f "$TIC80_BUILT" "${UEFI_DIR}/fs/EFI/BOOT/TIC80.efi"
+else
+    rm -f "${UEFI_DIR}/fs/EFI/BOOT/TIC80.efi"
+fi
 mkdir -p "${UEFI_DIR}/fs"
 cp -f "$EFI_BUILT" "$EFI_IN_FS"
 printf '%s\r\n' 'efi\boot\bootx64.efi' >"$STARTUP_NSH"
-echo "Synced FAT staging: EFI/BOOT/bootx64.efi (BootMenu), Typewriter.efi, UefiVi.efi; startup.nsh → menu"
+if [[ -f "${UEFI_DIR}/fs/EFI/BOOT/TIC80.efi" ]]; then
+    echo "Synced FAT staging: BootMenu, Typewriter.efi, UefiVi.efi, TIC80.efi; startup.nsh → menu"
+else
+    echo "Synced FAT staging: BootMenu, Typewriter.efi, UefiVi.efi (no TIC80.efi — build tic80-uefi for menu item 3); startup.nsh → menu"
+fi
 
 ensure_fat_image
 

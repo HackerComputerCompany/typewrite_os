@@ -9,15 +9,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TYPEWRITER_EFI="$SCRIPT_DIR/uefi-app/Typewriter.efi"
 BOOT_MENU_EFI="$SCRIPT_DIR/uefi-menu/BootMenu.efi"
 UEFI_VI_EFI="$SCRIPT_DIR/uefi-vi/UefiVi.efi"
+TIC80_EFI="$SCRIPT_DIR/tic80-uefi/TIC80.efi"
 
 usage() {
     cat <<EOF
 Usage: $(basename "$0") [options] /dev/sdX | /dev/nvme0n1 | /dev/mmcblk0
 
   Wipes the target disk, creates GPT + FAT32 ESP, installs:
-    efi/boot/bootx64.efi   → BootMenu.efi (chooser: typewriter vs UefiVi)
+    efi/boot/bootx64.efi   → BootMenu.efi (typewriter, UefiVi, TIC-80, exit)
     efi/boot/Typewriter.efi
     efi/boot/UefiVi.efi
+    efi/boot/TIC80.efi     → optional (copied if tic80-uefi/TIC80.efi exists)
 
 Options:
   --yes, -y    Skip confirmation prompt (destructive)
@@ -93,6 +95,12 @@ echo "  Typewriter: $TYPEWRITER_EFI"
 file "$TYPEWRITER_EFI"
 echo "  UefiVi:     $UEFI_VI_EFI"
 file "$UEFI_VI_EFI"
+if [[ -f "$TIC80_EFI" ]]; then
+    echo "  TIC80:      $TIC80_EFI"
+    file "$TIC80_EFI"
+else
+    echo "  TIC80:      (not present — optional; build tic80-uefi for boot menu item 3)"
+fi
 echo ""
 echo "Target disk: $DEVICE  (ESP will be $PART)"
 echo ""
@@ -140,6 +148,9 @@ sudo mkdir -p "$MOUNT_DIR/efi/boot"
 sudo cp "$BOOT_MENU_EFI" "$MOUNT_DIR/efi/boot/bootx64.efi"
 sudo cp "$TYPEWRITER_EFI" "$MOUNT_DIR/efi/boot/Typewriter.efi"
 sudo cp "$UEFI_VI_EFI" "$MOUNT_DIR/efi/boot/UefiVi.efi"
+if [[ -f "$TIC80_EFI" ]]; then
+    sudo cp "$TIC80_EFI" "$MOUNT_DIR/efi/boot/TIC80.efi"
+fi
 
 # UEFI Shell convenience: runs boot menu (same as firmware default path)
 sudo tee "$MOUNT_DIR/startup.nsh" > /dev/null << 'EOF'
@@ -162,6 +173,10 @@ menuentry "Typewrite graphical" {
 
 menuentry "UefiVi console editor" {
     loader /efi/boot/UefiVi.efi
+}
+
+menuentry "TIC-80 (UEFI)" {
+    loader /efi/boot/TIC80.efi
 }
 EOF
 

@@ -39,10 +39,14 @@ The first argument is the file name (same FAT volume as the `.efi`).
 | Normal | `a` | Insert after cursor |
 | Normal | `x` | Delete character under cursor |
 | Normal | `:` | Command line (`w` write, `q` quit, `wq` both, `q!` discard) |
+| Normal | `o` or **F2** | Open **file browser** on the boot volume |
+| Normal | `:e` or `:browse` | Same as browser (after typing `:`) |
 | Insert | printable | Insert at cursor (line capped) |
 | Insert | Backspace | Delete before cursor |
 | Insert | Enter | New line below |
-| Any | **ESC** | Back to Normal |
+| Any | **ESC** | Back to Normal (in browser: parent directory, or exit browser at volume root) |
+
+**File browser:** `j` / `k` or arrow keys move; **Enter** opens a directory or loads a file (`-` or **ESC** in a subdirectory goes to parent). If the buffer is **dirty**, loading another file from the browser is blocked until you `:w` or `:q!`.
 
 Status line shows mode and dirty flag.
 

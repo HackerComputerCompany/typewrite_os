@@ -4,6 +4,7 @@
  * Expects on the same FAT volume (same directory convention as install-uefi-app.sh):
  *   \efi\boot\Typewriter.efi
  *   \efi\boot\UefiVi.efi
+ *   \efi\boot\TIC80.efi
  *
  * Install as \efi\boot\bootx64.efi so firmware runs the menu first.
  */
@@ -17,6 +18,9 @@
 #endif
 #ifndef MENU_PATH_UEVIVI
 #define MENU_PATH_UEVIVI        L"\\efi\\boot\\UefiVi.efi"
+#endif
+#ifndef MENU_PATH_TIC80
+#define MENU_PATH_TIC80         L"\\efi\\boot\\TIC80.efi"
 #endif
 
 static EFI_STATUS RunChild(EFI_HANDLE parent, EFI_HANDLE vol, const CHAR16 *path) {
@@ -51,9 +55,10 @@ static VOID ShowMenu(VOID) {
     Print(L"\r\n");
     Print(L"   [1]  Graphical typewriter  (Typewriter.efi)\r\n");
     Print(L"   [2]  Console editor       (UefiVi.efi)\r\n");
-    Print(L"   [3]  Exit to Shell / firmware\r\n");
+    Print(L"   [3]  TIC-80               (TIC80.efi)\r\n");
+    Print(L"   [4]  Exit to Shell / firmware\r\n");
     Print(L"\r\n");
-    Print(L"  Press 1, 2, or 3: ");
+    Print(L"  Press 1–4 (or Q to exit): ");
 }
 
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
@@ -74,7 +79,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
 
     uefi_call_wrapper(ST->ConIn->Reset, 2, ST->ConIn, FALSE);
 
-    Print(L"\r\n[BootMenu] volume handle ready; 1=typewriter 2=vi 3=exit\r\n");
+    Print(L"\r\n[BootMenu] 1=typewriter 2=vi 3=tic80 4=exit\r\n");
 
     for (;;) {
         EFI_INPUT_KEY key;
@@ -96,12 +101,16 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
             (void)RunChild(ImageHandle, li->DeviceHandle, MENU_PATH_UEVIVI);
             continue;
         }
-        if (key.UnicodeChar == L'3')
+        if (key.UnicodeChar == L'3') {
+            (void)RunChild(ImageHandle, li->DeviceHandle, MENU_PATH_TIC80);
+            continue;
+        }
+        if (key.UnicodeChar == L'4')
             break;
         if (key.UnicodeChar == L'q' || key.UnicodeChar == L'Q')
             break;
 
-        Print(L"\r\n  Unknown choice — use 1, 2, or 3.\r\n");
+        Print(L"\r\n  Unknown choice — use 1, 2, 3, 4, or Q.\r\n");
     }
 
     Print(L"\r\n[BootMenu] exiting.\r\n");

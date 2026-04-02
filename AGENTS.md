@@ -44,7 +44,8 @@ Invalid PE output used to make the firmware report **“Unsupported format”**.
 | `uefi-app/main.c` | Main UEFI application |
 | `uefi-app/Makefile` | EFI build; default **ship** (git); `make all` for compile only |
 | `uefi-vi/` | **`UefiVi.efi`** — text-console vi-like editor (no GOP); `make all` only |
-| `uefi-menu/` | **`BootMenu.efi`** — text menu to run Typewriter or UefiVi via `LoadImage` |
+| `uefi-menu/` | **`BootMenu.efi`** — text menu: Typewriter, UefiVi, TIC80 (`LoadImage`); exit on 4 |
+| `tic80-uefi/` | **`TIC80.efi`** — TIC-80 UEFI scaffold (`make`); full port links TIC-80 static libs built with `-DTIC80_UEFI=ON` |
 | `fonts/README.md` | **Nine UI fonts** (F2): sources, licenses, `convert_font.py` workflow |
 | `fonts/*.h`, `fonts/*.ttf` | Bitmap headers + upstream TTFs (Virgil, Inter, six OFL/Apache faces, etc.) |
 | `uefi-app/fs/` | QEMU FAT contents (e.g. copied `Typewriter.efi`) |
@@ -65,6 +66,8 @@ Invalid PE output used to make the firmware report **“Unsupported format”**.
 - **`FEATURES.md`** — Keyboard shortcuts and typewriter rules (Linux-oriented but useful product spec)
 - **`ARCHITECTURE.md`** — System and disk layout
 - **`INSTALL.md`**, **`REQUIREMENTS.md`** — Setup and dependencies
+- **`TIC80_UEFI_PORT.md`** — Approach + status for porting [TIC-80](https://github.com/nesbox/TIC-80) to UEFI (`tic80-uefi/`, `-DTIC80_UEFI=ON`)
+- **`THREAD_CONTEXT.md`** — Handoff when pausing TIC-80 UEFI; **next**: Linux framebuffer typewriter, then X11 (see file)
 
 ## Conventions for agents
 
@@ -72,4 +75,4 @@ Invalid PE output used to make the firmware report **“Unsupported format”**.
 - After changing the EFI build, verify **`Typewriter.efi`** is still valid PE32+ (see `BUILD_SYSTEM.md`).
 - If adding Linux app sources back, put them at **`typewrite/`** next to **`buildroot-2024.02/`** (default **`TYPEWRITE_SITE`**) or update **`typewrite.mk`** and this file.
 
-Last reviewed: **2026-03-30** (F1 settings menu, GOP resolution try/confirm + `gop_mode`, `uefi-app/README.md`).
+Last reviewed: **2026-03-31** (`THREAD_CONTEXT.md` handoff; BootMenu + `TIC80.efi` staging).

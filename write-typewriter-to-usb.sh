@@ -13,9 +13,9 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") [options] /dev/sdX | /dev/nvme0n1
 
-  Builds Typewriter, UefiVi, and BootMenu (unless --no-build), syncs
-  uefi-app/fs/Typewriter.efi, then runs install-uefi-app.sh to wipe the target
-  disk and install efi/boot/bootx64.efi (menu) plus Typewriter.efi and UefiVi.efi.
+  Builds Typewriter, UefiVi, and BootMenu (unless --no-build), optionally tic80-uefi
+  when TIC-80 UEFI libs exist, syncs uefi-app/fs/Typewriter.efi, then runs
+  install-uefi-app.sh (menu + Typewriter.efi + UefiVi.efi + TIC80.efi if built).
 
 Options:
   --no-build   Skip "make -C uefi-app all" (use existing uefi-app/Typewriter.efi)
@@ -52,11 +52,19 @@ fi
 
 DEVICE="$1"
 
+TIC80_CORE="$ROOT/../TIC-80/build-uefi-smoke/lib/libtic80core.a"
+
 if [[ "$NO_BUILD" -eq 0 ]]; then
     echo "Building uefi-app, uefi-vi, uefi-menu..."
     make -C "$ROOT/uefi-app" all
     make -C "$ROOT/uefi-vi" all
     make -C "$ROOT/uefi-menu" all
+    if [[ -f "$TIC80_CORE" ]]; then
+        echo "Building tic80-uefi (TIC-80 core found)..."
+        make -C "$ROOT/tic80-uefi" all
+    else
+        echo "Note: skip tic80-uefi — no $TIC80_CORE (optional)." >&2
+    fi
 fi
 
 if [[ ! -f "$ROOT/uefi-app/Typewriter.efi" ]]; then
