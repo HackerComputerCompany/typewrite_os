@@ -15,7 +15,8 @@ BIN_DIR := .
 BIN := $(BIN_DIR)/x11typewrite
 
 SRC_SHARED := \
-	../linux-typewrite/src/tw_core.c
+	../linux-typewrite/src/tw_core.c \
+	../linux-typewrite/src/tw_doc.c
 
 SRC := src/main_x11.c src/tw_bitmapfont_uefi.c
 

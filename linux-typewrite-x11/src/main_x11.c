@@ -1,4 +1,5 @@
 #include "tw_core.h"
+#include "tw_doc.h"
 #include "tw_bitmapfont_uefi.h"
 
 #include <X11/Xlib.h>
@@ -41,6 +42,13 @@ static const char *const kBgLabels[10] = {
 #define COLS_MARGINED_DEFAULT 58
 #define PAGE_COLS_FULL_WIDTH 80 /* uefi-app/main.c active cols when margins off */
 
+typedef enum {
+    LINE_NUM_OFF = 0,
+    LINE_NUM_ASC,  /* 1..n top→bottom: line index on the page */
+    LINE_NUM_DESC, /* n..1 top→bottom: rows left from here through buffer end */
+    LINE_NUM_MODE_NUM
+} LineNumMode;
+
 typedef struct {
     int margin_px;
     int gutter_px;
@@ -50,17 +58,18 @@ typedef struct {
 } ViewLayout;
 
 static void compute_view_layout(int win_w, int win_h, const TwBitmapFont *font, int page_margins,
-                                int show_line_numbers, int cols_margined, ViewLayout *L) {
+                                LineNumMode line_num_mode, int cols_margined, ViewLayout *L) {
     const int cell_w = (int)font->max_width + 1;
     const int cell_h = (int)font->line_box;
 
     int gutter_px = 0;
-    if (show_line_numbers) {
-        gutter_px = cell_w * 3 + 10;
-        if (gutter_px < cell_w * 4)
-            gutter_px = cell_w * 4;
-        if (gutter_px < 24)
-            gutter_px = 24;
+    if (line_num_mode != LINE_NUM_OFF) {
+        /* Room for multi-digit labels (asc index or remaining count). */
+        gutter_px = cell_w * 4 + 12;
+        if (gutter_px < cell_w * 5)
+            gutter_px = cell_w * 5;
+        if (gutter_px < 28)
+            gutter_px = 28;
     }
 
     int margin_px = 0;
@@ -175,13 +184,67 @@ static uint32_t line_number_ink(int bg_idx) {
     return (bg_idx % 10 == 1) ? pack_xrgb8888(0x606e8au) : pack_xrgb8888(0x8c96afu);
 }
 
+/* Map screen row sy -> buffer row; -1 = blank row above the growing document. */
+static int typewriter_buf_row_for_sy(int sy, int cursor_y, int view_rows) {
+    int V = view_rows;
+    if (V <= 0)
+        return -1;
+    int start_sy = (cursor_y + 1 <= V) ? (V - (cursor_y + 1)) : 0;
+    if (sy < start_sy)
+        return -1;
+    int buf0 = (cursor_y + 1 <= V) ? 0 : (cursor_y - (V - 1));
+    return buf0 + (sy - start_sy);
+}
+
+/* Screen row where the cursor sits (always bottom row of the viewport when typewriter mode). */
+static int typewriter_sy_for_cursor(int cursor_y, int view_rows) {
+    int V = view_rows;
+    if (V <= 0)
+        return 0;
+    int start_sy = (cursor_y + 1 <= V) ? (V - (cursor_y + 1)) : 0;
+    int buf0 = (cursor_y + 1 <= V) ? 0 : (cursor_y - (V - 1));
+    return start_sy + (cursor_y - buf0);
+}
+
+static void draw_page_footer(uint32_t *pix, int w, int h, const TwBitmapFont *font, int bg_idx,
+                             const ViewLayout *lay, int view_rows, int cur_page0, int n_pages) {
+    if (n_pages < 1)
+        return;
+    const int cell_w = (int)font->max_width + 1;
+    const int cell_h = (int)font->line_box;
+    const uint32_t paper_bg = pack_xrgb8888(kBgColors[bg_idx % 10]);
+    uint32_t stamp = line_number_ink(bg_idx);
+
+    char f[48];
+    snprintf(f, sizeof(f), "Page %d of %d", cur_page0 + 1, n_pages);
+    int fw = (int)strlen(f) * cell_w;
+
+    int text_bot = lay->text_y0 + view_rows * cell_h;
+    int paper_bot = lay->paper_y + lay->paper_h;
+    int fx, fy;
+
+    if (paper_bot - text_bot >= cell_h + 2) {
+        fy = text_bot + (paper_bot - text_bot - cell_h) / 2 + (int)font->max_top;
+        fx = lay->paper_x + lay->paper_w - lay->margin_px - fw;
+    } else {
+        fy = lay->text_y0 + (int)font->max_top;
+        fx = lay->paper_x + lay->paper_w - fw - 4;
+        if (fx < lay->text_x0)
+            fx = lay->text_x0;
+    }
+
+    draw_text_mono(pix, w, h, fx, fy, font, f, stamp, paper_bg);
+}
+
 static void render(uint32_t *pix, int w, int h, const TwCore *tw, const TwBitmapFont *font,
                    CursorMode cursor_mode, int cursor_visible, int bg_idx, const ViewLayout *lay,
-                   int page_margins, int show_line_numbers) {
+                   int page_margins, LineNumMode line_num_mode, int typewriter_mode, int cur_page0,
+                   int n_pages) {
     const uint32_t paper_bg = pack_xrgb8888(kBgColors[bg_idx % 10]);
     const uint32_t outer_bg = page_margins ? pack_xrgb8888(0x0a0a0au) : paper_bg;
     const uint32_t fg = (bg_idx == 1) ? pack_xrgb8888(0x1e1e1eu) : pack_xrgb8888(0xf0f0e6u);
     const uint32_t cur = fg;
+    const uint32_t typewriter_rule = pack_xrgb8888(0xc01818u);
 
     const int cell_w = (int)font->max_width + 1;
     const int cell_h = (int)font->line_box;
@@ -194,12 +257,16 @@ static void render(uint32_t *pix, int w, int h, const TwCore *tw, const TwBitmap
     if (page_margins)
         fill_rect(pix, w, h, lay->paper_x, lay->paper_y, lay->paper_w, lay->paper_h, paper_bg);
 
-    if (show_line_numbers && lay->gutter_px > 0) {
+    if (line_num_mode != LINE_NUM_OFF && lay->gutter_px > 0) {
         uint32_t ln_fg = line_number_ink(bg_idx);
-        for (int y = 0; y < rows; y++) {
+        for (int sy = 0; sy < rows; sy++) {
+            int br = typewriter_mode ? typewriter_buf_row_for_sy(sy, tw->cy, rows) : sy;
+            if (br < 0)
+                continue;
+            int val = (line_num_mode == LINE_NUM_ASC) ? (br + 1) : (tw->rows - br);
             char nb[16];
-            snprintf(nb, sizeof(nb), "%d", y + 1);
-            int baselineY = lay->text_y0 + y * cell_h + (int)font->max_top;
+            snprintf(nb, sizeof(nb), "%d", val);
+            int baselineY = lay->text_y0 + sy * cell_h + (int)font->max_top;
             int nx = lay->text_x0 - (int)strlen(nb) * cell_w - 4;
             if (nx < lay->paper_x + lay->margin_px + 2)
                 nx = lay->paper_x + lay->margin_px + 2;
@@ -207,11 +274,14 @@ static void render(uint32_t *pix, int w, int h, const TwCore *tw, const TwBitmap
         }
     }
 
-    for (int y = 0; y < rows; y++) {
+    for (int sy = 0; sy < rows; sy++) {
+        int br = typewriter_mode ? typewriter_buf_row_for_sy(sy, tw->cy, rows) : sy;
         for (int x = 0; x < cols; x++) {
-            unsigned char c = (unsigned char)tw->cells[y * tw->cols + x];
+            unsigned char c = ' ';
+            if (br >= 0 && br < tw->rows)
+                c = (unsigned char)tw->cells[br * tw->cols + x];
             int px = lay->text_x0 + x * cell_w;
-            int baselineY = lay->text_y0 + y * cell_h + (int)font->max_top;
+            int baselineY = lay->text_y0 + sy * cell_h + (int)font->max_top;
             tw_uefi_font_draw_char(font, pix, w, h, px, baselineY, c, fg, paper_bg);
         }
     }
@@ -219,19 +289,34 @@ static void render(uint32_t *pix, int w, int h, const TwCore *tw, const TwBitmap
     if (cursor_mode != CURSOR_HIDDEN && cursor_visible) {
         int cx = tw->cx;
         int cy = tw->cy;
-        if ((unsigned)cx < (unsigned)cols && (unsigned)cy < (unsigned)rows) {
+        if ((unsigned)cx < (unsigned)cols && (unsigned)cy < (unsigned)tw->rows) {
+            int sy = typewriter_mode ? typewriter_sy_for_cursor(cy, rows) : cy;
+            if ((unsigned)sy >= (unsigned)rows)
+                sy = rows - 1;
             int x0 = lay->text_x0 + cx * cell_w;
-            int y0 = lay->text_y0 + cy * cell_h;
+            int y0 = lay->text_y0 + sy * cell_h;
             if (cursor_mode == CURSOR_BLOCK || cursor_mode == CURSOR_BLOCK_BLINK) {
                 fill_rect(pix, w, h, x0, y0, cell_w, cell_h, cur);
                 unsigned char c = (unsigned char)tw->cells[cy * tw->cols + cx];
-                int baselineY = lay->text_y0 + cy * cell_h + (int)font->max_top;
+                int baselineY = lay->text_y0 + sy * cell_h + (int)font->max_top;
                 tw_uefi_font_draw_char(font, pix, w, h, x0, baselineY, c, paper_bg, cur);
             } else if (cursor_mode == CURSOR_BAR || cursor_mode == CURSOR_BAR_BLINK) {
                 fill_rect(pix, w, h, x0, y0, 2, cell_h, cur);
             }
         }
     }
+
+    /* Typewriter “margin” rule: thin horizontal line on the active row (drawn after cursor). */
+    if (typewriter_mode && rows > 0 && (unsigned)tw->cy < (unsigned)tw->rows &&
+        (unsigned)tw->cx < (unsigned)cols) {
+        int sy_cur = typewriter_sy_for_cursor(tw->cy, rows);
+        if ((unsigned)sy_cur < (unsigned)rows) {
+            int y_rule = lay->text_y0 + sy_cur * cell_h + cell_h - 2;
+            fill_rect(pix, w, h, lay->text_x0, y_rule, cols * cell_w, 2, typewriter_rule);
+        }
+    }
+
+    draw_page_footer(pix, w, h, font, bg_idx, lay, rows, cur_page0, n_pages);
 }
 
 static int is_printable_ascii(unsigned char c) {
@@ -245,50 +330,6 @@ static void update_title(Display *dpy, Window win, const char *filename) {
     else
         snprintf(title, sizeof(title), "Typewrite");
     XStoreName(dpy, win, title);
-}
-
-static int save_to_file(const char *path, const TwCore *tw) {
-    FILE *fp = fopen(path, "wb");
-    if (!fp)
-        return -1;
-    for (int y = 0; y < tw->rows; y++) {
-        int end = tw->cols;
-        while (end > 0 && tw->cells[y * tw->cols + (end - 1)] == ' ')
-            end--;
-        if (end == 0) {
-            fputc('\n', fp);
-            continue;
-        }
-        fwrite(tw->cells + y * tw->cols, 1, (size_t)end, fp);
-        fputc('\n', fp);
-    }
-    fclose(fp);
-    return 0;
-}
-
-static int load_from_file(const char *path, TwCore *tw) {
-    FILE *fp = fopen(path, "rb");
-    if (!fp)
-        return -1;
-    tw_core_clear(tw);
-    int ch;
-    while ((ch = fgetc(fp)) != EOF) {
-        if (ch == '\r')
-            continue;
-        if (ch == '\n') {
-            tw_core_newline(tw);
-            continue;
-        }
-        if (ch == '\t') {
-            for (int i = 0; i < 4; i++)
-                tw_core_putc(tw, ' ');
-            continue;
-        }
-        if (is_printable_ascii((unsigned char)ch))
-            tw_core_putc(tw, (char)ch);
-    }
-    fclose(fp);
-    return 0;
 }
 
 static void usage(const char *argv0) {
@@ -375,7 +416,7 @@ int main(int argc, char **argv) {
     /* Apply --fullscreen on MapNotify; immediate _NET_WM_STATE is often ignored. */
     int pending_startup_fullscreen = (start_fullscreen && a_wm_state != None && a_wm_state_fullscreen != None);
 
-    TwCore tw;
+    TwDoc doc;
     uint32_t *back = NULL;
     XImage *img = NULL;
     int font_idx = 2; /* Special Elite */
@@ -386,13 +427,14 @@ int main(int argc, char **argv) {
     int dirty = 0;
     uint64_t last_autosave_ms = mono_ms();
     int page_margins = 1;
-    int show_line_numbers = 0;
+    LineNumMode line_num_mode = LINE_NUM_OFF;
     int cols_margined = COLS_MARGINED_DEFAULT;
+    int typewriter_mode = 0;
 
     ViewLayout init_lay;
-    compute_view_layout(w, h, font, page_margins, show_line_numbers, cols_margined, &init_lay);
-    if (tw_core_init(&tw, init_lay.cols, init_lay.rows) != 0) {
-        fprintf(stderr, "tw_core_init failed\n");
+    compute_view_layout(w, h, font, page_margins, line_num_mode, cols_margined, &init_lay);
+    if (twdoc_init(&doc, init_lay.cols, init_lay.rows) != 0) {
+        fprintf(stderr, "twdoc_init failed\n");
         XCloseDisplay(dpy);
         return 1;
     }
@@ -400,13 +442,13 @@ int main(int argc, char **argv) {
     if (filename[0] == 0) {
         /* Autoload default file if present. */
         snprintf(filename, sizeof(filename), "Typewriter.txt");
-        if (load_from_file(filename, &tw) == 0) {
+        if (twdoc_load(filename, &doc) == 0) {
             dirty = 0;
         } else {
             filename[0] = 0;
         }
     } else {
-        (void)load_from_file(filename, &tw);
+        (void)twdoc_load(filename, &doc);
         dirty = 0;
     }
 
@@ -462,7 +504,7 @@ int main(int argc, char **argv) {
                     bg_idx = (bg_idx + 1) % 10;
                 }
                 if (ks == XK_F5) {
-                    show_line_numbers = !show_line_numbers;
+                    line_num_mode = (LineNumMode)((line_num_mode + 1) % LINE_NUM_MODE_NUM);
                 }
                 if (ks == XK_F6) {
                     page_margins = !page_margins;
@@ -472,31 +514,38 @@ int main(int argc, char **argv) {
                     if (cols_margined > COLS_MARGINED_MAX)
                         cols_margined = COLS_MARGINED_MIN;
                 }
+                if (ks == XK_F8) {
+                    typewriter_mode = !typewriter_mode;
+                }
                 if ((ev.xkey.state & ControlMask) && (ks == XK_s || ks == XK_S)) {
                     if (filename[0] == 0) {
                         snprintf(filename, sizeof(filename), "Typewriter.txt");
                     }
-                    if (save_to_file(filename, &tw) == 0) {
+                    if (twdoc_save(filename, &doc) == 0) {
                         dirty = 0;
                         last_autosave_ms = mono_ms();
                     }
                     update_title(dpy, win, filename);
                 }
                 if (ks == XK_BackSpace) {
-                    tw_core_backspace(&tw);
+                    twdoc_backspace(&doc);
+                    dirty = 1;
+                } else if (ks == XK_Tab) {
+                    for (int ti = 0; ti < 4; ti++)
+                        twdoc_putc(&doc, ' ');
                     dirty = 1;
                 } else if (ks == XK_Return || ks == XK_KP_Enter) {
-                    tw_core_newline(&tw);
+                    twdoc_newline(&doc);
                     dirty = 1;
                 } else if (n > 0 && is_printable_ascii((unsigned char)buf[0])) {
-                    tw_core_putc(&tw, buf[0]);
+                    twdoc_putc(&doc, buf[0]);
                     dirty = 1;
                 }
             }
         }
 
         ViewLayout lay;
-        compute_view_layout(w, h, font, page_margins, show_line_numbers, cols_margined, &lay);
+        compute_view_layout(w, h, font, page_margins, line_num_mode, cols_margined, &lay);
 
         int need_recreate = !back || !img || img->width != w || img->height != h;
         if (need_recreate) {
@@ -513,8 +562,8 @@ int main(int argc, char **argv) {
             }
         }
 
-        if (tw_core_resize(&tw, lay.cols, lay.rows) != 0) {
-            fprintf(stderr, "tw_core_resize failed\n");
+        if (twdoc_resize_reflow(&doc, lay.cols, lay.rows) != 0) {
+            fprintf(stderr, "twdoc_resize_reflow failed\n");
             goto out;
         }
 
@@ -525,7 +574,7 @@ int main(int argc, char **argv) {
         }
 
         if (filename[0] != 0 && dirty && (now - last_autosave_ms) >= 30000u) {
-            if (save_to_file(filename, &tw) == 0) {
+            if (twdoc_save(filename, &doc) == 0) {
                 dirty = 0;
                 last_autosave_ms = now;
             } else {
@@ -533,8 +582,13 @@ int main(int argc, char **argv) {
             }
         }
 
-        render(back, w, h, &tw, font, cursor_mode, cursor_visible, bg_idx, &lay, page_margins,
-               show_line_numbers);
+        {
+            TwCore *tw = twdoc_cur(&doc);
+            if (!tw)
+                goto out;
+            render(back, w, h, tw, font, cursor_mode, cursor_visible, bg_idx, &lay, page_margins,
+                   line_num_mode, typewriter_mode, twdoc_cur_page(&doc), twdoc_num_pages(&doc));
+        }
 
         if (show_help) {
             const uint32_t panel = pack_xrgb8888(0x1c2028u);
@@ -545,7 +599,7 @@ int main(int argc, char **argv) {
             int step = (int)font->line_box;
             int inner = 8;
             int bw = (int)(font->max_width + 1) * 54 + inner * 2;
-            int bh = step * 13 + inner * 2;
+            int bh = step * 17 + inner * 2;
             int bx = (w > bw) ? (w - bw) / 2 : 10;
             int by = (h > bh) ? (h - bh) / 2 : 10;
 
@@ -565,7 +619,10 @@ int main(int argc, char **argv) {
                 draw_text_mono(back, w, h, x0, y0, font, b, fg, bg);
             }
             y0 += step;
-            draw_text_mono(back, w, h, x0, y0, font, "F5    line numbers on/off", fg, bg); y0 += step;
+            draw_text_mono(back, w, h, x0, y0, font, "F5    gutter: off / 1..n / rows-left", fg, bg); y0 += step;
+            draw_text_mono(back, w, h, x0, y0, font, "Tab   insert 4 spaces", fg, bg); y0 += step;
+            draw_text_mono(back, w, h, x0, y0, font, "      multi-page: Enter on last row", fg, bg); y0 += step;
+            draw_text_mono(back, w, h, x0, y0, font, "      saves use Ctrl-L between pages", fg, bg); y0 += step;
             draw_text_mono(back, w, h, x0, y0, font, "F6    page margins (Letter) on/off", fg, bg); y0 += step;
             {
                 char b[128];
@@ -574,6 +631,7 @@ int main(int argc, char **argv) {
                 draw_text_mono(back, w, h, x0, y0, font, b, fg, bg);
             }
             y0 += step;
+            draw_text_mono(back, w, h, x0, y0, font, "F8    typewriter view + red typing line", fg, bg); y0 += step;
             draw_text_mono(back, w, h, x0, y0, font, "F11   fullscreen (often taken by WM)", fg, bg); y0 += step;
             draw_text_mono(back, w, h, x0, y0, font, "      use: x11typewrite --fullscreen", fg, bg); y0 += step;
             draw_text_mono(back, w, h, x0, y0, font, "Ctrl+S save (autosave every 30s after)", fg, bg); y0 += step;
@@ -602,7 +660,7 @@ out:
         XDestroyImage(img);
     }
     free(back);
-    tw_core_destroy(&tw);
+    twdoc_destroy(&doc);
     XFreeGC(dpy, gc);
     XDestroyWindow(dpy, win);
     XCloseDisplay(dpy);

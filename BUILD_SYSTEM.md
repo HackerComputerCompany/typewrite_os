@@ -308,6 +308,9 @@ uefi-app/
 
 ## Changelog
 
+- **2026-04-02**: `linux-typewrite/` **`tw_doc`**: multi-page **`TwDoc`** (grid per page, `\f` between pages on save); **`linux-typewrite-x11`** uses it for **Page N of M** footer and to fix end-of-grid render glitches (no `scroll_up` past the last row).
+- **2026-04-02**: `linux-typewrite-x11/`: **Tab** inserts **four spaces**; **F5** cycles gutter **off** / **ascending line index** / **descending rows-remaining** (per buffer row).
+- **2026-04-02**: `linux-typewrite-x11/`: **F8** **typewriter view** — bottom-anchored typing with lines scrolling upward; **red horizontal rule** on the active row (drawn after the cursor).
 - **2026-04-02**: `linux-typewrite-x11/`: document **`--fullscreen`** (reliable EWMH fullscreen after map); **F11** may be taken by the WM first. Add **F5** line numbers, **F6** Letter-style margins vs full width, **F7** cycle **50–65** columns when margins are on (UEFI parity with `ShowLineNumbers` / `PageMarginsEnabled` / `PageColsMargined`).
 - **2026-04-02**: `linux-typewrite-x11/`: render with the **UEFI bitmap font set** (`fonts/*.h`), default **Special Elite**, preserve buffer across resizes, add save + 30s autosave, and add **F11 fullscreen** + cursor mode cycling.
 - **2026-04-02**: Boot menu now includes **TIC-80** (`TIC80.efi`) as menu item **[3]**; QEMU + USB install scripts optionally build/stage/copy `TIC80.efi` when TIC-80 UEFI static libs are present.
