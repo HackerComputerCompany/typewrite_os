@@ -11,6 +11,30 @@ static int row_last_nonempty(const TwCore *tw, int row) {
     return c;
 }
 
+/* Last row index on page with any non-space character, or -1 if page is all blank. */
+static int page_last_nonempty_row(const TwCore *tw) {
+    if (!tw)
+        return -1;
+    for (int r = tw->rows - 1; r >= 0; r--) {
+        if (row_last_nonempty(tw, r) >= 0)
+            return r;
+    }
+    return -1;
+}
+
+/* Highest page index that has at least one non-space character, or -1 if document empty. */
+static void twdoc_find_last_nonempty_page(const TwDoc *d, int *out_last_p) {
+    *out_last_p = -1;
+    if (!d || !d->pages)
+        return;
+    for (int p = d->n_pages - 1; p >= 0; p--) {
+        if (page_last_nonempty_row(&d->pages[p]) >= 0) {
+            *out_last_p = p;
+            return;
+        }
+    }
+}
+
 static int twdoc_grow(TwDoc *d, int need_pages) {
     if (need_pages <= 0)
         return -1;
@@ -145,12 +169,30 @@ static void lb_free(LineBuf *lb) {
     lb->len = lb->cap = 0;
 }
 
-/* Flatten document to lines (trailing spaces stripped per row). */
+/*
+ * Flatten document to lines (trailing spaces stripped per row).
+ * Omits trailing blank rows on each page and trailing wholly blank pages, so reflow
+ * matches save format and does not grow spurious pages from grid padding.
+ * A blank intermediate page is emitted as `rows` empty lines to preserve page breaks.
+ */
 static int twdoc_flatten(const TwDoc *d, LineBuf *out) {
     memset(out, 0, sizeof(*out));
-    for (int p = 0; p < d->n_pages; p++) {
+    int last_p;
+    twdoc_find_last_nonempty_page(d, &last_p);
+    if (last_p < 0)
+        return 0;
+
+    for (int p = 0; p <= last_p; p++) {
         const TwCore *tw = &d->pages[p];
-        for (int y = 0; y < tw->rows; y++) {
+        int lr = page_last_nonempty_row(tw);
+        if (lr < 0) {
+            for (int y = 0; y < tw->rows; y++) {
+                if (lb_push_line(out, tw->cells + (size_t)y * (size_t)tw->cols, 0) != 0)
+                    return -1;
+            }
+            continue;
+        }
+        for (int y = 0; y <= lr; y++) {
             int end = row_last_nonempty(tw, y) + 1;
             if (end < 0)
                 end = 0;
@@ -356,9 +398,29 @@ int twdoc_save(const char *path, const TwDoc *d) {
     FILE *fp = fopen(path, "wb");
     if (!fp)
         return -1;
-    for (int p = 0; p < d->n_pages; p++) {
+
+    int last_p;
+    twdoc_find_last_nonempty_page(d, &last_p);
+    if (last_p < 0) {
+        fputc('\n', fp);
+        fclose(fp);
+        return 0;
+    }
+
+    for (int p = 0; p <= last_p; p++) {
         const TwCore *tw = &d->pages[p];
-        for (int y = 0; y < tw->rows; y++) {
+        if (p > 0)
+            fputc('\f', fp);
+
+        int lr = page_last_nonempty_row(tw);
+        if (lr < 0) {
+            /* Blank page before later content: preserve page break with empty lines. */
+            for (int y = 0; y < tw->rows; y++)
+                fputc('\n', fp);
+            continue;
+        }
+
+        for (int y = 0; y <= lr; y++) {
             int end = tw->cols;
             while (end > 0 && tw->cells[(size_t)y * (size_t)tw->cols + (size_t)(end - 1)] == ' ')
                 end--;
@@ -369,8 +431,6 @@ int twdoc_save(const char *path, const TwDoc *d) {
             fwrite(tw->cells + (size_t)y * (size_t)tw->cols, 1, (size_t)end, fp);
             fputc('\n', fp);
         }
-        if (p + 1 < d->n_pages)
-            fputc('\f', fp);
     }
     fclose(fp);
     return 0;
