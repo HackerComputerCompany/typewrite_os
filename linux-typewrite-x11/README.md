@@ -59,11 +59,13 @@ Autoloads `Typewriter.txt` if present when no `-f`/positional file is given; dir
 
 ### Toasts
 
-Short messages render in the **footer band** (left of **Page N of M**), same ink as the gutter stamp. They **type on** at a speed derived from **your recent typing pace** (smoothed gaps between characters you insert—printable keys, **Tab**, **Enter**); until enough data exists, a moderate default pace is used. After the full line appears, the text **fades** toward the paper color (fading-ink effect).
+Short messages use the same muted ink as the gutter stamp. They **type on** at a speed derived from **your recent typing pace** (smoothed gaps between characters you insert—printable keys, **Tab**, **Enter**); until enough data exists, a moderate default pace is used. After the full line appears, the text **fades** toward the paper color (fading-ink effect).
 
-**Action toasts** fire for saves (manual and autosave), **Ctrl+P** PDF result, **F2–F9** / **F11** / **Insert**, etc.
+**Action toasts** (save, autosave, **Ctrl+P**, **F2–F9** / **F11**, **Insert**, etc.) sit in the **footer band**, to the **left** of **Page N of M**.
 
-**Status toast** (interval **F9**): **1 min** (default), **5**, **10**, **15**, **30 minutes**, or **1 hour**. Each pulse shows:
+**Status toast** (interval **F9**) appears in the **top margin band**—the strip **between the top edge of the paper and the first line of text** (Letter margins on), or along the top of the paper when margins are off.
+
+**Status toast** interval: **1 min** (default), **5**, **10**, **15**, **30 minutes**, or **1 hour**. Each pulse shows:
 
 `42 wpm | session 12 words | doc 100 words | 14:05`
 
