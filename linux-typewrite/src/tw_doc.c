@@ -75,7 +75,7 @@ int twdoc_init(TwDoc *d, int cols, int rows) {
     d->cols = cols;
     d->rows = rows;
     d->cap_pages = 0;
-    d->insert_mode = 1;
+    d->insert_mode = 0; /* default typeover; Insert toggles insert (shift) */
     return twdoc_grow(d, 1);
 }
 

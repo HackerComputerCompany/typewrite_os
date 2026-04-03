@@ -308,12 +308,13 @@ uefi-app/
 
 ## Changelog
 
-- **2026-04-02**: `linux-typewrite-x11/`: **typewriter view on by default**; **arrow/Home/End/PgUp/PgDn** cursor movement across pages; **Insert** toggles **insert** vs **typeover** (default insert; line shift in `tw_doc`); **Delete** forward. README notes **PDF export** as planned.
+- **2026-04-02**: `linux-typewrite-x11/`: **Footer toasts** (left of page stamp): reveal at **learned typing pace** + **fade to paper**; **action toasts** for save/autosave/PDF/F-keys/Insert. **Periodic status toast** via **F9** cycles **1 / 5 / 10 / 15 / 30 min / 1 hr** (default **1 min**); line format **`wpm | session words | doc words | HH:MM`**. **Ctrl+P** **Cairo** raster **PDF** (linked library). **Autosave** every **5 min** when dirty (was 30s in early bring-up). `linux-typewrite/` **`tw_doc`**: default **typeover**.
+- **2026-04-02**: `linux-typewrite-x11/`: **typewriter view** on by default; **arrow/Home/End/PgUp/PgDn** cursor movement across pages; **Delete** forward.
 - **2026-04-02**: `linux-typewrite/` **`tw_doc`**: multi-page **`TwDoc`** (grid per page, `\f` between pages on save); **`linux-typewrite-x11`** uses it for **Page N of M** footer and to fix end-of-grid render glitches (no `scroll_up` past the last row).
 - **2026-04-02**: `linux-typewrite-x11/`: **Tab** inserts **four spaces**; **F5** cycles gutter **off** / **ascending line index** / **descending rows-remaining** (per buffer row).
 - **2026-04-02**: `linux-typewrite-x11/`: **F8** **typewriter view** — bottom-anchored typing with lines scrolling upward; **red horizontal rule** on the active row (drawn after the cursor).
 - **2026-04-02**: `linux-typewrite-x11/`: document **`--fullscreen`** (reliable EWMH fullscreen after map); **F11** may be taken by the WM first. Add **F5** line numbers, **F6** Letter-style margins vs full width, **F7** cycle **50–65** columns when margins are on (UEFI parity with `ShowLineNumbers` / `PageMarginsEnabled` / `PageColsMargined`).
-- **2026-04-02**: `linux-typewrite-x11/`: render with the **UEFI bitmap font set** (`fonts/*.h`), default **Special Elite**, preserve buffer across resizes, add save + 30s autosave, and add **F11 fullscreen** + cursor mode cycling.
+- **2026-04-02**: `linux-typewrite-x11/`: render with the **UEFI bitmap font set** (`fonts/*.h`), default **Special Elite**, preserve buffer across resizes, add save + autosave, and add **F11 fullscreen** + cursor mode cycling.
 - **2026-04-02**: Boot menu now includes **TIC-80** (`TIC80.efi`) as menu item **[3]**; QEMU + USB install scripts optionally build/stage/copy `TIC80.efi` when TIC-80 UEFI static libs are present.
 - **2026-04-02**: Added Linux bring-up apps: `linux-typewrite/` (fbdev `/dev/fb0`) and `linux-typewrite-x11/` (Xlib) sharing a small text-buffer core + 8x8 font.
 - **2026-03-29**: **`start-qemu.sh`**: pick **KVM vs TCG** from **`/dev/kvm`** permissions (avoids KVM permission errors); **`QEMU_ACCEL`** override; **BUILD_SYSTEM.md** KVM group instructions.

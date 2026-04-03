@@ -11,6 +11,12 @@ CFLAGS += -I$(GNUEFI)/inc -I$(GNUEFI)/inc/x86_64 -I$(GNUEFI)/inc/protocol
 LDFLAGS ?=
 LDLIBS += -lX11
 
+PKG_CONFIG ?= pkg-config
+CAIRO_CFLAGS := $(shell $(PKG_CONFIG) --cflags cairo 2>/dev/null)
+CAIRO_LIBS := $(shell $(PKG_CONFIG) --libs cairo 2>/dev/null)
+CFLAGS += $(CAIRO_CFLAGS)
+LDLIBS += $(CAIRO_LIBS) -lm
+
 BIN_DIR := .
 BIN := $(BIN_DIR)/x11typewrite
 
@@ -18,7 +24,7 @@ SRC_SHARED := \
 	../linux-typewrite/src/tw_core.c \
 	../linux-typewrite/src/tw_doc.c
 
-SRC := src/main_x11.c src/tw_bitmapfont_uefi.c
+SRC := src/main_x11.c src/tw_bitmapfont_uefi.c src/pdf_export.c
 
 .PHONY: all clean
 

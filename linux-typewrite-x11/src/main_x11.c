@@ -1,6 +1,7 @@
 #include "tw_core.h"
 #include "tw_doc.h"
 #include "tw_bitmapfont_uefi.h"
+#include "pdf_export.h"
 
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
@@ -8,6 +9,7 @@
 #include <X11/Xatom.h>
 
 #include <errno.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,6 +43,25 @@ static const char *const kBgLabels[10] = {
 #define COLS_MARGINED_MAX  65
 #define COLS_MARGINED_DEFAULT 58
 #define PAGE_COLS_FULL_WIDTH 80 /* uefi-app/main.c active cols when margins off */
+
+#define AUTOSAVE_INTERVAL_MS (5u * 60u * 1000u)
+
+#define STATUS_PULSE_NUM 6
+
+static const uint32_t k_status_pulse_ms[STATUS_PULSE_NUM] = {
+    1u * 60u * 1000u,  /* 1 min (default) */
+    5u * 60u * 1000u,
+    10u * 60u * 1000u,
+    15u * 60u * 1000u,
+    30u * 60u * 1000u,
+    60u * 60u * 1000u, /* 1 hr */
+};
+
+static const char *const k_status_pulse_label[STATUS_PULSE_NUM] = {
+    "1 min", "5 min", "10 min", "15 min", "30 min", "1 hr",
+};
+
+#define HELP_MENU_ROWS 23
 
 typedef enum {
     LINE_NUM_OFF = 0,
@@ -184,6 +205,184 @@ static uint32_t line_number_ink(int bg_idx) {
     return (bg_idx % 10 == 1) ? pack_xrgb8888(0x606e8au) : pack_xrgb8888(0x8c96afu);
 }
 
+/* Footer band: same vertical band as "Page N of M"; toast sits on the left. */
+typedef struct {
+    int fy;       /* baseline Y for stamp text */
+    int page_fx; /* left edge of "Page …" */
+} FooterLayout;
+
+static void footer_layout(const ViewLayout *lay, const TwBitmapFont *font, int view_rows, int cur_page0, int n_pages,
+                          FooterLayout *out) {
+    const int cell_w = (int)font->max_width + 1;
+    const int cell_h = (int)font->line_box;
+    char f[48];
+    snprintf(f, sizeof(f), "Page %d of %d", cur_page0 + 1, n_pages);
+    int stamp_w = (int)strlen(f) * cell_w;
+
+    int text_bot = lay->text_y0 + view_rows * cell_h;
+    int paper_bot = lay->paper_y + lay->paper_h;
+    int fx, fy;
+
+    if (paper_bot - text_bot >= cell_h + 2) {
+        fy = text_bot + (paper_bot - text_bot - cell_h) / 2 + (int)font->max_top;
+        fx = lay->paper_x + lay->paper_w - lay->margin_px - stamp_w;
+    } else {
+        fy = lay->text_y0 + (int)font->max_top;
+        fx = lay->paper_x + lay->paper_w - stamp_w - 4;
+        if (fx < lay->text_x0)
+            fx = lay->text_x0;
+    }
+    out->fy = fy;
+    out->page_fx = fx;
+}
+
+#define TOAST_MAX 220
+#define TOAST_HOLD_MS 2400u
+#define TOAST_FADE_MS 4800u
+
+/*
+ * Learn typing pace from gaps between characters (printable keys, Tab, Enter).
+ * Long pauses do not skew the average; toast uses a snapshot ms/char when shown.
+ */
+typedef struct {
+    uint64_t last_char_ms;
+    float ema_ms_per_char; /* 0 = not enough data yet */
+} TypingPace;
+
+#define TYPING_PAUSE_MS 2800u
+#define TYPING_MIN_GAP_MS 40u
+#define TYPING_GAP_CAP_MS 720u
+#define TYPING_DEFAULT_MS_PER_CHAR 165u
+
+static void typing_pace_note_char(TypingPace *p, uint64_t now) {
+    if (!p)
+        return;
+    if (p->last_char_ms != 0u && now > p->last_char_ms) {
+        uint64_t dt = now - p->last_char_ms;
+        if (dt >= TYPING_MIN_GAP_MS && dt < TYPING_PAUSE_MS) {
+            float dtf = (float)dt;
+            if (dtf > (float)TYPING_GAP_CAP_MS)
+                dtf = (float)TYPING_GAP_CAP_MS;
+            if (p->ema_ms_per_char <= 0.f)
+                p->ema_ms_per_char = dtf;
+            else
+                p->ema_ms_per_char = 0.88f * p->ema_ms_per_char + 0.12f * dtf;
+        }
+    }
+    p->last_char_ms = now;
+}
+
+static uint32_t typing_pace_toast_ms_per_char(const TypingPace *p) {
+    float m = (p && p->ema_ms_per_char > 0.f) ? p->ema_ms_per_char : (float)TYPING_DEFAULT_MS_PER_CHAR;
+    if (m < 40.f)
+        m = 40.f;
+    if (m > 600.f)
+        m = 600.f;
+    return (uint32_t)(m + 0.5f);
+}
+
+typedef struct {
+    char text[TOAST_MAX];
+    size_t len;
+    uint64_t t0_ms;
+    uint32_t ms_per_char;
+    int active;
+} ToastState;
+
+static void toast_show(ToastState *ts, const TypingPace *pace, const char *msg) {
+    if (!ts || !msg)
+        return;
+    snprintf(ts->text, sizeof(ts->text), "%s", msg);
+    ts->len = strnlen(ts->text, sizeof(ts->text));
+    ts->t0_ms = mono_ms();
+    ts->ms_per_char = typing_pace_toast_ms_per_char(pace);
+    if (ts->ms_per_char < 40u)
+        ts->ms_per_char = 40u;
+    ts->active = (ts->len > 0);
+}
+
+static uint32_t lerp_ink_to_paper(uint32_t ink_argb, uint32_t paper_argb, float t) {
+    t = fminf(1.f, fmaxf(0.f, t));
+    float ir = (float)((ink_argb >> 16) & 0xff), ig = (float)((ink_argb >> 8) & 0xff), ib = (float)(ink_argb & 0xff);
+    float pr = (float)((paper_argb >> 16) & 0xff), pg = (float)((paper_argb >> 8) & 0xff), pb = (float)(paper_argb & 0xff);
+    unsigned r = (unsigned)(ir + (pr - ir) * t + 0.5f);
+    unsigned g = (unsigned)(ig + (pg - ig) * t + 0.5f);
+    unsigned b = (unsigned)(ib + (pb - ib) * t + 0.5f);
+    if (r > 255u)
+        r = 255u;
+    if (g > 255u)
+        g = 255u;
+    if (b > 255u)
+        b = 255u;
+    return pack_xrgb8888((r << 16) | (g << 8) | b);
+}
+
+static void draw_toast(uint32_t *pix, int w, int h, const TwBitmapFont *font, int bg_idx, const ViewLayout *lay,
+                       int view_rows, int cur_page0, int n_pages, ToastState *toast, uint64_t now) {
+    if (!toast || !toast->active || toast->len == 0 || !font)
+        return;
+
+    const uint32_t paper_bg = pack_xrgb8888(kBgColors[bg_idx % 10]);
+    const uint32_t ink_full = line_number_ink(bg_idx);
+
+    uint64_t elapsed = (now >= toast->t0_ms) ? (now - toast->t0_ms) : 0u;
+    uint32_t mpc = toast->ms_per_char ? toast->ms_per_char : TYPING_DEFAULT_MS_PER_CHAR;
+    uint64_t typing_ms = (toast->len <= 1) ? 0u : (uint64_t)(toast->len - 1u) * (uint64_t)mpc;
+
+    size_t nvis;
+    uint32_t fg = ink_full;
+
+    if (elapsed < typing_ms) {
+        nvis = 1u + (size_t)(elapsed / (uint64_t)mpc);
+        if (nvis > toast->len)
+            nvis = toast->len;
+    } else {
+        nvis = toast->len;
+        uint64_t post = elapsed - typing_ms;
+        if (post < TOAST_HOLD_MS) {
+            fg = ink_full;
+        } else if (post < TOAST_HOLD_MS + TOAST_FADE_MS) {
+            float u = (float)(post - TOAST_HOLD_MS) / (float)TOAST_FADE_MS;
+            fg = lerp_ink_to_paper(ink_full, paper_bg, u);
+        } else {
+            toast->active = 0;
+            return;
+        }
+    }
+
+    FooterLayout fl;
+    footer_layout(lay, font, view_rows, cur_page0, n_pages, &fl);
+
+    const int cell_w = (int)font->max_width + 1;
+    int tx = lay->paper_x + (lay->margin_px > 0 ? lay->margin_px : 4);
+    int max_right = fl.page_fx - 8;
+    if (max_right <= tx + cell_w * 4)
+        max_right = tx + cell_w * 40; /* narrow overlap: still show something */
+    int max_chars = (max_right - tx) / cell_w;
+    if (max_chars < 4)
+        max_chars = 4;
+
+    char buf[TOAST_MAX + 8];
+    size_t copy = nvis;
+    if (copy > sizeof(buf) - 8)
+        copy = sizeof(buf) - 8;
+    memcpy(buf, toast->text, copy);
+    buf[copy] = 0;
+
+    if ((int)strlen(buf) > max_chars) {
+        if (max_chars > 3) {
+            buf[(size_t)max_chars - 3u] = 0;
+            size_t L = strlen(buf);
+            if (L + 3u < sizeof(buf))
+                memcpy(buf + L, "...", 4);
+        } else {
+            memcpy(buf, "...", 4);
+        }
+    }
+
+    draw_text_mono(pix, w, h, tx, fl.fy, font, buf, fg, paper_bg);
+}
+
 /* Map screen row sy -> buffer row; -1 = blank row above the growing document. */
 static int typewriter_buf_row_for_sy(int sy, int cursor_y, int view_rows) {
     int V = view_rows;
@@ -210,30 +409,15 @@ static void draw_page_footer(uint32_t *pix, int w, int h, const TwBitmapFont *fo
                              const ViewLayout *lay, int view_rows, int cur_page0, int n_pages) {
     if (n_pages < 1)
         return;
-    const int cell_w = (int)font->max_width + 1;
-    const int cell_h = (int)font->line_box;
     const uint32_t paper_bg = pack_xrgb8888(kBgColors[bg_idx % 10]);
     uint32_t stamp = line_number_ink(bg_idx);
 
+    FooterLayout fl;
+    footer_layout(lay, font, view_rows, cur_page0, n_pages, &fl);
+
     char f[48];
     snprintf(f, sizeof(f), "Page %d of %d", cur_page0 + 1, n_pages);
-    int fw = (int)strlen(f) * cell_w;
-
-    int text_bot = lay->text_y0 + view_rows * cell_h;
-    int paper_bot = lay->paper_y + lay->paper_h;
-    int fx, fy;
-
-    if (paper_bot - text_bot >= cell_h + 2) {
-        fy = text_bot + (paper_bot - text_bot - cell_h) / 2 + (int)font->max_top;
-        fx = lay->paper_x + lay->paper_w - lay->margin_px - fw;
-    } else {
-        fy = lay->text_y0 + (int)font->max_top;
-        fx = lay->paper_x + lay->paper_w - fw - 4;
-        if (fx < lay->text_x0)
-            fx = lay->text_x0;
-    }
-
-    draw_text_mono(pix, w, h, fx, fy, font, f, stamp, paper_bg);
+    draw_text_mono(pix, w, h, fl.page_fx, fl.fy, font, f, stamp, paper_bg);
 }
 
 static void render(uint32_t *pix, int w, int h, const TwCore *tw, const TwBitmapFont *font,
@@ -334,6 +518,55 @@ static void update_title(Display *dpy, Window win, const char *filename) {
 
 static void usage(const char *argv0) {
     fprintf(stderr, "Usage: %s [--fullscreen] [-f FILE] [FILE]\n", argv0);
+}
+
+static void path_basename(const char *path, char *out, size_t osz) {
+    const char *s = strrchr(path, '/');
+    snprintf(out, osz, "%s", s ? s + 1 : path);
+}
+
+static const char *cursor_mode_toast_label(CursorMode m) {
+    switch (m) {
+    case CURSOR_BAR:
+        return "Cursor: bar";
+    case CURSOR_BAR_BLINK:
+        return "Cursor: blinking bar";
+    case CURSOR_BLOCK:
+        return "Cursor: block";
+    case CURSOR_BLOCK_BLINK:
+        return "Cursor: blinking block";
+    case CURSOR_HIDDEN:
+        return "Cursor: hidden";
+    default:
+        return "Cursor changed";
+    }
+}
+
+static const char *gutter_toast_label(LineNumMode m) {
+    switch (m) {
+    case LINE_NUM_OFF:
+        return "Gutter: off";
+    case LINE_NUM_ASC:
+        return "Gutter: line 1, 2, 3...";
+    case LINE_NUM_DESC:
+        return "Gutter: rows remaining";
+    default:
+        return "Gutter changed";
+    }
+}
+
+/* Derive sibling .pdf path from save path, or default name when no file yet. */
+static void pdf_out_path(char *out, size_t osz, const char *src) {
+    if (!src || !src[0]) {
+        snprintf(out, osz, "Typewriter.pdf");
+        return;
+    }
+    const char *dot = strrchr(src, '.');
+    if (dot && dot > src) {
+        snprintf(out, osz, "%.*s.pdf", (int)(dot - src), src);
+    } else {
+        snprintf(out, osz, "%s.pdf", src);
+    }
 }
 
 /*
@@ -462,6 +695,95 @@ static void doc_page_next(TwDoc *d) {
         d->cur_page++;
 }
 
+/* Whitespace-separated tokens; each grid row ends a word (typewriter layout). */
+static unsigned long twdoc_count_words(const TwDoc *doc) {
+    unsigned long n = 0;
+    if (!doc || !doc->pages)
+        return 0;
+    for (int pi = 0; pi < doc->n_pages; pi++) {
+        const TwCore *tw = &doc->pages[pi];
+        if (!tw->cells || tw->rows <= 0 || tw->cols <= 0)
+            continue;
+        for (int row = 0; row < tw->rows; row++) {
+            int in_word = 0;
+            for (int col = 0; col < tw->cols; col++) {
+                unsigned char c = (unsigned char)tw->cells[(size_t)row * (size_t)tw->cols + (size_t)col];
+                if (c != ' ') {
+                    in_word = 1;
+                } else if (in_word) {
+                    n++;
+                    in_word = 0;
+                }
+            }
+            if (in_word)
+                n++;
+        }
+    }
+    return n;
+}
+
+static unsigned typing_pace_to_wpm(const TypingPace *p) {
+    if (!p || p->ema_ms_per_char <= 0.f)
+        return 0u;
+    float w = 12000.f / p->ema_ms_per_char;
+    if (w < 0.f)
+        return 0u;
+    if (w > 999.f)
+        return 999u;
+    return (unsigned)(w + 0.5f);
+}
+
+/*
+ * session_typing_units: printable +1, Tab +4, Enter +1 (standard 5-keystroke "word" for session tally).
+ */
+static void format_status_pulse_toast(char *buf, size_t buflen, const TwDoc *doc, const TypingPace *pace,
+                                      uint64_t session_typing_units) {
+    time_t clk = time(NULL);
+    struct tm tm_buf;
+    struct tm *tp = localtime_r(&clk, &tm_buf);
+    char timestr[16];
+    if (tp)
+        strftime(timestr, sizeof(timestr), "%H:%M", tp);
+    else
+        snprintf(timestr, sizeof(timestr), "--:--");
+
+    unsigned wpm = typing_pace_to_wpm(pace);
+    unsigned long sess_words = (unsigned long)((session_typing_units + 4u) / 5u);
+    unsigned long doc_words = twdoc_count_words(doc);
+
+    snprintf(buf, buflen, "%u wpm | session %lu words | doc %lu words | %s", wpm, sess_words, doc_words, timestr);
+}
+
+static void help_fill_lines(char lines[HELP_MENU_ROWS][160], int bg_idx, int cols_margined, int status_pulse_idx) {
+    snprintf(lines[0], sizeof(lines[0]),
+             "Help  Up/Dn select  Home/End  PgUp/Dn  Enter close");
+    snprintf(lines[1], sizeof(lines[1]), "F1    toggle this menu");
+    snprintf(lines[2], sizeof(lines[2]), "F2    cycle font");
+    snprintf(lines[3], sizeof(lines[3]), "F3    cycle cursor");
+    snprintf(lines[4], sizeof(lines[4]), "F4    background: %s", kBgLabels[bg_idx % 10]);
+    snprintf(lines[5], sizeof(lines[5]), "F5    gutter: off / 1..n / rows-left");
+    snprintf(lines[6], sizeof(lines[6]), "Tab   insert 4 spaces");
+    snprintf(lines[7], sizeof(lines[7]), "      multi-page: Enter on last row");
+    snprintf(lines[8], sizeof(lines[8]), "      saves use Ctrl-L between pages");
+    snprintf(lines[9], sizeof(lines[9]), "F6    page margins (Letter) on/off");
+    snprintf(lines[10], sizeof(lines[10]), "F7    chars/line %d-%d (margins on): %d", COLS_MARGINED_MIN,
+             COLS_MARGINED_MAX, cols_margined);
+    snprintf(lines[11], sizeof(lines[11]), "F8    typewriter view (default on)");
+    if (status_pulse_idx < 0 || status_pulse_idx >= STATUS_PULSE_NUM)
+        status_pulse_idx = 0;
+    snprintf(lines[12], sizeof(lines[12]), "F9    status toast: every %s (cycle)", k_status_pulse_label[status_pulse_idx]);
+    snprintf(lines[13], sizeof(lines[13]), "Arrows move cursor (cross pages at edges)");
+    snprintf(lines[14], sizeof(lines[14]), "Home/End  line; PgUp/PgDn  page");
+    snprintf(lines[15], sizeof(lines[15]), "Insert  toggle insert / typeover (default typeover)");
+    snprintf(lines[16], sizeof(lines[16]), "Delete  delete forward");
+    snprintf(lines[17], sizeof(lines[17]), "F11   fullscreen (often taken by WM)");
+    snprintf(lines[18], sizeof(lines[18]), "      use: x11typewrite --fullscreen");
+    snprintf(lines[19], sizeof(lines[19]), "Ctrl+S save (autosave every 5 min when dirty)");
+    snprintf(lines[20], sizeof(lines[20]), "Ctrl+P export PDF (Cairo, linked library)");
+    snprintf(lines[21], sizeof(lines[21]), "Ctrl+Q / Ctrl+X  save and exit");
+    snprintf(lines[22], sizeof(lines[22]), "Esc   close menu (when open)");
+}
+
 int main(int argc, char **argv) {
     Display *dpy = NULL;
     int screen = 0;
@@ -529,12 +851,18 @@ int main(int argc, char **argv) {
     CursorMode cursor_mode = CURSOR_BLOCK_BLINK;
     int bg_idx = 1; /* Cream */
     int show_help = 0;
+    int help_sel = 0;
     int dirty = 0;
     uint64_t last_autosave_ms = mono_ms();
     int page_margins = 1;
     LineNumMode line_num_mode = LINE_NUM_OFF;
     int cols_margined = COLS_MARGINED_DEFAULT;
     int typewriter_mode = 1;
+    ToastState toast = {0};
+    TypingPace typing_pace = {0};
+    uint64_t session_typing_units = 0;
+    uint64_t next_status_pulse_ms = 0;
+    int status_pulse_idx = 0;
 
     ViewLayout init_lay;
     compute_view_layout(w, h, font, page_margins, line_num_mode, cols_margined, &init_lay);
@@ -558,6 +886,8 @@ int main(int argc, char **argv) {
     }
 
     update_title(dpy, win, filename);
+
+    next_status_pulse_ms = mono_ms() + k_status_pulse_ms[status_pulse_idx];
 
     for (;;) {
         while (XPending(dpy)) {
@@ -589,91 +919,195 @@ int main(int argc, char **argv) {
                 char buf[32];
                 int n = XLookupString(&ev.xkey, buf, (int)sizeof(buf), NULL, NULL);
 
-                if (ks == XK_Escape)
-                    goto out;
-                if ((ks == XK_F11 || ks1 == XK_F11) && a_wm_state != None && a_wm_state_fullscreen != None) {
+                if (ks == XK_Escape) {
+                    if (show_help)
+                        show_help = 0;
+                }
+                if (!show_help && (ks == XK_F11 || ks1 == XK_F11) && a_wm_state != None &&
+                    a_wm_state_fullscreen != None) {
                     net_wm_state(dpy, screen, win, a_wm_state, a_wm_state_fullscreen, 2);
+                    toast_show(&toast, &typing_pace, "Fullscreen: toggled (WM may override)");
                 }
                 if (ks == XK_F1) {
+                    int was_open = show_help;
                     show_help = !show_help;
+                    if (show_help && !was_open)
+                        help_sel = 0;
                 }
-                if (ks == XK_F2) {
+                if (!show_help && ks == XK_F2) {
                     font_idx = (font_idx + 1) % tw_uefi_font_count();
                     font = tw_uefi_font_get(font_idx);
                     update_title(dpy, win, filename);
+                    char tmsg[TOAST_MAX];
+                    snprintf(tmsg, sizeof(tmsg), "Font: %s", font->name);
+                    toast_show(&toast, &typing_pace, tmsg);
                 }
-                if (ks == XK_F3) {
+                if (!show_help && ks == XK_F3) {
                     cursor_mode = (CursorMode)((cursor_mode + 1) % CURSOR_MODE_NUM);
+                    toast_show(&toast, &typing_pace, cursor_mode_toast_label(cursor_mode));
                 }
-                if (ks == XK_F4) {
+                if (!show_help && ks == XK_F4) {
                     bg_idx = (bg_idx + 1) % 10;
+                    char tmsg[TOAST_MAX];
+                    snprintf(tmsg, sizeof(tmsg), "Background: %s", kBgLabels[bg_idx % 10]);
+                    toast_show(&toast, &typing_pace, tmsg);
                 }
-                if (ks == XK_F5) {
+                if (!show_help && ks == XK_F5) {
                     line_num_mode = (LineNumMode)((line_num_mode + 1) % LINE_NUM_MODE_NUM);
+                    toast_show(&toast, &typing_pace, gutter_toast_label(line_num_mode));
                 }
-                if (ks == XK_F6) {
+                if (!show_help && ks == XK_F6) {
                     page_margins = !page_margins;
+                    toast_show(&toast, &typing_pace, page_margins ? "Letter margins: on" : "Letter margins: off");
                 }
-                if (ks == XK_F7) {
+                if (!show_help && ks == XK_F7) {
                     cols_margined++;
                     if (cols_margined > COLS_MARGINED_MAX)
                         cols_margined = COLS_MARGINED_MIN;
+                    char tmsg[TOAST_MAX];
+                    snprintf(tmsg, sizeof(tmsg), "Chars per line: %d", cols_margined);
+                    toast_show(&toast, &typing_pace, tmsg);
                 }
-                if (ks == XK_F8) {
+                if (!show_help && ks == XK_F8) {
                     typewriter_mode = !typewriter_mode;
+                    toast_show(&toast, &typing_pace, typewriter_mode ? "Typewriter view: on" : "Typewriter view: off");
+                }
+                if (!show_help && ks == XK_F9) {
+                    uint64_t tnow = mono_ms();
+                    status_pulse_idx = (status_pulse_idx + 1) % STATUS_PULSE_NUM;
+                    next_status_pulse_ms = tnow + k_status_pulse_ms[status_pulse_idx];
+                    char tmsg[TOAST_MAX];
+                    snprintf(tmsg, sizeof(tmsg), "Status toast: every %s", k_status_pulse_label[status_pulse_idx]);
+                    toast_show(&toast, &typing_pace, tmsg);
                 }
                 if ((ev.xkey.state & ControlMask) && (ks == XK_s || ks == XK_S)) {
                     if (filename[0] == 0) {
                         snprintf(filename, sizeof(filename), "Typewriter.txt");
                     }
+                    char base[PATH_MAX];
+                    path_basename(filename, base, sizeof(base));
                     if (twdoc_save(filename, &doc) == 0) {
                         dirty = 0;
                         last_autosave_ms = mono_ms();
+                        char tmsg[TOAST_MAX];
+                        snprintf(tmsg, sizeof(tmsg), "Saved %.150s", base);
+                        toast_show(&toast, &typing_pace, tmsg);
+                    } else {
+                        char tmsg[TOAST_MAX];
+                        snprintf(tmsg, sizeof(tmsg), "Save failed: %.150s", base);
+                        toast_show(&toast, &typing_pace, tmsg);
                     }
                     update_title(dpy, win, filename);
                 }
-                if (ks == XK_BackSpace) {
+                if (!show_help && (ev.xkey.state & ControlMask) && (ks == XK_p || ks == XK_P)) {
+                    char pdf_path[PATH_MAX];
+                    pdf_out_path(pdf_path, sizeof(pdf_path), filename[0] ? filename : NULL);
+                    TwPdfOpts po = {.page_margins = page_margins,
+                                    .line_num_mode = (TwPdfLineNum)(int)line_num_mode,
+                                    .cols_margined = cols_margined,
+                                    .bg_idx = bg_idx};
+                    char pdf_base[PATH_MAX];
+                    path_basename(pdf_path, pdf_base, sizeof(pdf_base));
+                    if (tw_export_pdf(&doc, pdf_path, font, &po) == 0) {
+                        char tmsg[TOAST_MAX];
+                        snprintf(tmsg, sizeof(tmsg), "Printed PDF: %.150s", pdf_base);
+                        toast_show(&toast, &typing_pace, tmsg);
+                    } else {
+                        char tmsg[TOAST_MAX];
+                        snprintf(tmsg, sizeof(tmsg), "PDF failed: %.150s", pdf_base);
+                        toast_show(&toast, &typing_pace, tmsg);
+                    }
+                }
+                if ((ev.xkey.state & ControlMask) && (ks == XK_q || ks == XK_Q || ks == XK_x || ks == XK_X)) {
+                    if (filename[0] == 0)
+                        snprintf(filename, sizeof(filename), "Typewriter.txt");
+                    (void)twdoc_save(filename, &doc);
+                    dirty = 0;
+                    update_title(dpy, win, filename);
+                    goto out;
+                }
+                if (ks == XK_BackSpace && !show_help) {
                     twdoc_backspace(&doc);
                     dirty = 1;
-                } else if (ks == XK_Delete || ks == XK_KP_Delete) {
+                } else if ((ks == XK_Delete || ks == XK_KP_Delete) && !show_help) {
                     twdoc_delete_forward(&doc);
                     dirty = 1;
-                } else if (ks == XK_Left || ks == XK_KP_Left) {
+                } else if ((ks == XK_Left || ks == XK_KP_Left) && !show_help) {
                     doc_cursor_left(&doc);
                     dirty = 1;
-                } else if (ks == XK_Right || ks == XK_KP_Right) {
+                } else if ((ks == XK_Right || ks == XK_KP_Right) && !show_help) {
                     doc_cursor_right(&doc);
                     dirty = 1;
                 } else if (ks == XK_Up || ks == XK_KP_Up) {
-                    doc_cursor_up(&doc);
-                    dirty = 1;
+                    if (show_help) {
+                        if (help_sel > 0)
+                            help_sel--;
+                    } else {
+                        doc_cursor_up(&doc);
+                        dirty = 1;
+                    }
                 } else if (ks == XK_Down || ks == XK_KP_Down) {
-                    doc_cursor_down(&doc);
-                    dirty = 1;
+                    if (show_help) {
+                        if (help_sel < HELP_MENU_ROWS - 1)
+                            help_sel++;
+                    } else {
+                        doc_cursor_down(&doc);
+                        dirty = 1;
+                    }
                 } else if (ks == XK_Home || ks == XK_KP_Home) {
-                    doc_cursor_home(&doc);
-                    dirty = 1;
+                    if (show_help)
+                        help_sel = 0;
+                    else {
+                        doc_cursor_home(&doc);
+                        dirty = 1;
+                    }
                 } else if (ks == XK_End || ks == XK_KP_End) {
-                    doc_cursor_end(&doc);
-                    dirty = 1;
+                    if (show_help)
+                        help_sel = HELP_MENU_ROWS - 1;
+                    else {
+                        doc_cursor_end(&doc);
+                        dirty = 1;
+                    }
                 } else if (ks == XK_Page_Up || ks == XK_KP_Page_Up) {
-                    doc_page_prev(&doc);
-                    dirty = 1;
+                    if (show_help)
+                        help_sel = 0;
+                    else {
+                        doc_page_prev(&doc);
+                        dirty = 1;
+                    }
                 } else if (ks == XK_Page_Down || ks == XK_KP_Page_Down) {
-                    doc_page_next(&doc);
-                    dirty = 1;
-                } else if (ks == XK_Insert) {
+                    if (show_help)
+                        help_sel = HELP_MENU_ROWS - 1;
+                    else {
+                        doc_page_next(&doc);
+                        dirty = 1;
+                    }
+                } else if (ks == XK_Insert && !show_help) {
                     doc.insert_mode = !doc.insert_mode;
+                    toast_show(&toast, &typing_pace, doc.insert_mode ? "Insert mode" : "Typeover mode");
                     dirty = 1;
-                } else if (ks == XK_Tab) {
+                } else if (ks == XK_Tab && !show_help) {
+                    uint64_t t = mono_ms();
                     for (int ti = 0; ti < 4; ti++)
                         twdoc_putc(&doc, ' ');
+                    typing_pace_note_char(&typing_pace, t);
+                    session_typing_units += 4u;
                     dirty = 1;
                 } else if (ks == XK_Return || ks == XK_KP_Enter) {
-                    twdoc_newline(&doc);
-                    dirty = 1;
-                } else if (n > 0 && is_printable_ascii((unsigned char)buf[0])) {
+                    if (show_help)
+                        show_help = 0;
+                    else {
+                        uint64_t t = mono_ms();
+                        twdoc_newline(&doc);
+                        typing_pace_note_char(&typing_pace, t);
+                        session_typing_units += 1u;
+                        dirty = 1;
+                    }
+                } else if (n > 0 && is_printable_ascii((unsigned char)buf[0]) && !show_help) {
+                    uint64_t t = mono_ms();
                     twdoc_putc(&doc, buf[0]);
+                    typing_pace_note_char(&typing_pace, t);
+                    session_typing_units += 1u;
                     dirty = 1;
                 }
             }
@@ -708,33 +1142,56 @@ int main(int argc, char **argv) {
             cursor_visible = ((now / 500u) % 2u) == 0u;
         }
 
-        if (filename[0] != 0 && dirty && (now - last_autosave_ms) >= 30000u) {
+        if (filename[0] != 0 && dirty && (now - last_autosave_ms) >= AUTOSAVE_INTERVAL_MS) {
             if (twdoc_save(filename, &doc) == 0) {
                 dirty = 0;
                 last_autosave_ms = now;
+                char base[PATH_MAX];
+                path_basename(filename, base, sizeof(base));
+                char tmsg[TOAST_MAX];
+                snprintf(tmsg, sizeof(tmsg), "Autosaved %.150s", base);
+                toast_show(&toast, &typing_pace, tmsg);
             } else {
                 last_autosave_ms = now; /* avoid tight retry loop */
+                toast_show(&toast, &typing_pace, "Autosave failed");
             }
         }
 
-        {
-            TwCore *tw = twdoc_cur(&doc);
-            if (!tw)
-                goto out;
-            render(back, w, h, tw, font, cursor_mode, cursor_visible, bg_idx, &lay, page_margins,
-                   line_num_mode, typewriter_mode, twdoc_cur_page(&doc), twdoc_num_pages(&doc));
+        if (now >= next_status_pulse_ms) {
+            if (status_pulse_idx < 0 || status_pulse_idx >= STATUS_PULSE_NUM)
+                status_pulse_idx = 0;
+            next_status_pulse_ms = now + k_status_pulse_ms[status_pulse_idx];
+            char pulse[TOAST_MAX];
+            format_status_pulse_toast(pulse, sizeof(pulse), &doc, &typing_pace, session_typing_units);
+            toast_show(&toast, &typing_pace, pulse);
         }
 
+        TwCore *tw_frame = twdoc_cur(&doc);
+        if (!tw_frame)
+            goto out;
+        int view_rows = (tw_frame->rows < lay.rows) ? tw_frame->rows : lay.rows;
+        render(back, w, h, tw_frame, font, cursor_mode, cursor_visible, bg_idx, &lay, page_margins, line_num_mode,
+               typewriter_mode, twdoc_cur_page(&doc), twdoc_num_pages(&doc));
+
         if (show_help) {
+            char hlines[HELP_MENU_ROWS][160];
+            help_fill_lines(hlines, bg_idx, cols_margined, status_pulse_idx);
+            if (help_sel < 0)
+                help_sel = 0;
+            if (help_sel >= HELP_MENU_ROWS)
+                help_sel = HELP_MENU_ROWS - 1;
+
             const uint32_t panel = pack_xrgb8888(0x1c2028u);
             const uint32_t panel2 = pack_xrgb8888(0x3a404cu);
             const uint32_t fg = pack_xrgb8888(0xfff5c8u);
             const uint32_t bg = panel;
+            const uint32_t sel_bg = pack_xrgb8888(0x4a5568u);
+            const uint32_t sel_fg = pack_xrgb8888(0xfffff0u);
 
             int step = (int)font->line_box;
             int inner = 8;
             int bw = (int)(font->max_width + 1) * 54 + inner * 2;
-            int bh = step * 24 + inner * 2;
+            int bh = step * HELP_MENU_ROWS + inner * 2;
             int bx = (w > bw) ? (w - bw) / 2 : 10;
             int by = (h > bh) ? (h - bh) / 2 : 10;
 
@@ -742,40 +1199,18 @@ int main(int argc, char **argv) {
             fill_rect(back, w, h, bx, by, bw, bh, panel);
 
             int x0 = bx + inner;
-            int y0 = by + inner + (int)font->max_top;
-            draw_text_mono(back, w, h, x0, y0, font, "Help", fg, bg);
-            y0 += step;
-            draw_text_mono(back, w, h, x0, y0, font, "F1    toggle help", fg, bg); y0 += step;
-            draw_text_mono(back, w, h, x0, y0, font, "F2    cycle font", fg, bg); y0 += step;
-            draw_text_mono(back, w, h, x0, y0, font, "F3    cycle cursor", fg, bg); y0 += step;
-            {
-                char b[128];
-                snprintf(b, sizeof(b), "F4    background: %s", kBgLabels[bg_idx % 10]);
-                draw_text_mono(back, w, h, x0, y0, font, b, fg, bg);
+            for (int hi = 0; hi < HELP_MENU_ROWS; hi++) {
+                int row_top = by + inner + hi * step;
+                uint32_t row_bg = (hi == help_sel) ? sel_bg : bg;
+                uint32_t row_fg = (hi == help_sel) ? sel_fg : fg;
+                if (hi == help_sel)
+                    fill_rect(back, w, h, bx + 2, row_top, bw - 4, step, sel_bg);
+                draw_text_mono(back, w, h, x0, row_top + (int)font->max_top, font, hlines[hi], row_fg, row_bg);
             }
-            y0 += step;
-            draw_text_mono(back, w, h, x0, y0, font, "F5    gutter: off / 1..n / rows-left", fg, bg); y0 += step;
-            draw_text_mono(back, w, h, x0, y0, font, "Tab   insert 4 spaces", fg, bg); y0 += step;
-            draw_text_mono(back, w, h, x0, y0, font, "      multi-page: Enter on last row", fg, bg); y0 += step;
-            draw_text_mono(back, w, h, x0, y0, font, "      saves use Ctrl-L between pages", fg, bg); y0 += step;
-            draw_text_mono(back, w, h, x0, y0, font, "F6    page margins (Letter) on/off", fg, bg); y0 += step;
-            {
-                char b[128];
-                snprintf(b, sizeof(b), "F7    chars/line %d-%d (margins on): %d", COLS_MARGINED_MIN,
-                         COLS_MARGINED_MAX, cols_margined);
-                draw_text_mono(back, w, h, x0, y0, font, b, fg, bg);
-            }
-            y0 += step;
-            draw_text_mono(back, w, h, x0, y0, font, "F8    typewriter view (default on)", fg, bg); y0 += step;
-            draw_text_mono(back, w, h, x0, y0, font, "Arrows move (cross pages at edges)", fg, bg); y0 += step;
-            draw_text_mono(back, w, h, x0, y0, font, "Home/End  line; PgUp/PgDn  page", fg, bg); y0 += step;
-            draw_text_mono(back, w, h, x0, y0, font, "Insert  toggle insert / typeover", fg, bg); y0 += step;
-            draw_text_mono(back, w, h, x0, y0, font, "Delete  delete forward", fg, bg); y0 += step;
-            draw_text_mono(back, w, h, x0, y0, font, "F11   fullscreen (often taken by WM)", fg, bg); y0 += step;
-            draw_text_mono(back, w, h, x0, y0, font, "      use: x11typewrite --fullscreen", fg, bg); y0 += step;
-            draw_text_mono(back, w, h, x0, y0, font, "Ctrl+S save (autosave every 30s after)", fg, bg); y0 += step;
-            draw_text_mono(back, w, h, x0, y0, font, "Esc   exit", fg, bg);
         }
+
+        draw_toast(back, w, h, font, bg_idx, &lay, view_rows, twdoc_cur_page(&doc), twdoc_num_pages(&doc), &toast,
+                   now);
 
         if (!img) {
             img = XCreateImage(dpy, DefaultVisual(dpy, screen), (unsigned)DefaultDepth(dpy, screen),
