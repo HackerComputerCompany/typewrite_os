@@ -86,15 +86,18 @@ For QEMU, run [`../start-qemu.sh`](../start-qemu.sh) from the repo root (it runs
 
 | Key | Action |
 |-----|--------|
-| **F1** | Open / close the **settings menu** (highlight row with **↑/↓**, **Space** or **Enter** to apply). Ignored while a **resolution confirm** dialog is showing. |
+| **F1** | Open / close **help / settings** (same idea as the X11 app): **↑/↓**, **Home/End**, **Space** or **Enter** to run the highlighted row. |
+| **F2–F11** | When the menu is **closed**, same actions as in the menu (**F2** font, **F3** cursor, **F4** background, **F5** gutter, **F6** margins, **F7** chars/line, **F10** word wrap, **F8** typewriter view, **F9** status pulse interval, **F11** resolution). |
 | **ESC** | If **resolution confirm** is active: **revert** to the previous GOP mode. If the **menu** is open: close it. Otherwise **exit** the app (UEFI **SCAN_ESC** `0x0017`, not Up Arrow `0x0001`). |
 | **← → ↑ ↓** | Move the **cursor** in the page grid (navigation only; does not open the menu). |
+| **Home** / **End** | Start of line / after last non-space on the line (when the menu is closed). |
+| **Insert** / **Delete** | Toggle **insert** vs **typeover** (default typeover); **delete forward** under the cursor. |
 | **PgUp** / **PgDn** | **Previous** / **next** page (saves current page to slot files, same as menu items). |
-| **Printable keys** | Type into the grid; **Enter** next row; **Backspace** / **Tab** as usual. |
+| **Printable keys** | Type into the grid; **Enter** next row; **Backspace** / **Tab** as usual. **Word wrap** (default on, like X11): at end of line, text after the **last space** moves to the next row if that row is empty. |
 
 ### Settings menu rows (F1)
 
-Roughly in order: **font** (cycle 9 faces, see [`../fonts/README.md`](../fonts/README.md)), **larger / smaller** scale (half-steps **1.0×–6.0×**), **background**, **cursor** style (bar / block / blink / hidden), **key debug** overlay, **line numbers**, **page margins** (Letter vs full width), **chars per line** (50–65 with margins), **save** / **load** current page file, **next save slot**, **next** / **previous** page, **shutdown** (writes settings then `ResetSystem`), **Resolution (try next)** — see below.
+Aligned with **linux-typewrite-x11** where practical: **font**, **larger / smaller** scale, **background**, **cursor**, **key debug**, **gutter** (off / line 1…n / rows remaining on the page), **page margins**, **chars per line**, **word wrap**, **typewriter view** (bottom-anchored grid + red rule), **status pulse** interval (drives periodic HUD refresh), **save** / **load**, **slot**, **page** next/prev, **shutdown**, **resolution** — see below.
 
 ### GOP resolution (try / confirm / revert)
 
@@ -115,7 +118,11 @@ ASCII key/value lines (also written after successful saves / shutdown as configu
 | `cols_margined` | 50–65 |
 | `font` | `FONT_KIND` index |
 | `scale_twice` | 2–12 → scale = value/2 |
-| `bg`, `cursor`, `keydbg`, `linenums`, `slot` | As named |
+| `bg`, `cursor`, `keydbg`, `slot` | As named |
+| `gutter_mode` | `0` off, `1` ascending line index, `2` rows remaining (per page) |
+| `linenums` | Legacy: `1` → same as `gutter_mode=1` |
+| `word_wrap`, `typewriter_view`, `insert_mode` | `0` / `1` |
+| `status_pulse` | `0`…`5` → interval index (1 min … 60 min) |
 | **`gop_mode`** | GOP mode index to prefer at boot; **ignored** if `>= MaxMode` on this machine (prevents bad values from another PC) |
 | **`autoload`** | `1` (default): after the **first editor frame**, try to open **`Typewriter.txt`**. `0`: skip that open entirely (workaround if firmware **hangs** in `Open()` while a splash bitmap is still visible — e.g. some Lenovo laptops). |
 
@@ -123,7 +130,7 @@ Boot **serial** lines **`[TW] first RenderDocument complete`** then **`[TW] boot
 
 ### Status HUD (clock)
 
-A **centered** **HH:MM** readout uses a fixed **7-segment** style (not the document font), gray LCD look. It shows **session elapsed time** (hours and minutes since the editor loop starts after splash/autoload), updated when the minute rolls over. The HUD also repaints on **full** document clears or when a **save/load** banner appears or expires. File/slot status uses the built-in simple font on the **left** of the status row.
+A **centered** **HH:MM** readout uses a fixed **7-segment** style (not the document font), gray LCD look. It shows **session elapsed time** (hours and minutes since the editor loop starts after splash/autoload), updated when the minute rolls over. The HUD also repaints on a configurable **status pulse** interval (**F9** / menu, like the X11 status toast cadence) and on **full** document clears or when a **save/load** banner appears or expires. File/slot status uses the built-in simple font on the **left** of the status row.
 
 ### Page memory model (`main.c`)
 

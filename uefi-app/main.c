@@ -4,8 +4,9 @@
  * A native UEFI typewriter experience with:
  * - Bitmap font rendering (Virgil, Inter, + retro / typewriter faces)
  * - Typewriter-style input with visual feedback
- * - F1 settings menu; Letter 50–65 cols / 60 lines (1" margins) or 80 cols margins off;
- *   PgUp/PgDn pages; arrows move cursor; autoload Typewriter.txt after first frame
+ * - F1 help/settings (X11 parity): gutter off/asc/desc, word wrap, typewriter view,
+ *   status pulse interval, F2–F11 shortcuts; Insert/Del; soft wrap at last space;
+ *   Letter 50–65 cols / 60 lines (1" margins) or 80 cols margins off; PgUp/PgDn pages
  *   (avoids firmware hangs on Open); optional autoload=0 in Typewriter.settings;
  *   Settings → Resolution: cycle GOP modes with 10s try/confirm (ESC or timeout reverts)
  * - LCD-style clock HUD
@@ -347,7 +348,16 @@ static PAGE_SNAPSHOT RamPages[MAX_RAM_PAGES];
 static UINT32 RamPageCount = 1;
 static UINT32 ActiveRamPageIndex = 0;
 static UINT32 SaveSlotIndex = 0;
-static BOOLEAN ShowLineNumbers = FALSE;
+
+/* Gutter: X11 parity — off / ascending line index / rows remaining (per page). */
+typedef enum {
+    LINE_NUM_OFF = 0,
+    LINE_NUM_ASC,
+    LINE_NUM_DESC,
+    LINE_NUM_MODE_NUM
+} LINE_NUM_MODE;
+
+static UINT32 LineNumMode = LINE_NUM_OFF;
 static BOOLEAN PageMarginsEnabled = TRUE;
 /* Characters per line when margins on (50–65); pitch fills 6.5" printable width. */
 static UINT32 PageColsMargined = PAGE_COLS_MARGINS_DEFAULT;
@@ -375,6 +385,20 @@ static UINT32 G_pageContentY0 = 0;
 /* Blinking cursor: repaint only the cursor band, not the whole line. */
 static BOOLEAN CursorBlinkRedraw = FALSE;
 
+/* X11 defaults: typewriter view on, soft word wrap on, typeover (insert off). */
+static BOOLEAN TypewriterView = TRUE;
+static BOOLEAN DocWordWrap = TRUE;
+static BOOLEAN InsertMode = FALSE;
+
+#define STATUS_PULSE_NUM 6
+static const UINT32 kStatusPulseMin[STATUS_PULSE_NUM] = {1, 5, 10, 15, 30, 60};
+static UINT32 StatusPulseIdx = 0;
+static UINT64 NextStatusPulseUs = 0;
+
+#define TW_NO_ROW ((UINT32)0xFFFFFFFFu)
+
+static CHAR16 TwEmptyRow[PAGE_COLS_MAX + 1];
+
 #define CHAR_GAP 2
 /* Word space advance multiplier (advance for ' ' is this × normal font advance). */
 #define SPACE_ADVANCE_MULT 3
@@ -390,6 +414,10 @@ static VOID MarkFullRepaint(VOID) {
 }
 
 static VOID MarkDirtyRange(UINT32 top, UINT32 bot) {
+    if (TypewriterView) {
+        MarkFullRepaint();
+        return;
+    }
     if (RepaintFull)
         return;
     if (top > bot) {
@@ -488,14 +516,14 @@ static VOID UpdatePageLayoutFromFb(const FRAMEBUFFER *fb) {
     }
 
     G_lineNumGutterPx = 0;
-    if (ShowLineNumbers) {
+    if (LineNumMode != LINE_NUM_OFF) {
         UINT32 gw = GlyphAdvance(L'0');
 
         if (gw < FONT_PIXEL_KERN())
             gw = FONT_PIXEL_KERN();
-        G_lineNumGutterPx = gw * 3 + FONT_SZ_MUL(10);
-        if (G_lineNumGutterPx < FONT_SZ_MUL(24))
-            G_lineNumGutterPx = FONT_SZ_MUL(24);
+        G_lineNumGutterPx = gw * 4 + FONT_SZ_MUL(12);
+        if (G_lineNumGutterPx < FONT_SZ_MUL(28))
+            G_lineNumGutterPx = FONT_SZ_MUL(28);
     }
 
     contentW = cols * G_pageColPitch;
@@ -515,8 +543,38 @@ static VOID UpdatePageLayoutFromFb(const FRAMEBUFFER *fb) {
     G_pageContentY0 = G_pagePaperY + (PageMarginsEnabled ? G_pageMarginPx : 0);
 }
 
-static INT32 RowTextScreenY(UINT32 rowIdx) {
-    return (INT32)G_pageContentY0 + (INT32)(rowIdx * G_lineStep) - (INT32)Doc.ScrollYPx;
+/* rowIdx = screen line 0..PAGE_ROWS-1 (top → bottom). */
+static INT32 RowTextScreenY(UINT32 screenRow) {
+    return (INT32)G_pageContentY0 + (INT32)(screenRow * G_lineStep) - (INT32)Doc.ScrollYPx;
+}
+
+/* Typewriter view: same mapping as linux-typewrite-x11 typewriter_buf_row_for_sy. */
+static UINT32 TwBufRowForScreenRow(UINT32 sy) {
+    UINT32 V = PAGE_ROWS;
+    UINT32 cy = Doc.CursorRow;
+    UINT32 start_sy;
+    UINT32 buf0;
+
+    if (!TypewriterView)
+        return sy;
+    start_sy = (cy + 1 <= V) ? (V - (cy + 1)) : 0;
+    if (sy < start_sy)
+        return TW_NO_ROW;
+    buf0 = (cy + 1 <= V) ? 0 : (cy - (V - 1));
+    return buf0 + (sy - start_sy);
+}
+
+static UINT32 TwScreenRowForBufRow(UINT32 br) {
+    UINT32 V = PAGE_ROWS;
+    UINT32 cy = Doc.CursorRow;
+    UINT32 start_sy;
+    UINT32 buf0;
+
+    if (!TypewriterView)
+        return br;
+    start_sy = (cy + 1 <= V) ? (V - (cy + 1)) : 0;
+    buf0 = (cy + 1 <= V) ? 0 : (cy - (V - 1));
+    return start_sy + (br - buf0);
 }
 
 static UINT32 ContentXForCol(UINT32 col) {
@@ -529,7 +587,8 @@ static UINT32 GridRowPaintRightScreenX(const CHAR16 *row) {
 }
 
 static VOID EnsureCursorVisibleScroll(const FRAMEBUFFER *fb) {
-    UINT32 cy = G_pageContentY0 + Doc.CursorRow * G_lineStep;
+    UINT32 sy = TwScreenRowForBufRow(Doc.CursorRow);
+    UINT32 cy = G_pageContentY0 + sy * G_lineStep;
     UINT32 viewBot = G_docViewportBot;
     UINT32 maxScroll;
 
@@ -551,6 +610,9 @@ static VOID InitDocumentGridSpaces(VOID) {
     UINT32 r;
     UINT32 c;
 
+    for (c = 0; c < PAGE_COLS_MAX; c++)
+        TwEmptyRow[c] = L' ';
+    TwEmptyRow[PAGE_COLS_MAX] = 0;
     for (r = 0; r < PAGE_ROWS; r++) {
         for (c = 0; c < PAGE_COLS_MAX; c++)
             Doc.Grid[r][c] = L' ';
@@ -560,6 +622,70 @@ static VOID InitDocumentGridSpaces(VOID) {
 
 /* Pixel/word wrap removed; font changes only need a full layout pass. */
 static VOID ReflowAllLines(VOID) {
+}
+
+static BOOLEAN RowAllSpacesActive(UINT32 row) {
+    UINT32 mx = PageColsActive();
+    UINT32 c;
+
+    if (row >= PAGE_ROWS)
+        return TRUE;
+    for (c = 0; c < mx; c++) {
+        if (Doc.Grid[row][c] != L' ' && Doc.Grid[row][c] != 0)
+            return FALSE;
+    }
+    return TRUE;
+}
+
+/* X11 tw_doc soft wrap: break at last space when next row is empty. */
+static BOOLEAN TrySoftWrapUe(VOID) {
+    UINT32 mx = PageColsActive();
+    UINT32 cy = Doc.CursorRow;
+    CHAR16 *row = Doc.Grid[cy];
+    UINT32 last_ns = (UINT32)-1;
+    INTN sp = -1;
+    UINT32 tail_len;
+    CHAR16 buf[PAGE_COLS_MAX];
+    UINT32 i;
+
+    if (!DocWordWrap || mx > sizeof(buf) / sizeof(buf[0]) || cy >= PAGE_ROWS - 1)
+        return FALSE;
+
+    for (i = 0; i < mx; i++) {
+        if (row[i] != L' ' && row[i] != 0)
+            last_ns = i;
+    }
+    if (last_ns == (UINT32)-1)
+        return FALSE;
+    for (i = last_ns; i > 0; i--) {
+        if (row[i - 1] == L' ') {
+            sp = (INTN)(i - 1);
+            break;
+        }
+    }
+    if (sp < 0)
+        return FALSE;
+    tail_len = last_ns - (UINT32)sp;
+    if (tail_len == 0 || tail_len >= mx)
+        return FALSE;
+    if (!RowAllSpacesActive(cy + 1))
+        return FALSE;
+
+    CopyMem(buf, row + sp + 1, tail_len * sizeof(CHAR16));
+    for (i = (UINT32)sp + 1; i < mx; i++)
+        row[i] = L' ';
+    row[mx] = 0;
+
+    cy++;
+    for (i = 0; i < mx; i++)
+        Doc.Grid[cy][i] = L' ';
+    CopyMem(Doc.Grid[cy], buf, tail_len * sizeof(CHAR16));
+    for (i = tail_len; i < mx; i++)
+        Doc.Grid[cy][i] = L' ';
+    Doc.Grid[cy][mx] = 0;
+    Doc.CursorRow = cy;
+    Doc.CursorCol = tail_len;
+    return TRUE;
 }
 
 /* GOP front buffer (hardware). When non-NULL, fb->PixelData points at a Pool back buffer. */
@@ -1130,22 +1256,25 @@ static UINT32 LineNumberInk(VOID) {
     return RGB(140, 150, 175);
 }
 
-static VOID DrawGridRowIfVisible(FRAMEBUFFER *fb, UINT32 r, UINT32 fg, UINT32 bg) {
-    INT32 sy = RowTextScreenY(r);
+static VOID DrawGridRowIfVisible(FRAMEBUFFER *fb, UINT32 screenRow, UINT32 fg, UINT32 bg) {
+    UINT32 br = TwBufRowForScreenRow(screenRow);
+    INT32 sy = RowTextScreenY(screenRow);
     UINT32 yu;
     UINT32 px;
     UINT32 i;
-    CHAR16 *ln = Doc.Grid[r];
+    const CHAR16 *ln = (br == TW_NO_ROW) ? TwEmptyRow : Doc.Grid[br];
+
     if (sy < 0 || sy >= (INT32)G_docViewportBot || sy + (INT32)G_lineStep <= 0)
         return;
     yu = (UINT32)sy;
-    if (ShowLineNumbers && G_lineNumGutterPx > 0) {
+    if (LineNumMode != LINE_NUM_OFF && G_lineNumGutterPx > 0 && br != TW_NO_ROW) {
         CHAR16 lnbuf[12];
         UINT32 lnx = G_pageContentX0 - G_lineNumGutterPx + FONT_SZ_MUL(4);
+        UINT32 val = (LineNumMode == LINE_NUM_ASC) ? (br + 1) : (PAGE_ROWS - br);
 
         if (lnx + 8 * FONT_PIXEL_KERN() > G_pageContentX0)
             lnx = G_pagePaperX + FONT_SZ_MUL(2);
-        UnicodeSPrint(lnbuf, sizeof(lnbuf), L"%u", r + 1);
+        UnicodeSPrint(lnbuf, sizeof(lnbuf), L"%u", val);
         DrawString(fb, lnx, yu, lnbuf, LineNumberInk(), bg);
     }
     px = G_pageContentX0;
@@ -1184,9 +1313,9 @@ static VOID DrawClippedPaperFill(FRAMEBUFFER *fb, UINT32 paperBg, UINT32 clipBot
     DrawRect(fb, x0, y0, x1 - x0, y1 - y0, paperBg);
 }
 
-static VOID RepaintDocLineCursorBand(FRAMEBUFFER *fb, UINT32 line, UINT32 bgColor, UINT32 fgColor) {
-    CHAR16 *ln = Doc.Grid[line];
-    INT32 sy = RowTextScreenY(line);
+static VOID RepaintDocLineCursorBand(FRAMEBUFFER *fb, UINT32 bufRow, UINT32 bgColor, UINT32 fgColor) {
+    CHAR16 *ln = Doc.Grid[bufRow];
+    INT32 sy = RowTextScreenY(TwScreenRowForBufRow(bufRow));
     UINT32 cx = DocCursorPixelX();
     UINT32 cw;
     UINT32 yu;
@@ -1255,7 +1384,7 @@ static VOID SlotCycleNext(EFI_HANDLE img);
 static VOID PageGoNext(EFI_HANDLE img);
 static VOID PageGoPrev(EFI_HANDLE img);
 
-#define MENU_ITEM_COUNT 16
+#define MENU_ITEM_COUNT 19
 #define MENU_FIRST_ITEM_LINE 4
 
 static const CHAR16 *const kMenuFontLabels[FONT_NUM] = {
@@ -1278,12 +1407,30 @@ static VOID MenuFormatScale(CHAR16 *buf, UINTN bufChars) {
     UnicodeSPrint(buf, bufChars, L"%u.%u×", w, f);
 }
 
+static const CHAR16 *GutterModeMenuLabel(VOID) {
+    switch (LineNumMode) {
+    case LINE_NUM_OFF:
+        return L"off";
+    case LINE_NUM_ASC:
+        return L"1…n";
+    case LINE_NUM_DESC:
+        return L"rows left";
+    default:
+        return L"off";
+    }
+}
+
+static VOID TwScheduleNextStatusPulse(VOID) {
+    NextStatusPulseUs = SessionElapsedUs + (UINT64)kStatusPulseMin[StatusPulseIdx] * 60ULL * 1000000ULL;
+}
+
+/* Menu row actions (F1 overlay); same indices used by F2–F10 shortcuts where noted. */
 static VOID MenuActivate(UINT32 item) {
     CHAR16 b[64];
     EFI_STATUS fst;
 
     switch (item) {
-        case 0:
+        case 0: /* F2 font */
             CurrentFontKind = (FONT_KIND)((CurrentFontKind + 1) % FONT_NUM);
             ReflowAllLines();
             MarkFullRepaint();
@@ -1300,11 +1447,11 @@ static VOID MenuActivate(UINT32 item) {
             ReflowAllLines();
             MarkFullRepaint();
             break;
-        case 3:
+        case 3: /* F4 background */
             CurrentBgColor = (CurrentBgColor + 1) % 10;
             MarkFullRepaint();
             break;
-        case 4:
+        case 4: /* F3 cursor */
             CursorMode = (CursorMode + 1) % CURSOR_MODE_NUM;
             CursorBlinkAccumUs = 0;
             CursorBlinkPhase = TRUE;
@@ -1315,16 +1462,16 @@ static VOID MenuActivate(UINT32 item) {
             KeyDebugMode = !KeyDebugMode;
             MarkFullRepaint();
             break;
-        case 6:
-            ShowLineNumbers = !ShowLineNumbers;
+        case 6: /* F5 gutter (X11: off / asc / desc) */
+            LineNumMode = (LineNumMode + 1) % LINE_NUM_MODE_NUM;
             MarkFullRepaint();
             break;
-        case 7:
+        case 7: /* F6 margins */
             PageMarginsEnabled = !PageMarginsEnabled;
             ClampCursorToActiveCols();
             MarkFullRepaint();
             break;
-        case 8:
+        case 8: /* F7 cols */
             PageColsMargined++;
             if (PageColsMargined > PAGE_COLS_MARGINS_MAX)
                 PageColsMargined = PAGE_COLS_MARGINS_MIN;
@@ -1332,7 +1479,26 @@ static VOID MenuActivate(UINT32 item) {
             ClampCursorToActiveCols();
             MarkFullRepaint();
             break;
-        case 9:
+        case 9: /* F10 word wrap */
+            DocWordWrap = !DocWordWrap;
+            UnicodeSPrint(b, sizeof(b), L"Word wrap: %ls", DocWordWrap ? L"on" : L"off");
+            FileOpSetBannerOk(b);
+            MarkFullRepaint();
+            break;
+        case 10: /* F8 typewriter view */
+            TypewriterView = !TypewriterView;
+            UnicodeSPrint(b, sizeof(b), L"Typewriter view: %ls", TypewriterView ? L"on" : L"off");
+            FileOpSetBannerOk(b);
+            MarkFullRepaint();
+            break;
+        case 11: /* F9 status pulse interval */
+            StatusPulseIdx = (StatusPulseIdx + 1) % STATUS_PULSE_NUM;
+            TwScheduleNextStatusPulse();
+            UnicodeSPrint(b, sizeof(b), L"Status pulse: %u min", kStatusPulseMin[StatusPulseIdx]);
+            FileOpSetBannerOk(b);
+            HudNeedPaint = TRUE;
+            break;
+        case 12:
             fst = TypewriterSaveCurrentSlotPage(BootImageHandle);
             if (!EFI_ERROR(fst)) {
                 UnicodeSPrint(b, sizeof(b), L"Saved TWS%uP%02u", SaveSlotIndex + 1, ActiveRamPageIndex + 1);
@@ -1342,7 +1508,7 @@ static VOID MenuActivate(UINT32 item) {
             Print(L"[Typewrite] save %r\n", fst);
             MarkFullRepaint();
             break;
-        case 10:
+        case 13:
             fst = TypewriterLoadCurrentSlotPage(BootImageHandle);
             if (!EFI_ERROR(fst)) {
                 CopyDocToRamPage(ActiveRamPageIndex);
@@ -1353,24 +1519,24 @@ static VOID MenuActivate(UINT32 item) {
             Print(L"[Typewrite] load %r\n", fst);
             MarkFullRepaint();
             break;
-        case 11:
+        case 14:
             SlotCycleNext(BootImageHandle);
             break;
-        case 12:
+        case 15:
             PageGoNext(BootImageHandle);
             MarkFullRepaint();
             break;
-        case 13:
+        case 16:
             PageGoPrev(BootImageHandle);
             MarkFullRepaint();
             break;
-        case 14:
+        case 17:
             TypewriterSaveSettings(BootImageHandle);
             if (RT != NULL && RT->ResetSystem != NULL)
                 RT->ResetSystem(EfiResetShutdown, EFI_SUCCESS, 0, NULL);
             Running = FALSE;
             break;
-        case 15:
+        case 18: /* F11 / resolution */
             if (Gop && Gop->Mode)
                 TwTryResolutionMode(TwNextGopMode(Gop->Mode->Mode));
             break;
@@ -1387,7 +1553,7 @@ static VOID DrawMenuOverlay(FRAMEBUFFER *fb) {
     UINT32 hd = RGB(72, 72, 88);
     UINT32 hi = RGB(88, 118, 188);
     UINT32 hs = RGB(252, 252, 255);
-    CHAR16 lines[20][100];
+    CHAR16 lines[28][100];
     UINT32 n = 0;
     UINT32 step = LineAdvance();
     UINT32 margin = FONT_SZ_MUL(6);
@@ -1396,33 +1562,36 @@ static VOID DrawMenuOverlay(FRAMEBUFFER *fb) {
     UINT32 i;
     CHAR16 sc[16];
 
-    StrCpy(lines[n++], L"Typewrite OS — Settings");
-    StrCpy(lines[n++], L"↑↓ highlight   Space or Enter: apply   F1 or ESC: close");
-    StrCpy(lines[n++], L"PgUp / PgDn: pages · ←→↑↓: move cursor in the document");
+    StrCpy(lines[n++], L"Typewrite OS — Help / settings (X11 parity)");
+    StrCpy(lines[n++], L"↑↓ select · Enter/Space: run row · Home/End · F1/ESC: close");
+    StrCpy(lines[n++], L"F2–F8,F10,F11 when closed · Insert/Del · PgUp/PgDn pages");
     StrCpy(lines[n++], L" ");
-    UnicodeSPrint(lines[n++], sizeof(lines[0]), L"Font (cycle) — %ls", kMenuFontLabels[CurrentFontKind]);
+    UnicodeSPrint(lines[n++], sizeof(lines[0]), L"F2 Font — %ls", kMenuFontLabels[CurrentFontKind]);
     MenuFormatScale(sc, sizeof(sc));
-    UnicodeSPrint(lines[n++], sizeof(lines[0]), L"Larger font — now %ls", sc);
-    UnicodeSPrint(lines[n++], sizeof(lines[0]), L"Smaller font — now %ls", sc);
-    UnicodeSPrint(lines[n++], sizeof(lines[0]), L"Background (cycle) — %ls", kMenuBgLabels[CurrentBgColor]);
-    UnicodeSPrint(lines[n++], sizeof(lines[0]), L"Cursor (cycle) — %ls", kMenuCursorLabels[CursorMode]);
+    UnicodeSPrint(lines[n++], sizeof(lines[0]), L"Larger font — %ls", sc);
+    UnicodeSPrint(lines[n++], sizeof(lines[0]), L"Smaller font — %ls", sc);
+    UnicodeSPrint(lines[n++], sizeof(lines[0]), L"F4 Background — %ls", kMenuBgLabels[CurrentBgColor]);
+    UnicodeSPrint(lines[n++], sizeof(lines[0]), L"F3 Cursor — %ls", kMenuCursorLabels[CursorMode]);
     UnicodeSPrint(lines[n++], sizeof(lines[0]), L"Key debug overlay — %ls", KeyDebugMode ? L"on" : L"off");
-    UnicodeSPrint(lines[n++], sizeof(lines[0]), L"Line numbers — %ls", ShowLineNumbers ? L"on" : L"off");
-    UnicodeSPrint(lines[n++], sizeof(lines[0]), L"Page margins (Letter) — %ls",
+    UnicodeSPrint(lines[n++], sizeof(lines[0]), L"F5 Gutter — %ls", GutterModeMenuLabel());
+    UnicodeSPrint(lines[n++], sizeof(lines[0]), L"F6 Page margins (Letter) — %ls",
                   PageMarginsEnabled ? L"on · 6.5\" line" : L"off · 80 cols / 8\"");
     UnicodeSPrint(lines[n++], sizeof(lines[0]),
-                  L"Chars per line (margins, %u–%u) — %u", PAGE_COLS_MARGINS_MIN,
+                  L"F7 Chars/line (%u–%u) — %u", PAGE_COLS_MARGINS_MIN,
                   PAGE_COLS_MARGINS_MAX, PageColsMargined);
+    UnicodeSPrint(lines[n++], sizeof(lines[0]), L"F10 Word wrap — %ls", DocWordWrap ? L"on" : L"off");
+    UnicodeSPrint(lines[n++], sizeof(lines[0]), L"F8 Typewriter view — %ls", TypewriterView ? L"on" : L"off");
+    UnicodeSPrint(lines[n++], sizeof(lines[0]), L"F9 Status pulse — %u min", kStatusPulseMin[StatusPulseIdx]);
     StrCpy(lines[n++], L"Save current page (UTF-8, boot volume)");
     StrCpy(lines[n++], L"Load current page");
     StrCpy(lines[n++], L"Next save slot (1–5)");
-    StrCpy(lines[n++], L"Next page (same as PgDn)");
-    StrCpy(lines[n++], L"Previous page (same as PgUp)");
-    StrCpy(lines[n++], L"Shutdown");
+    StrCpy(lines[n++], L"Next page (PgDn)");
+    StrCpy(lines[n++], L"Previous page (PgUp)");
+    StrCpy(lines[n++], L"Shutdown (save settings)");
     {
         UINT32 w = (Gop && Gop->Mode && Gop->Mode->Info) ? Gop->Mode->Info->HorizontalResolution : 0;
         UINT32 h = (Gop && Gop->Mode && Gop->Mode->Info) ? Gop->Mode->Info->VerticalResolution : 0;
-        UnicodeSPrint(lines[n++], sizeof(lines[0]), L"Resolution (try next) — %ux%u", w, h);
+        UnicodeSPrint(lines[n++], sizeof(lines[0]), L"F11 Resolution (try next) — %ux%u", w, h);
     }
 
     for (i = 0; i < n; i++) {
@@ -1884,8 +2053,20 @@ static VOID TypewriterApplySettingsLine(const CHAR8 *line, UINTN linelen) {
         else if (i == 6 && CompareMem(line, "keydbg", 6) == 0)
             KeyDebugMode = (v != 0);
         else if (i == 8 && CompareMem(line, "linenums", 8) == 0)
-            ShowLineNumbers = (v != 0);
-        else if (i == 4 && CompareMem(line, "slot", 4) == 0)
+            LineNumMode = (v != 0) ? LINE_NUM_ASC : LINE_NUM_OFF;
+        else if (i == 11 && CompareMem(line, "gutter_mode", 11) == 0) {
+            if (v < LINE_NUM_MODE_NUM)
+                LineNumMode = (LINE_NUM_MODE)v;
+        } else if (i == 11 && CompareMem(line, "insert_mode", 11) == 0)
+            InsertMode = (v != 0);
+        else if (i == 9 && CompareMem(line, "word_wrap", 9) == 0)
+            DocWordWrap = (v != 0);
+        else if (i == 15 && CompareMem(line, "typewriter_view", 15) == 0)
+            TypewriterView = (v != 0);
+        else if (i == 12 && CompareMem(line, "status_pulse", 12) == 0) {
+            if (v < STATUS_PULSE_NUM)
+                StatusPulseIdx = v;
+        } else if (i == 4 && CompareMem(line, "slot", 4) == 0)
             SaveSlotIndex = v;
         else if (i == 8 && CompareMem(line, "gop_mode", 8) == 0) {
             SettingsGopMode = v;
@@ -1967,6 +2148,10 @@ static VOID TypewriterLoadSettingsIfPresent(EFI_HANDLE img) {
         CursorMode = CURSOR_BLOCK_BLINK;
     if (SaveSlotIndex >= SAVE_SLOT_COUNT)
         SaveSlotIndex = 0;
+    if (LineNumMode >= LINE_NUM_MODE_NUM)
+        LineNumMode = LINE_NUM_OFF;
+    if (StatusPulseIdx >= STATUS_PULSE_NUM)
+        StatusPulseIdx = 0;
 }
 
 static VOID TypewriterSaveSettings(EFI_HANDLE img) {
@@ -2009,8 +2194,11 @@ static VOID TypewriterSaveSettings(EFI_HANDLE img) {
     used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"cursor", CursorMode);
     used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"keydbg",
                                 KeyDebugMode ? 1U : 0U);
-    used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"linenums",
-                                ShowLineNumbers ? 1U : 0U);
+    used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"gutter_mode", (UINT32)LineNumMode);
+    used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"word_wrap", DocWordWrap ? 1U : 0U);
+    used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"typewriter_view", TypewriterView ? 1U : 0U);
+    used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"insert_mode", InsertMode ? 1U : 0U);
+    used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"status_pulse", StatusPulseIdx);
     used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"slot", SaveSlotIndex);
     used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"autoload",
                                 SettingsAutoloadTxt ? 1U : 0U);
@@ -2511,10 +2699,14 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
             if (hudY < fb->Height)
                 DrawRect(fb, 0, hudY, fb->Width, fb->Height - hudY, bgColor);
             DrawClippedPaperFill(fb, bgColor, G_docViewportBot);
-            for (UINT32 line = 0; line < PAGE_ROWS; line++) {
-                DrawGridRowIfVisible(fb, line, fgColor, bgColor);
-                LastLinePaintedRight[line] = LinePaintRightX(fb, Doc.Grid[line], line);
-                if ((line & 15) == 15)
+            for (UINT32 screenRow = 0; screenRow < PAGE_ROWS; screenRow++) {
+                UINT32 br = TwBufRowForScreenRow(screenRow);
+
+                DrawGridRowIfVisible(fb, screenRow, fgColor, bgColor);
+                LastLinePaintedRight[screenRow] =
+                    LinePaintRightX(fb, (br == TW_NO_ROW) ? TwEmptyRow : Doc.Grid[br],
+                                    (br == TW_NO_ROW) ? PAGE_ROWS : br);
+                if ((screenRow & 15) == 15)
                     KickFirmwareWatchdog();
             }
             RepaintFull = FALSE;
@@ -2525,28 +2717,30 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
             if (bot >= PAGE_ROWS)
                 bot = PAGE_ROWS - 1;
 
-            for (UINT32 line = top; line <= bot; line++) {
-                INT32 sy = RowTextScreenY(line);
+            for (UINT32 bufLine = top; bufLine <= bot; bufLine++) {
+                UINT32 screenRow = TwScreenRowForBufRow(bufLine);
+                INT32 sy = RowTextScreenY(screenRow);
                 UINT32 clearR;
-                CHAR16 *ln = Doc.Grid[line];
+                CHAR16 *ln = Doc.Grid[bufLine];
                 UINT32 yu;
 
                 if (sy < 0 || sy >= (INT32)G_docViewportBot || sy + (INT32)lineBodyH <= 0)
                     continue;
                 yu = (UINT32)sy;
-                clearR = LinePaintRightX(fb, ln, line);
-                if (line < PAGE_ROWS && LastLinePaintedRight[line] > clearR)
-                    clearR = LastLinePaintedRight[line];
+                clearR = LinePaintRightX(fb, ln, bufLine);
+                if (screenRow < PAGE_ROWS && LastLinePaintedRight[screenRow] > clearR)
+                    clearR = LastLinePaintedRight[screenRow];
                 if (clearR > G_pageContentX0)
                     DrawRect(fb, G_pageContentX0, yu, clearR - G_pageContentX0, lineBodyH, bgColor);
-                DrawGridRowIfVisible(fb, line, fgColor, bgColor);
-                if (line < PAGE_ROWS)
-                    LastLinePaintedRight[line] = LinePaintRightX(fb, ln, line);
+                DrawGridRowIfVisible(fb, screenRow, fgColor, bgColor);
+                if (screenRow < PAGE_ROWS)
+                    LastLinePaintedRight[screenRow] = LinePaintRightX(fb, ln, bufLine);
             }
             (void)prevPainted;
         }
         if (CursorShouldDrawThisFrame() && !ShowMenu) {
-            INT32 csy = RowTextScreenY(Doc.CursorRow);
+            UINT32 csr = TwScreenRowForBufRow(Doc.CursorRow);
+            INT32 csy = RowTextScreenY(csr);
 
             if (csy >= 0 && csy < (INT32)G_docViewportBot && csy + (INT32)lineBodyH > 0) {
                 UINT32 yu = (UINT32)csy;
@@ -2558,6 +2752,16 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
                     DrawRect(fb, cx, yu, cwBar, lineBox, fgColor);
                 else if (CursorMode == CURSOR_BLOCK || CursorMode == CURSOR_BLOCK_BLINK)
                     DrawRect(fb, cx, yu, CursorGlyphWidthOnLine(NULL), lineBox, fgColor);
+                /* X11 parity: red rule under the active typing line in typewriter view. */
+                if (TypewriterView && Doc.CursorCol < PageColsActive()) {
+                    UINT32 ruleY = yu + lineBodyH - 2;
+                    UINT32 ruleW = PageColsActive() * G_pageColPitch;
+                    UINT32 rx = G_pageContentX0;
+                    UINT32 ruleColor = RGB(192, 24, 24);
+
+                    if (ruleY + 2 < fb->Height && rx + ruleW <= fb->Width)
+                        DrawRect(fb, rx, ruleY, ruleW, 2, ruleColor);
+                }
             }
         }
         DirtyLineTop = 1;
@@ -2651,6 +2855,20 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
             KickFirmwareWatchdog();
             return EFI_SUCCESS;
         }
+        if (key->ScanCode == SCAN_HOME && key->UnicodeChar == 0) {
+            MenuSelRow = 0;
+            MarkFullRepaint();
+            Doc.Modified = TRUE;
+            KickFirmwareWatchdog();
+            return EFI_SUCCESS;
+        }
+        if (key->ScanCode == SCAN_END && key->UnicodeChar == 0) {
+            MenuSelRow = MENU_ITEM_COUNT - 1;
+            MarkFullRepaint();
+            Doc.Modified = TRUE;
+            KickFirmwareWatchdog();
+            return EFI_SUCCESS;
+        }
         if (key->UnicodeChar == L' ' || key->UnicodeChar == 0x0D || key->UnicodeChar == 0x0A) {
             MenuActivate(MenuSelRow);
             KickFirmwareWatchdog();
@@ -2664,6 +2882,72 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
         if (key->UnicodeChar == L' ' || key->UnicodeChar == 0x0D || key->UnicodeChar == 0x0A) {
             TwConfirmResolution();
             return EFI_SUCCESS;
+        }
+        return EFI_SUCCESS;
+    }
+
+    if (!ShowMenu && key->ScanCode == SCAN_INSERT && key->UnicodeChar == 0) {
+        CHAR16 msg[48];
+
+        InsertMode = !InsertMode;
+        UnicodeSPrint(msg, sizeof(msg), L"%ls", InsertMode ? L"Insert mode" : L"Typeover mode");
+        FileOpSetBannerOk(msg);
+        Doc.Modified = TRUE;
+        HudNeedPaint = TRUE;
+        return EFI_SUCCESS;
+    }
+    if (!ShowMenu && key->ScanCode == SCAN_DELETE && key->UnicodeChar == 0) {
+        UINT32 mx = PageColsActive();
+        UINT32 r = Doc.CursorRow;
+        UINT32 c = Doc.CursorCol;
+
+        if (InsertMode && c < mx - 1) {
+            UINT32 i;
+
+            for (i = c; i < mx - 1; i++)
+                Doc.Grid[r][i] = Doc.Grid[r][i + 1];
+            Doc.Grid[r][mx - 1] = L' ';
+        } else if (c < mx)
+            Doc.Grid[r][c] = L' ';
+        Doc.Grid[r][mx] = 0;
+        MarkDirtyRange(r, r);
+        Doc.Modified = TRUE;
+        return EFI_SUCCESS;
+    }
+    if (!ShowMenu && key->UnicodeChar == 0 && key->ScanCode >= SCAN_F2 && key->ScanCode <= SCAN_F11) {
+        switch (key->ScanCode) {
+        case SCAN_F2:
+            MenuActivate(0);
+            break;
+        case SCAN_F3:
+            MenuActivate(4);
+            break;
+        case SCAN_F4:
+            MenuActivate(3);
+            break;
+        case SCAN_F5:
+            MenuActivate(6);
+            break;
+        case SCAN_F6:
+            MenuActivate(7);
+            break;
+        case SCAN_F7:
+            MenuActivate(8);
+            break;
+        case SCAN_F8:
+            MenuActivate(10);
+            break;
+        case SCAN_F9:
+            MenuActivate(11);
+            break;
+        case SCAN_F10:
+            MenuActivate(9);
+            break;
+        case SCAN_F11:
+            MenuActivate(18);
+            break;
+        default:
+            break;
         }
         return EFI_SUCCESS;
     }
@@ -2692,6 +2976,20 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
         } else if (key->ScanCode == SCAN_DOWN) {
             if (Doc.CursorRow < PAGE_ROWS - 1)
                 Doc.CursorRow++;
+        } else if (key->ScanCode == SCAN_HOME) {
+            Doc.CursorCol = 0;
+        } else if (key->ScanCode == SCAN_END) {
+            UINT32 mx = PageColsActive();
+            INT32 c;
+
+            for (c = (INT32)mx - 1; c >= 0; c--) {
+                if (Doc.Grid[Doc.CursorRow][(UINT32)c] != L' ') {
+                    Doc.CursorCol = (UINT32)c;
+                    break;
+                }
+            }
+            if (c < 0)
+                Doc.CursorCol = 0;
         } else if (key->ScanCode == SCAN_PAGE_DOWN) {
             PageGoNext(BootImageHandle);
             MarkFullRepaint();
@@ -2712,16 +3010,26 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
         }
     }
 
-    if (key->UnicodeChar == 0x08) {  /* Backspace */
+    if (key->UnicodeChar == 0x08) { /* Backspace */
+        UINT32 mx = PageColsActive();
+        UINT32 r = Doc.CursorRow;
+
         if (Doc.CursorCol > 0) {
             Doc.CursorCol--;
-            Doc.Grid[Doc.CursorRow][Doc.CursorCol] = L' ';
-            Doc.Grid[Doc.CursorRow][PAGE_COLS_MAX] = 0;
-            MarkDirtyRange(Doc.CursorRow, Doc.CursorRow);
+            if (InsertMode) {
+                UINT32 i;
+
+                for (i = Doc.CursorCol; i < mx - 1; i++)
+                    Doc.Grid[r][i] = Doc.Grid[r][i + 1];
+                Doc.Grid[r][mx - 1] = L' ';
+            } else
+                Doc.Grid[r][Doc.CursorCol] = L' ';
+            Doc.Grid[r][PAGE_COLS_MAX] = 0;
+            MarkDirtyRange(r, r);
             Doc.Modified = TRUE;
         } else if (Doc.CursorRow > 0) {
             Doc.CursorRow--;
-            Doc.CursorCol = PageColsActive() - 1;
+            Doc.CursorCol = mx - 1;
             Doc.Grid[Doc.CursorRow][Doc.CursorCol] = L' ';
             Doc.Grid[Doc.CursorRow][PAGE_COLS_MAX] = 0;
             MarkDirtyRange(Doc.CursorRow, Doc.CursorRow + 1);
@@ -2768,14 +3076,31 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
     if (key->UnicodeChar >= 32 && key->UnicodeChar != 0x7F) {
         UINT32 r0 = Doc.CursorRow;
         UINT32 r1 = Doc.CursorRow;
+        UINT32 mx = PageColsActive();
+        UINT32 c0 = Doc.CursorCol;
+        CHAR16 ch = key->UnicodeChar;
 
-        Doc.Grid[Doc.CursorRow][Doc.CursorCol] = key->UnicodeChar;
-        if (Doc.CursorCol < PageColsActive() - 1)
+        if (InsertMode && c0 < mx - 1) {
+            UINT32 i;
+
+            for (i = mx - 1; i > c0; i--)
+                Doc.Grid[r0][i] = Doc.Grid[r0][i - 1];
+        }
+        Doc.Grid[r0][c0] = ch;
+        Doc.Grid[r0][mx] = 0;
+
+        if (c0 < mx - 1) {
             Doc.CursorCol++;
-        else if (Doc.CursorRow < PAGE_ROWS - 1) {
-            Doc.CursorRow++;
-            Doc.CursorCol = 0;
-            r1 = Doc.CursorRow;
+        } else {
+            if (!TrySoftWrapUe()) {
+                if (Doc.CursorRow < PAGE_ROWS - 1) {
+                    Doc.CursorRow++;
+                    Doc.CursorCol = 0;
+                    r1 = Doc.CursorRow;
+                }
+            } else {
+                r1 = Doc.CursorRow;
+            }
         }
         Doc.Grid[r0][PAGE_COLS_MAX] = 0;
         if (r1 != r0)
@@ -2798,7 +3123,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     Print(L"\r\n========================================\r\n");
     Print(L"  Typewrite OS v1.0\r\n");
     Print(L"  UEFI Typewriter Application\r\n");
-    Print(L"  F1 settings menu · PgUp/PgDn pages · arrows move cursor\r\n");
+    Print(L"  F1 help · F2–F11 shortcuts · Insert/Del · PgUp/PgDn pages\r\n");
     Print(L"========================================\r\n\r\n");
     
     EFI_GUID gopGuid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
@@ -2867,6 +3192,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     SessionElapsedUs = 0;
     LastHudSessionMinute = (UINT32)-1;
     HudNeedPaint = TRUE;
+    TwScheduleNextStatusPulse();
 
     Print(L"[TW] entering main loop (serial: lines tagged [TW])\r\n");
     while (Running) {
@@ -2924,6 +3250,10 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
             curMin = (UINT32)(SessionElapsedUs / 60000000ULL);
             if (curMin != LastHudSessionMinute) {
                 LastHudSessionMinute = curMin;
+                HudNeedPaint = TRUE;
+            }
+            if (!ShowMenu && SessionElapsedUs >= NextStatusPulseUs) {
+                TwScheduleNextStatusPulse();
                 HudNeedPaint = TRUE;
             }
             if (FileOpBannerRemainUs > 0) {
