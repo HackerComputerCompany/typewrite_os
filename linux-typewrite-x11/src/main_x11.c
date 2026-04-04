@@ -61,7 +61,7 @@ static const char *const k_status_pulse_label[STATUS_PULSE_NUM] = {
     "1 min", "5 min", "10 min", "15 min", "30 min", "1 hr",
 };
 
-#define HELP_MENU_ROWS 23
+#define HELP_MENU_ROWS 24
 
 typedef enum {
     LINE_NUM_OFF = 0,
@@ -621,6 +621,179 @@ static void net_wm_state(Display *dpy, int screen, Window win, Atom a_wm_state, 
     XFlush(dpy);
 }
 
+typedef struct {
+    Display *dpy;
+    Window win;
+    int screen;
+    TwDoc *doc;
+    char *filename;
+    int *dirty;
+    uint64_t *last_autosave_ms;
+    int *font_idx;
+    const TwBitmapFont **font;
+    CursorMode *cursor_mode;
+    int *bg_idx;
+    LineNumMode *line_num_mode;
+    int *page_margins;
+    int *cols_margined;
+    int *typewriter_mode;
+    int *status_pulse_idx;
+    uint64_t *next_status_pulse_ms;
+    uint64_t *session_typing_units;
+    ToastState *toast;
+    TypingPace *typing_pace;
+    Atom a_wm_state;
+    Atom a_wm_state_fullscreen;
+    int *show_help;
+} HelpMenuEnv;
+
+/*
+ * Execute the highlighted help line (same effect as the shortcut where applicable).
+ * Returns 1 if the caller should exit the app (save & quit).
+ */
+static int help_menu_activate_selection(int sel, HelpMenuEnv *e) {
+    if (!e || sel < 0 || sel >= HELP_MENU_ROWS)
+        return 0;
+
+    switch (sel) {
+    case 22: { /* Ctrl+Q / Ctrl+X */
+        if (e->filename[0] == 0)
+            snprintf(e->filename, PATH_MAX, "Typewriter.txt");
+        (void)twdoc_save(e->filename, e->doc);
+        *e->dirty = 0;
+        update_title(e->dpy, e->win, e->filename);
+        return 1;
+    }
+    case 2: { /* F2 font */
+        *e->font_idx = (*e->font_idx + 1) % tw_uefi_font_count();
+        *e->font = tw_uefi_font_get(*e->font_idx);
+        update_title(e->dpy, e->win, e->filename);
+        char tmsg[TOAST_MAX];
+        snprintf(tmsg, sizeof(tmsg), "Font: %s", (*e->font)->name);
+        toast_show(e->toast, e->typing_pace, tmsg, 0);
+        break;
+    }
+    case 3:
+        *e->cursor_mode = (CursorMode)((*e->cursor_mode + 1) % CURSOR_MODE_NUM);
+        toast_show(e->toast, e->typing_pace, cursor_mode_toast_label(*e->cursor_mode), 0);
+        break;
+    case 4:
+        *e->bg_idx = (*e->bg_idx + 1) % 10;
+        {
+            char tmsg[TOAST_MAX];
+            snprintf(tmsg, sizeof(tmsg), "Background: %s", kBgLabels[*e->bg_idx % 10]);
+            toast_show(e->toast, e->typing_pace, tmsg, 0);
+        }
+        break;
+    case 5:
+        *e->line_num_mode = (LineNumMode)((*e->line_num_mode + 1) % LINE_NUM_MODE_NUM);
+        toast_show(e->toast, e->typing_pace, gutter_toast_label(*e->line_num_mode), 0);
+        break;
+    case 6: { /* Tab */
+        uint64_t t = mono_ms();
+        for (int ti = 0; ti < 4; ti++)
+            twdoc_putc(e->doc, ' ');
+        typing_pace_note_char(e->typing_pace, t);
+        *e->session_typing_units += 4u;
+        *e->dirty = 1;
+        break;
+    }
+    case 9:
+        *e->page_margins = !*e->page_margins;
+        toast_show(e->toast, e->typing_pace, *e->page_margins ? "Letter margins: on" : "Letter margins: off", 0);
+        break;
+    case 10:
+        (*e->cols_margined)++;
+        if (*e->cols_margined > COLS_MARGINED_MAX)
+            *e->cols_margined = COLS_MARGINED_MIN;
+        {
+            char tmsg[TOAST_MAX];
+            snprintf(tmsg, sizeof(tmsg), "Chars per line: %d", *e->cols_margined);
+            toast_show(e->toast, e->typing_pace, tmsg, 0);
+        }
+        break;
+    case 11:
+        *e->typewriter_mode = !*e->typewriter_mode;
+        toast_show(e->toast, e->typing_pace, *e->typewriter_mode ? "Typewriter view: on" : "Typewriter view: off", 0);
+        break;
+    case 12: {
+        uint64_t tnow = mono_ms();
+        *e->status_pulse_idx = (*e->status_pulse_idx + 1) % STATUS_PULSE_NUM;
+        *e->next_status_pulse_ms = tnow + k_status_pulse_ms[*e->status_pulse_idx];
+        char tmsg[TOAST_MAX];
+        snprintf(tmsg, sizeof(tmsg), "Status toast: every %s", k_status_pulse_label[*e->status_pulse_idx]);
+        toast_show(e->toast, e->typing_pace, tmsg, 0);
+        break;
+    }
+    case 13:
+        e->doc->word_wrap = !e->doc->word_wrap;
+        toast_show(e->toast, e->typing_pace, e->doc->word_wrap ? "Word wrap: on" : "Word wrap: off", 0);
+        *e->dirty = 1;
+        break;
+    case 16:
+        e->doc->insert_mode = !e->doc->insert_mode;
+        toast_show(e->toast, e->typing_pace, e->doc->insert_mode ? "Insert mode" : "Typeover mode", 0);
+        *e->dirty = 1;
+        break;
+    case 17:
+        twdoc_delete_forward(e->doc);
+        *e->dirty = 1;
+        break;
+    case 18:
+        if (e->a_wm_state != None && e->a_wm_state_fullscreen != None) {
+            net_wm_state(e->dpy, e->screen, e->win, e->a_wm_state, e->a_wm_state_fullscreen, 2);
+            toast_show(e->toast, e->typing_pace, "Fullscreen: toggled (WM may override)", 0);
+        }
+        break;
+    case 20: /* Ctrl+S */
+        if (e->filename[0] == 0)
+            snprintf(e->filename, PATH_MAX, "Typewriter.txt");
+        {
+            char base[PATH_MAX];
+            path_basename(e->filename, base, sizeof(base));
+            if (twdoc_save(e->filename, e->doc) == 0) {
+                *e->dirty = 0;
+                *e->last_autosave_ms = mono_ms();
+                char tmsg[TOAST_MAX];
+                snprintf(tmsg, sizeof(tmsg), "Saved %.150s", base);
+                toast_show(e->toast, e->typing_pace, tmsg, 0);
+            } else {
+                char tmsg[TOAST_MAX];
+                snprintf(tmsg, sizeof(tmsg), "Save failed: %.150s", base);
+                toast_show(e->toast, e->typing_pace, tmsg, 0);
+            }
+        }
+        update_title(e->dpy, e->win, e->filename);
+        break;
+    case 21: { /* Ctrl+P */
+        char pdf_path[PATH_MAX];
+        pdf_out_path(pdf_path, sizeof(pdf_path), e->filename[0] ? e->filename : NULL);
+        TwPdfOpts po = {.page_margins = *e->page_margins,
+                        .line_num_mode = (TwPdfLineNum)(int)*e->line_num_mode,
+                        .cols_margined = *e->cols_margined,
+                        .bg_idx = *e->bg_idx};
+        char pdf_base[PATH_MAX];
+        path_basename(pdf_path, pdf_base, sizeof(pdf_base));
+        if (tw_export_pdf(e->doc, pdf_path, *e->font, &po) == 0) {
+            char tmsg[TOAST_MAX];
+            snprintf(tmsg, sizeof(tmsg), "Printed PDF: %.150s", pdf_base);
+            toast_show(e->toast, e->typing_pace, tmsg, 0);
+        } else {
+            char tmsg[TOAST_MAX];
+            snprintf(tmsg, sizeof(tmsg), "PDF failed: %.150s", pdf_base);
+            toast_show(e->toast, e->typing_pace, tmsg, 0);
+        }
+        break;
+    }
+    default:
+        /* 0,1,7,8,14,15,19,23 — informational or duplicate close */
+        break;
+    }
+
+    *e->show_help = 0;
+    return 0;
+}
+
 static int row_end_cx_for_move(const TwCore *tw, int row) {
     int c = tw->cols - 1;
     while (c >= 0 && tw->cells[(size_t)row * (size_t)tw->cols + (size_t)c] == ' ')
@@ -785,9 +958,10 @@ static void format_status_pulse_toast(char *buf, size_t buflen, const TwDoc *doc
     snprintf(buf, buflen, "%u wpm | session %lu words | doc %lu words | %s", wpm, sess_words, doc_words, timestr);
 }
 
-static void help_fill_lines(char lines[HELP_MENU_ROWS][160], int bg_idx, int cols_margined, int status_pulse_idx) {
+static void help_fill_lines(char lines[HELP_MENU_ROWS][160], int bg_idx, int cols_margined, int status_pulse_idx,
+                            int word_wrap_on) {
     snprintf(lines[0], sizeof(lines[0]),
-             "Help  Up/Dn select  Home/End  PgUp/Dn  Enter close");
+             "Help  Up/Dn select  Home/End  PgUp/Dn  Enter run row  Esc close");
     snprintf(lines[1], sizeof(lines[1]), "F1    toggle this menu");
     snprintf(lines[2], sizeof(lines[2]), "F2    cycle font");
     snprintf(lines[3], sizeof(lines[3]), "F3    cycle cursor");
@@ -803,16 +977,17 @@ static void help_fill_lines(char lines[HELP_MENU_ROWS][160], int bg_idx, int col
     if (status_pulse_idx < 0 || status_pulse_idx >= STATUS_PULSE_NUM)
         status_pulse_idx = 0;
     snprintf(lines[12], sizeof(lines[12]), "F9    status toast: every %s (cycle)", k_status_pulse_label[status_pulse_idx]);
-    snprintf(lines[13], sizeof(lines[13]), "Arrows move cursor (cross pages at edges)");
-    snprintf(lines[14], sizeof(lines[14]), "Home/End  line; PgUp/PgDn  page");
-    snprintf(lines[15], sizeof(lines[15]), "Insert  toggle insert / typeover (default typeover)");
-    snprintf(lines[16], sizeof(lines[16]), "Delete  delete forward");
-    snprintf(lines[17], sizeof(lines[17]), "F11   fullscreen (often taken by WM)");
-    snprintf(lines[18], sizeof(lines[18]), "      use: x11typewrite --fullscreen");
-    snprintf(lines[19], sizeof(lines[19]), "Ctrl+S save (autosave every 5 min when dirty)");
-    snprintf(lines[20], sizeof(lines[20]), "Ctrl+P export PDF (Cairo, linked library)");
-    snprintf(lines[21], sizeof(lines[21]), "Ctrl+Q / Ctrl+X  save and exit");
-    snprintf(lines[22], sizeof(lines[22]), "Esc   close menu (when open)");
+    snprintf(lines[13], sizeof(lines[13]), "F10   word wrap: %s (break at last space)", word_wrap_on ? "on" : "off");
+    snprintf(lines[14], sizeof(lines[14]), "Arrows move cursor (cross pages at edges)");
+    snprintf(lines[15], sizeof(lines[15]), "Home/End  line; PgUp/PgDn  page");
+    snprintf(lines[16], sizeof(lines[16]), "Insert  toggle insert / typeover (default typeover)");
+    snprintf(lines[17], sizeof(lines[17]), "Delete  delete forward");
+    snprintf(lines[18], sizeof(lines[18]), "F11   fullscreen (often taken by WM)");
+    snprintf(lines[19], sizeof(lines[19]), "      use: x11typewrite --fullscreen");
+    snprintf(lines[20], sizeof(lines[20]), "Ctrl+S save (autosave every 5 min when dirty)");
+    snprintf(lines[21], sizeof(lines[21]), "Ctrl+P export PDF (Cairo, linked library)");
+    snprintf(lines[22], sizeof(lines[22]), "Ctrl+Q / Ctrl+X  save and exit");
+    snprintf(lines[23], sizeof(lines[23]), "Esc   close menu (when open)");
 }
 
 int main(int argc, char **argv) {
@@ -1011,6 +1186,11 @@ int main(int argc, char **argv) {
                     snprintf(tmsg, sizeof(tmsg), "Status toast: every %s", k_status_pulse_label[status_pulse_idx]);
                     toast_show(&toast, &typing_pace, tmsg, 0);
                 }
+                if (!show_help && ks == XK_F10) {
+                    doc.word_wrap = !doc.word_wrap;
+                    toast_show(&toast, &typing_pace, doc.word_wrap ? "Word wrap: on" : "Word wrap: off", 0);
+                    dirty = 1;
+                }
                 if ((ev.xkey.state & ControlMask) && (ks == XK_s || ks == XK_S)) {
                     if (filename[0] == 0) {
                         snprintf(filename, sizeof(filename), "Typewriter.txt");
@@ -1125,9 +1305,33 @@ int main(int argc, char **argv) {
                     session_typing_units += 4u;
                     dirty = 1;
                 } else if (ks == XK_Return || ks == XK_KP_Enter) {
-                    if (show_help)
-                        show_help = 0;
-                    else {
+                    if (show_help) {
+                        HelpMenuEnv henv = {.dpy = dpy,
+                                            .win = win,
+                                            .screen = screen,
+                                            .doc = &doc,
+                                            .filename = filename,
+                                            .dirty = &dirty,
+                                            .last_autosave_ms = &last_autosave_ms,
+                                            .font_idx = &font_idx,
+                                            .font = &font,
+                                            .cursor_mode = &cursor_mode,
+                                            .bg_idx = &bg_idx,
+                                            .line_num_mode = &line_num_mode,
+                                            .page_margins = &page_margins,
+                                            .cols_margined = &cols_margined,
+                                            .typewriter_mode = &typewriter_mode,
+                                            .status_pulse_idx = &status_pulse_idx,
+                                            .next_status_pulse_ms = &next_status_pulse_ms,
+                                            .session_typing_units = &session_typing_units,
+                                            .toast = &toast,
+                                            .typing_pace = &typing_pace,
+                                            .a_wm_state = a_wm_state,
+                                            .a_wm_state_fullscreen = a_wm_state_fullscreen,
+                                            .show_help = &show_help};
+                        if (help_menu_activate_selection(help_sel, &henv))
+                            goto out;
+                    } else {
                         uint64_t t = mono_ms();
                         twdoc_newline(&doc);
                         typing_pace_note_char(&typing_pace, t);
@@ -1206,7 +1410,7 @@ int main(int argc, char **argv) {
 
         if (show_help) {
             char hlines[HELP_MENU_ROWS][160];
-            help_fill_lines(hlines, bg_idx, cols_margined, status_pulse_idx);
+            help_fill_lines(hlines, bg_idx, cols_margined, status_pulse_idx, doc.word_wrap);
             if (help_sel < 0)
                 help_sel = 0;
             if (help_sel >= HELP_MENU_ROWS)

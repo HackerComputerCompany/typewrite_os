@@ -12,6 +12,29 @@ Requires Xlib and Cairo (e.g. Debian/Ubuntu: `sudo apt install libx11-dev libcai
 make -C linux-typewrite-x11
 ```
 
+### Debian / Ubuntu `.deb` package
+
+Packaging lives in the repo’s `debian/` directory (native source name `x11typewrite`). Build dependencies:
+
+```bash
+sudo apt install build-essential debhelper libcairo2-dev libx11-dev pkg-config gnu-efi
+```
+
+From the **repository root** (parent of `linux-typewrite-x11/`):
+
+```bash
+./linux-typewrite-x11/build-deb.sh
+# or: dpkg-buildpackage -us -uc -b
+```
+
+`dpkg-buildpackage` writes `x11typewrite_<version>_amd64.deb` in the **parent directory of the repo** (one level above the clone). Install locally:
+
+```bash
+sudo apt install /path/to/x11typewrite_0.1.0-1_amd64.deb
+```
+
+The package installs `x11typewrite` to `/usr/bin` and a `.desktop` entry for your app menu.
+
 ### Run
 
 ```bash
@@ -34,7 +57,7 @@ Start in fullscreen (EWMH `_NET_WM_STATE_FULLSCREEN`; applied after the window m
 
 - **Esc**: closes the **F1** menu when it is open (does not quit the app)
 - **Ctrl+Q** or **Ctrl+X**: **save** (default file `Typewriter.txt` if none set) and **exit**
-- **F1**: **Help menu** (overlay). **Up/Down** (and **Home/End**, **PgUp/PgDn**) move a **highlight** over lines; **Enter** closes the menu. While the menu is open, editing and **F2–F9** / **F11** are disabled so shortcuts do not fire behind the overlay; **Ctrl+S** / **Ctrl+Q** / **Ctrl+X** still work (**Ctrl+P** is disabled like other edit shortcuts).
+- **F1**: **Help menu** (overlay). **Up/Down** (and **Home/End**, **PgUp/PgDn**) move a **highlight** over lines; **Enter** runs the **highlighted** shortcut (same as the listed key) and then closes the menu; on purely informational lines it just closes. While the menu is open, editing and **F2–F10** / **F11** are disabled so shortcuts do not fire behind the overlay; **Ctrl+S** / **Ctrl+Q** / **Ctrl+X** still work (**Ctrl+P** is disabled like other edit shortcuts).
 - **F2**: cycle bundled fonts (same set as the UEFI app)
 - **F3**: cycle cursor modes (bar, blink bar, block, blink block, hidden)
 - **F4**: cycle background color schemes (UEFI set)
@@ -43,6 +66,7 @@ Start in fullscreen (EWMH `_NET_WM_STATE_FULLSCREEN`; applied after the window m
 - **F7**: cycle **characters per line** **50–65** when margins are on (default **58**, matching UEFI `cols_margined`)
 - **F8**: **Typewriter view** — **on by default**; toggle bottom-anchored typing (new lines from the **bottom**, text moves **up**) and the **red rule** on the active row.
 - **F9**: cycle **status toast** interval: **1 min** (default) → **5** → **10** → **15** → **30** → **1 hr** → …
+- **F10**: toggle **word wrap** (default **on**). When a line fills, text after the **last space** moves to the **next row** if that row is empty; otherwise the editor keeps a **hard** break at the column edge (same as wrap off). Long words with no space still hard-wrap.
 - **F11**: toggle fullscreen via EWMH — **often captured by the window manager** before this client sees it; use **`--fullscreen`** or your WM’s own fullscreen binding if F11 does nothing
 - **Ctrl+S**: save (first save defaults to `Typewriter.txt` in the current directory); with a filename set, **autosave** runs every **5 minutes** while the buffer is dirty
 - **Ctrl+P**: export **PDF** via **Cairo** (same basename as the current save path with a `.pdf` extension, or `Typewriter.pdf` if no file is set yet). Raster layout matches the document (margins, background, gutter numbers, `Page N of M`); no typewriter transform or cursor. Not available while the F1 help overlay has focus (same as other edit shortcuts except **Ctrl+S** / **Ctrl+Q** / **Ctrl+X**).
@@ -52,7 +76,7 @@ Start in fullscreen (EWMH `_NET_WM_STATE_FULLSCREEN`; applied after the window m
 - **Insert**: toggle **insert** vs **typeover** (default **typeover**: characters replace in place; **insert** shifts the rest of the line right). **Backspace** in insert mode pulls the rest of the line left; **Delete** removes under the cursor (shift in insert mode)
 - **Backspace**: delete backward
 - **Tab**: insert **four spaces** (no raw tab character in the buffer)
-- **Enter**: newline in the document; **closes the F1 menu** when it is open
+- **Enter**: newline in the document; with the **F1** menu open, **activates the highlighted row** (or closes on info-only rows)
 - Printable ASCII: inserts or overwrites per the current mode
 
 Autoloads `Typewriter.txt` if present when no `-f`/positional file is given; dirty buffers autosave every **5 minutes** when a filename is set.
@@ -61,7 +85,7 @@ Autoloads `Typewriter.txt` if present when no `-f`/positional file is given; dir
 
 Short messages use the same muted ink as the gutter stamp. They **type on** at a speed derived from **your recent typing pace** (smoothed gaps between characters you insert—printable keys, **Tab**, **Enter**); until enough data exists, a moderate default pace is used. After the full line appears, the text **fades** toward the paper color (fading-ink effect).
 
-**Action toasts** (save, autosave, **Ctrl+P**, **F2–F9** / **F11**, **Insert**, etc.) sit in the **footer band**, to the **left** of **Page N of M**.
+**Action toasts** (save, autosave, **Ctrl+P**, **F2–F10** / **F11**, **Insert**, etc.) sit in the **footer band**, to the **left** of **Page N of M**.
 
 **Status toast** (interval **F9**) appears in the **top margin band**—the strip **between the top edge of the paper and the first line of text** (Letter margins on), or along the top of the paper when margins are off.
 

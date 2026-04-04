@@ -1,0 +1,27 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: x11typewrite
+Source: https://github.com/HackerComputerCompany/typewrite_os
+
+Files: linux-typewrite-x11/*
+Copyright: 2026 Typewrite OS contributors
+License: GPL-2+
+ This program is free software; you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation; version 2 of the License.
+ .
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+ .
+ On Debian systems, the full text of the GNU General Public License
+ version 2 can be found in the file `/usr/share/common-licenses/GPL-2'.
+
+Files: linux-typewrite/*
+Copyright: 2026 Typewrite OS contributors
+License: GPL-2+
+
+Files: fonts/*
+Copyright: see fonts/README.md for per-font attribution
+License: OFL-1.1 and Apache-2.0 and others
+ Comment: Bitmap font data is compiled into the binary; see upstream fonts/README.md.

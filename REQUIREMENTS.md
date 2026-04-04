@@ -46,6 +46,7 @@ This repository ships **multiple implementation tracks**. Treat **`AGENTS.md`**,
 ### `TwDoc` (multi-page)
 
 - Stack of pages (`TwCore` per page); grow on newline/wrap past last row.
+- **Word wrap** (`word_wrap`, default on): when a typed line reaches the right edge, if there is a **break space** and the **next grid row is empty**, the fragment after that space moves to the next row; otherwise behavior matches **hard** wrap. Toggle from the X11 app (**F10**). Not persisted in the `.txt` file.
 - **Save format**: plain text, **newline per row** (trailing spaces on a row stripped in output). Pages separated by ASCII **form feed** (`\f`, Ctrl+L).
 - **Trailing trim (required)**: On save, **trailing whitespace-only rows** at the bottom of each page and **trailing wholly empty pages** are **not** written. A blank page **between** non-blank pages is preserved by emitting one newline per grid row on that page before the next `\f`, so page boundaries remain stable.
 - **Reflow**: `twdoc_resize_reflow` flattens with the **same** rules as save so window resize does not create spurious pages from unused grid padding.
@@ -96,6 +97,7 @@ This repository ships **multiple implementation tracks**. Treat **`AGENTS.md`**,
 | F7 | Cycle chars/line (margins on) |
 | F8 | Toggle typewriter view |
 | F9 | Cycle status toast interval |
+| F10 | Toggle word wrap (soft break at last space when next row empty) |
 | F11 | Toggle fullscreen (EWMH) |
 | Tab | Four spaces |
 | Insert | Toggle insert / typeover (default **typeover** in `tw_doc`) |

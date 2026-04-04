@@ -18,6 +18,7 @@ typedef struct {
     int cols;
     int rows;
     int insert_mode; /* non-zero: insert (shift line right); 0: typeover */
+    int word_wrap;   /* non-zero: at line end, break at last space when next row empty */
 } TwDoc;
 
 int twdoc_init(TwDoc *d, int cols, int rows);

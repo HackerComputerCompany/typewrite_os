@@ -5,8 +5,14 @@ CFLAGS += -Wall -Wextra -Wshadow -Wundef -Wstrict-prototypes -Wmissing-prototype
 CFLAGS += -I./src -I../linux-typewrite/src
 ## Font headers include <efi.h>; we only want typedefs/macros, not warnings.
 CFLAGS += -Wno-strict-prototypes -Wno-undef
+# Default: vendored gnu-efi next to repo root. For Debian/Ubuntu: make USE_SYSTEM_GNU_EFI=1 (needs gnu-efi package).
 GNUEFI ?= ../../gnu-efi
-CFLAGS += -I$(GNUEFI)/inc -I$(GNUEFI)/inc/x86_64 -I$(GNUEFI)/inc/protocol
+ifeq ($(USE_SYSTEM_GNU_EFI),1)
+EFI_INC := /usr/include/efi
+else
+EFI_INC := $(GNUEFI)/inc
+endif
+CFLAGS += -I$(EFI_INC) -I$(EFI_INC)/x86_64 -I$(EFI_INC)/protocol
 
 LDFLAGS ?=
 LDLIBS += -lX11

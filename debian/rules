@@ -1,0 +1,19 @@
+#!/usr/bin/make -f
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	dh_auto_build -- \
+		-C linux-typewrite-x11 \
+		USE_SYSTEM_GNU_EFI=1
+
+override_dh_auto_clean:
+	dh_auto_clean -- \
+		-C linux-typewrite-x11 \
+		clean
+
+override_dh_auto_install:
+	install -D -m755 linux-typewrite-x11/x11typewrite debian/x11typewrite/usr/bin/x11typewrite
+	install -D -m644 debian/x11typewrite.desktop debian/x11typewrite/usr/share/applications/x11typewrite.desktop

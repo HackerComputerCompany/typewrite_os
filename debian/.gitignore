@@ -1,0 +1,9 @@
+# debhelper / dpkg-buildpackage outputs (keep only debian/* source files tracked)
+.debhelper/
+debhelper-build-stamp
+files
+*.debhelper.log
+*.substvars
+*.debhelper
+/tmp
+x11typewrite/

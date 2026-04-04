@@ -100,6 +100,7 @@ int twdoc_init(TwDoc *d, int cols, int rows) {
     d->rows = rows;
     d->cap_pages = 0;
     d->insert_mode = 0; /* default typeover; Insert toggles insert (shift) */
+    d->word_wrap = 1;
     return twdoc_grow(d, 1);
 }
 
@@ -269,6 +270,75 @@ static int refill_from_lines(TwDoc *d, LineBuf *lb, int cols, int rows) {
     return 0;
 }
 
+static int twdoc_row_all_spaces(const TwCore *tw, int row_idx) {
+    if (!tw || row_idx < 0 || row_idx >= tw->rows)
+        return 1;
+    const char *r = tw->cells + (size_t)row_idx * (size_t)tw->cols;
+    for (int i = 0; i < tw->cols; i++) {
+        if (r[i] != ' ')
+            return 0;
+    }
+    return 1;
+}
+
+/*
+ * After filling the current row (cx == cols), move the last word to the next row
+ * if there is a break space and the target row is empty. Returns 1 if handled.
+ */
+static int twdoc_try_soft_wrap(TwDoc *d) {
+    char buf[512];
+    TwCore *tw = twdoc_cur(d);
+    if (!tw)
+        return 0;
+    int cy = tw->cy;
+    int cols = tw->cols;
+    char *row = tw->cells + (size_t)cy * (size_t)cols;
+
+    int last_ns = -1;
+    for (int i = cols - 1; i >= 0; i--) {
+        if (row[i] != ' ') {
+            last_ns = i;
+            break;
+        }
+    }
+    if (last_ns < 0)
+        return 0;
+
+    int sp = -1;
+    for (int i = last_ns - 1; i >= 0; i--) {
+        if (row[i] == ' ') {
+            sp = i;
+            break;
+        }
+    }
+    if (sp < 0)
+        return 0;
+
+    int tail_len = last_ns - sp;
+    if (tail_len <= 0 || tail_len > cols)
+        return 0;
+
+    if (cy < tw->rows - 1) {
+        if (!twdoc_row_all_spaces(tw, cy + 1))
+            return 0;
+    }
+
+    if (tail_len > (int)sizeof(buf))
+        return 0;
+    memcpy(buf, row + sp + 1, (size_t)tail_len);
+    memset(row + sp + 1, ' ', (size_t)(cols - 1 - sp));
+
+    twdoc_newline(d);
+    tw = twdoc_cur(d);
+    if (!tw)
+        return 0;
+    char *nrow = tw->cells + (size_t)tw->cy * (size_t)tw->cols;
+    memset(nrow, ' ', (size_t)cols);
+    memcpy(nrow, buf, (size_t)tail_len);
+    tw->cx = tail_len;
+    return 1;
+}
+
 int twdoc_resize_reflow(TwDoc *d, int cols, int rows) {
     if (!d || cols <= 0 || rows <= 0)
         return -1;
@@ -325,6 +395,8 @@ void twdoc_putc(TwDoc *d, char c) {
     row[tw->cx] = c;
     tw->cx++;
     if (tw->cx >= tw->cols) {
+        if (d->word_wrap && twdoc_try_soft_wrap(d))
+            return;
         tw->cx = 0;
         if (tw->cy < tw->rows - 1) {
             tw->cy++;

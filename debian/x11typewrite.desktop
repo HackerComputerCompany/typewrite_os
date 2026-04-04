@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Typewrite (X11)
+GenericName=Text Editor
+Comment=Distraction-free typewriter-style writing
+Exec=x11typewrite %F
+Icon=text-editor
+Terminal=false
+Categories=Office;TextEditor;
+MimeType=text/plain;

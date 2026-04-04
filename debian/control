@@ -1,0 +1,24 @@
+Source: x11typewrite
+Section: editors
+Priority: optional
+Maintainer: Typewrite OS Maintainers <maintainers@localhost>
+Build-Depends: debhelper-compat (= 13),
+               gcc,
+               libcairo2-dev,
+               libx11-dev,
+               pkg-config,
+               gnu-efi
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+Homepage: https://github.com/HackerComputerCompany/typewrite_os
+Vcs-Browser: https://github.com/HackerComputerCompany/typewrite_os
+Vcs-Git: https://github.com/HackerComputerCompany/typewrite_os.git
+
+Package: x11typewrite
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: distraction-free typewriter-style text editor for X11
+ Typewrite OS is a minimal, typewriter-inspired writing environment.
+ This package provides the X11/Cairo client (binary name: x11typewrite).
+ Features include multi-page documents, PDF export, font and theme
+ selection, and optional letter-style margins.
