@@ -123,17 +123,17 @@ This means: black normal, black normal, green bold, black normal
 - FreeType2 for font rendering
 - No X11, Wayland, or display server
 
-## Building
+## Building (this repository today)
+
+- **UEFI:** `cd uefi-app && make` — see **`BUILD_SYSTEM.md`**.
+- **Linux X11:** `make -C linux-typewrite-x11` — see **`linux-typewrite-x11/README.md`**; **`.deb`** via **`debian/`** / **`build-deb.sh`**.
+
+The **Buildroot**-based minimal Linux image that matched much of this document is **no longer vendored** here (2026).
+
+## Running in QEMU (UEFI)
 
 ```bash
-cd buildroot-2024.02
-make
-```
-
-## Running in QEMU
-
-```bash
-./start-qemu.sh              # Default 1024x768
+./start-qemu.sh              # UEFI + OVMF, default resolution
 ./start-qemu.sh --res 1920x1080  # Custom resolution
 ./start-qemu.sh --no-kvm     # Without KVM (slower)
 ./start-qemu.sh --serial     # Serial console debug

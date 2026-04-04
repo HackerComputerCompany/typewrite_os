@@ -2,7 +2,7 @@
 
 ## Goal
 
-A focused typewriter experience (Freewrite-inspired): minimal chrome, typewriter semantics, persistence. The same product idea is pursued on **two stacks**; only one is fully present in this checkout.
+A focused typewriter experience (Freewrite-inspired): minimal chrome, typewriter semantics, persistence. The product is pursued on **UEFI** and **Linux X11** in this checkout.
 
 ## Current focus (2026): Native UEFI
 
@@ -32,45 +32,17 @@ make
 
 ---
 
-## Parallel track: Linux + Buildroot (legacy / on hold in this tree)
+## Linux X11 track (in tree)
 
-Originally: minimal **x86_64** image with framebuffer typewrite app (FreeType, double buffering, markdown + strikethrough, F-key features). Artifacts still in repo:
+[`linux-typewrite-x11/`](linux-typewrite-x11/) builds **`x11typewrite`** on the host (Xlib + Cairo, shared **`TwDoc`** with UEFI). A **Debian/Ubuntu** binary package is defined under [`debian/`](debian/); see [`linux-typewrite-x11/README.md`](linux-typewrite-x11/README.md).
 
-- Vendored [`buildroot-2024.02/`](buildroot-2024.02/)
-- Package recipe [`buildroot-2024.02/package/typewrite/`](buildroot-2024.02/package/typewrite/)
-- Board overlays under `buildroot-2024.02/board/typewrite/`
-
-### Gap in this repository
-
-The Buildroot recipe uses **`TYPEWRITE_SITE = $(TOPDIR)/../typewrite`** (the **`typewrite/`** directory at the **repo root**, next to **`buildroot-2024.02/`**). That **`typewrite/` directory is not present** in this workspace. To resume the Linux build:
-
-1. Restore the `typewrite` sources under the repo root (or change `TYPEWRITE_SITE` in `typewrite.mk`), then
-2. Run a normal Buildroot build with the intended defconfig.
-
-Historical detail (FreeType app, unit tests, host `make`) is preserved in older notes below for reference.
+The old **Buildroot**-based minimal Linux image, **`typewrite/`** framebuffer app package, and **`install-to-usb*.sh`** installers for that image were **removed** from this repository (2026).
 
 ---
 
-## Historical: Linux app milestones (when `typewrite/` existed)
+## Historical: Linux framebuffer + Buildroot (removed)
 
-The following applied when the standalone Linux application lived at `typewrite/`:
-
-- Unified typewrite app with FreeType2, double buffering, raw terminal mode, markdown save/load with `~~strikethrough~~`, document unit tests.
-- Buildroot package and QEMU board configs wired for that tree.
-
-Host test commands (only valid if you restore `typewrite/`):
-
-```bash
-cd typewrite
-gcc -Wall -O2 -I/usr/include/freetype2 tests/test_document.c -lfreetype -lm -o tests/test_document
-./tests/test_document
-```
-
-```bash
-cd typewrite
-make clean && make
-sudo ./typewrite
-```
+Earlier iterations used a vendored Buildroot tree, a **`typewrite/`** FreeType framebuffer application, and USB scripts that installed **`bzImage`** + **`rootfs.ext2`**. That stack is no longer maintained here; use **`FEATURES.md`** and git history if you need design reference.
 
 ---
 

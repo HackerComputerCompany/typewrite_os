@@ -12,7 +12,6 @@ This repository ships **multiple implementation tracks**. Treat **`AGENTS.md`**,
 | **Linux X11 bring-up** | `linux-typewrite-x11/` | Host-side editor using shared core + same font headers; PDF export, toasts. |
 | **Shared text core** | `linux-typewrite/src/` | `TwCore` grid, **`TwDoc`** multi-page document, save/load. |
 | **Linux framebuffer app** | `linux-typewrite/` (non-X11) | Optional fbdev path; shares `tw_core` / `tw_doc`. |
-| **Buildroot image** | `buildroot-2024.02/` | Minimal distro recipes; **application sources** for the original `typewrite` package may live outside this repo (see `AGENTS.md`). |
 
 ---
 
@@ -111,16 +110,6 @@ Full detail: **`linux-typewrite-x11/README.md`**.
 
 ---
 
-## Buildroot / distribution image (optional)
-
-When the full image is built:
-
-- **Framework**: Buildroot 2024.02, x86_64, Linux kernel and ext2 rootfs as configured in-tree.
-- **QEMU**: **`./start-qemu.sh`** builds/syncs the UEFI app by default; see **`BUILD_SYSTEM.md`** for KVM, OVMF, and display options.
-- **Typewrite Linux package**: expects application sources at **`typewrite/`** next to Buildroot or **`TYPEWRITE_SITE`** override—see **`AGENTS.md`**.
-
----
-
 ## Historical / design reference (not all vendored)
 
 **`FEATURES.md`** describes a richer Linux framebuffer product (FreeType, `.md` + `.ink` per-character color/bold, zoom, resolution cycling, strikethrough backspace, etc.). That stack is **design and history**; it is **not** what `linux-typewrite-x11` implements today. Use **`FEATURES.md`** for product ideas; use this file and track READMEs for **current** requirements.
@@ -129,6 +118,7 @@ When the full image is built:
 
 ## Version history (repository)
 
+- **2026-04**: Vendored **Buildroot** tree and **`install-to-usb*.sh`** (Linux image USB) **removed** from the repository; Linux distribution focus is **`linux-typewrite-x11`** + **`debian/`** package.
 - **2026-04**: `tw_doc` trailing blank trim on save/flatten; `linux-typewrite-x11` PDF, toasts, status pulse, 5-minute autosave, default typeover—see **`BUILD_SYSTEM.md`** changelog.
 - Earlier entries in this file referred to a **v0.1–v0.4** framebuffer app timeline; sources may live outside this repo.
 

@@ -130,7 +130,4 @@ Hello ~~deleted~~ world
 
 ## For Embedded/SoC Development
 
-For production on custom hardware, see REQUIREMENTS.md for:
-- Mesa + DRM/KMS + GBM stack
-- Buildroot integration
-- ARM/ARM64 cross-compilation
+For production on custom hardware, see **`REQUIREMENTS.md`** and track-specific READMEs (UEFI vs Linux). A vendored **Buildroot** tree is **not** included in this repository anymore (2026).

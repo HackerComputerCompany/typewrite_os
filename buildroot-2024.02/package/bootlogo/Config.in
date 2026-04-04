@@ -1,6 +1,0 @@
-config BR2_PACKAGE_BOOTLOGO
-	bool "bootlogo"
-	select BR2_PACKAGE_FREETYPE
-	help
-	  Boot logo for Typewrite OS - displays a retro typewriter
-	  splash screen on boot.

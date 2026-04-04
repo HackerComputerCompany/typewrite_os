@@ -1,6 +1,6 @@
 # Typewrite OS - Build System Documentation
 
-> **Context:** For a short repo overview (UEFI vs Buildroot, open issues, doc index), read [`AGENTS.md`](AGENTS.md).
+> **Context:** For a short repo overview (UEFI + Linux X11, open issues, doc index), read [`AGENTS.md`](AGENTS.md).
 
 ## Overview
 
@@ -319,7 +319,8 @@ uefi-app/
 - **2026-04-02**: Added Linux bring-up apps: `linux-typewrite/` (fbdev `/dev/fb0`) and `linux-typewrite-x11/` (Xlib) sharing a small text-buffer core + 8x8 font.
 - **2026-03-29**: **`start-qemu.sh`**: pick **KVM vs TCG** from **`/dev/kvm`** permissions (avoids KVM permission errors); **`QEMU_ACCEL`** override; **BUILD_SYSTEM.md** KVM group instructions.
 - **2026-03-29**: **`start-qemu.sh`**: default **`-machine q35`** + accel, default GTK **`gl=off`**, **`--sdl`** and **`--serial-stdio`**, pre-launch tips; **BUILD_SYSTEM.md** QEMU display troubleshooting.
-- **2026-03-29**: Removed redundant tracked **`buildroot.tar.gz`** (vendored tree remains under `buildroot-2024.02/`); local Buildroot **`output/`**, **`dl/`**, etc. are still safe to delete when present — they are build products, not source.
+- **2026-04-04**: Removed vendored **`buildroot-2024.02/`** and **`install-to-usb*.sh`** scripts that depended on it; Linux distribution path in-repo is **`linux-typewrite-x11/`** + **`debian/`** package.
+- **2026-03-29**: Removed redundant tracked **`buildroot.tar.gz`** (before Buildroot tree was dropped entirely in 2026-04).
 - **2026-03-29**: [`start-qemu.sh`](start-qemu.sh) **`--help`** documents behavior, paths, requirements, and examples; script builds `uefi-app`, syncs `Typewriter.efi` into `uefi-app/fs/`, auto-detects OVMF, drops duplicate `-bios`.
-- **2026-03-29**: Added [`AGENTS.md`](AGENTS.md) and [`agent.md`](agent.md) pointers for return-to-context; root [`README.md`](README.md) and [`PROJECT_STATUS.md`](PROJECT_STATUS.md) updated for dual-track (UEFI + Buildroot) state.
+- **2026-03-29**: Added [`AGENTS.md`](AGENTS.md) and [`agent.md`](agent.md) pointers for return-to-context; root [`README.md`](README.md) and [`PROJECT_STATUS.md`](PROJECT_STATUS.md) updated for multi-track state.
 - **2026-03-28**: Fixed Makefile to produce valid PE32+ by using correct linker flags and objcopy --target option

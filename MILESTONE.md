@@ -35,7 +35,7 @@ cd .. && ./start-qemu.sh
 
 ## Not in scope for this milestone
 
-- Linux **Buildroot** app sources are not bundled; `FEATURES.md` still skews Linux-product. UEFI behavior is **grid / simplified** vs full Linux typewriter rules in `FEATURES.md`.
+- `FEATURES.md` still describes an older full Linux framebuffer product; the in-repo Linux client is **`linux-typewrite-x11`**. UEFI behavior is **grid / simplified** vs that document.
 - High-DPI **PNG/TIFF export**, **multi-partition USB** layout for a separate data volume, and other installer-scale features remain **future work**.
 
 ---

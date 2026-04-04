@@ -1,4 +1,0 @@
-config BR2_PACKAGE_TYPEWRITE
-	bool "typewrite"
-	help
-	  Typewriter simulator for Linux console

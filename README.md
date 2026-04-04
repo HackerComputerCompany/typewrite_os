@@ -3,7 +3,7 @@
 A minimalist **typewriter-style** writing environment (Freewrite-inspired), explored as:
 
 1. **Native UEFI firmware app** — `Typewriter.efi` (gnu-efi), **actively developed** under [`uefi-app/`](uefi-app/).
-2. **Linux + Buildroot** — minimal distro packaging and board support under [`buildroot-2024.02/`](buildroot-2024.02/); the standalone **`typewrite/` source tree is not checked in here** (see [`AGENTS.md`](AGENTS.md)).
+2. **Linux X11 desktop app** — [`linux-typewrite-x11/`](linux-typewrite-x11/) (`x11typewrite`); optional **Ubuntu/Debian `.deb`** via [`debian/`](debian/) (see [`linux-typewrite-x11/README.md`](linux-typewrite-x11/README.md)).
 
 ## Where to look first
 
@@ -35,4 +35,4 @@ This runs **`make -C uefi-app all`** (compile only), copies **`Typewriter.efi`**
 
 ## License / upstream
 
-Buildroot is upstream software in `buildroot-2024.02/`. Project-specific licensing, if any, is not summarized here; check individual files or future `LICENSE` as applicable.
+Project-specific licensing is not summarized in this README; see per-component sources, **`fonts/README.md`**, and **`debian/copyright`** for the packaged X11 app.

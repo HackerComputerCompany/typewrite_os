@@ -21,10 +21,8 @@ User direction:
 
 ### Repo facts for implementation
 
-- **`AGENTS.md`** still applies: the historical **`typewrite/`** tree (referenced by **`buildroot-2024.02/package/typewrite/typewrite.mk`** as **`TYPEWRITE_SITE = $(TOPDIR)/../typewrite`**) is **not** in this repository today. You can either:
-  - add a **new** minimal **`typewrite/`** (or `linux-typewrite/`) with fb + X backends, and later wire Buildroot, or
-  - restore upstream sources elsewhere and point **`TYPEWRITE_SITE`** at them.
-- **Authoritative product behavior** for typing UX: **`FEATURES.md`**, **`uefi-app/main.c`** (implemented subset), **`MILESTONE.md`**.
+- **`linux-typewrite/`** (fbdev) and **`linux-typewrite-x11/`** (Xlib + Cairo) share **`linux-typewrite/src/`** (`TwDoc`, `tw_core`). A **Debian** binary package is under **`debian/`**. The old **Buildroot** tree and **`typewrite/`** framebuffer package were **removed** from this repository (2026).
+- **Authoritative product behavior** for typing UX: **`FEATURES.md`** (design/history), **`REQUIREMENTS.md`**, **`uefi-app/main.c`**, **`MILESTONE.md`**.
 - **Fonts**: **`fonts/README.md`**, generated **`fonts/*.h`**, **`convert_font.py`**.
 
 ### Suggested order
