@@ -39,7 +39,7 @@ SRC_SHARED := \
 	../linux-typewrite/src/tw_core.c \
 	../linux-typewrite/src/tw_doc.c
 
-SRC := src/main_x11.c src/tw_bitmapfont_uefi.c src/pdf_export.c src/tw_x11_settings.c
+SRC := src/main_x11.c src/tw_bitmapfont_uefi.c src/pdf_export.c src/tw_x11_settings.c src/tw_sound.c
 
 # Phony must not equal BIN_I686 filename or make sees a circular dependency.
 .PHONY: all clean portable i686
@@ -48,7 +48,7 @@ all: $(BIN)
 
 # Default binary name stays x11typewrite (x86_64 on typical desktop); also build x86_64-suffixed copy for dist.
 $(BIN): $(SRC) $(SRC_SHARED)
-	$(CC) $(CFLAGS_X64) -o $@ $^ $(LDFLAGS) $(CAIRO_LIBS) -lX11 -lm
+	$(CC) $(CFLAGS_X64) -o $@ $^ $(LDFLAGS) $(CAIRO_LIBS) -lX11 -lm -lSDL2
 	cp -f $@ $(BIN_X64)
 
 # Optional: requires 32-bit dev libraries (gcc -m32 / multilib). May fail on minimal systems — portable script tolerates absence.
@@ -57,13 +57,13 @@ $(BIN_I686): $(SRC) $(SRC_SHARED)
 		echo "Skipping i686: no 32-bit Cairo pkg-config (install libcairo2-dev:i386 and set PKG_CONFIG_I686_LIBDIR if needed)" >&2; \
 		exit 1; \
 	fi
-	$(CC) $(CFLAGS_I686) -o $@ $^ $(LDFLAGS_I686) $(CAIRO_LIBS_I686) -lX11 -lm
+	$(CC) $(CFLAGS_I686) -o $@ $^ $(LDFLAGS_I686) $(CAIRO_LIBS_I686) -lX11 -lm -lSDL2
 
 i686: $(BIN_I686)
 
 # Build amd64, try i686, then pack (script skips i686 if binary missing).
 portable: $(BIN)
-	-$(MAKE) i686
+	-$(MAKE) i686 || true
 	./make-portable-tarball.sh --no-build
 
 clean:

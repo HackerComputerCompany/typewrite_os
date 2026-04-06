@@ -3,6 +3,9 @@
 #include "tw_bitmapfont_uefi.h"
 #include "pdf_export.h"
 #include "tw_x11_settings.h"
+#include "tw_sound.h"
+
+#include <SDL2/SDL.h>
 
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
@@ -1159,12 +1162,18 @@ int main(int argc, char **argv) {
     int w = cf.window_width;
     int h = cf.window_height;
     int start_fullscreen = (cf.start_fullscreen || cli_fullscreen) ? 1 : 0;
+    int font_idx = cf.font_index;
 
     dpy = XOpenDisplay(NULL);
     if (!dpy) {
         fprintf(stderr, "XOpenDisplay failed\n");
         return 1;
     }
+
+    TwSoundSetBasePath(argv[0]);
+    TwSoundInit("sounds.assets");
+    fprintf(stderr, "MAIN: Sound initialized (no startup sounds for debug)\n");
+
     screen = DefaultScreen(dpy);
 
     win = XCreateSimpleWindow(dpy, RootWindow(dpy, screen), 0, 0, (unsigned)w, (unsigned)h, 0,
@@ -1184,7 +1193,6 @@ int main(int argc, char **argv) {
     TwDoc doc;
     uint32_t *back = NULL;
     XImage *img = NULL;
-    int font_idx = cf.font_index;
     const TwBitmapFont *font = tw_uefi_font_get(font_idx);
     CursorMode cursor_mode = (CursorMode)cf.cursor_mode;
     int bg_idx = cf.background;
