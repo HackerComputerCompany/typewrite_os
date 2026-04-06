@@ -493,6 +493,15 @@ static void render(uint32_t *pix, int w, int h, const TwCore *tw, const TwBitmap
         fill_rect(pix, w, h, lay->paper_x, lay->paper_y, lay->paper_w, lay->paper_h, paper_bg);
 
     /*
+     * Typewriter mode + page margins: fill the area above text_y0 with outer_bg
+     * to avoid the old fixed top margin strip staying paper-colored.
+     * The floating margin band will be drawn after text rows.
+     */
+    if (page_margins && typewriter_mode) {
+        fill_rect(pix, w, h, lay->paper_x, lay->paper_y, lay->paper_w, lay->text_y0 - lay->paper_y, outer_bg);
+    }
+
+    /*
      * Typewriter mode: screen rows above the document (br < 0) use outer_bg like the side pillars.
      * The band from paper top to text_y0 stays paper-colored (~1 inch Letter top margin).
      */
@@ -528,6 +537,24 @@ static void render(uint32_t *pix, int w, int h, const TwCore *tw, const TwBitmap
             int px = lay->text_x0 + x * cell_w;
             int baselineY = lay->text_y0 + sy * cell_h + (int)font->max_top;
             tw_uefi_font_draw_char(font, pix, w, h, px, baselineY, c, fg, paper_bg);
+        }
+    }
+
+    /* Typewriter mode + page margins: floating margin band */
+    if (page_margins && typewriter_mode && rows > 0) {
+        int first_sy = -1;
+        for (int sy = 0; sy < rows; sy++) {
+            if (typewriter_buf_row_for_sy(sy, tw->cy, rows) >= 0) {
+                first_sy = sy;
+                break;
+            }
+        }
+        if (first_sy >= 0) {
+            int y_first = lay->text_y0 + first_sy * cell_h;
+            int y0 = (y_first - lay->margin_top_px < lay->paper_y) ? lay->paper_y : y_first - lay->margin_top_px;
+            if (y0 > lay->paper_y) {
+                fill_rect(pix, w, h, lay->paper_x, y0, lay->paper_w, y_first - y0, paper_bg);
+            }
         }
     }
 
