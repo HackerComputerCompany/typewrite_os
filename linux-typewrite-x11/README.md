@@ -12,6 +12,12 @@ Requires Xlib and Cairo (e.g. Debian/Ubuntu: `sudo apt install libx11-dev libcai
 make -C linux-typewrite-x11
 ```
 
+`make all` produces **`x11typewrite`** (64-bit on typical x86_64 hosts) and a same-content copy **`x11typewrite-x86_64`** for packaging. Optional **32-bit x86** ELF (when multilib and `:i386` dev packages are installed):
+
+```bash
+make -C linux-typewrite-x11 i686   # writes x11typewrite-i686; phony target name avoids a make circularity
+```
+
 ### Debian / Ubuntu `.deb` package
 
 Packaging lives in the repo’s `debian/` directory (native source name `x11typewrite`). Build dependencies:
@@ -34,6 +40,31 @@ sudo apt install /path/to/x11typewrite_0.1.0-1_amd64.deb
 ```
 
 The package installs `x11typewrite` to `/usr/bin` and a `.desktop` entry for your app menu.
+
+### Portable `.tar.gz` (bundled libraries)
+
+**Output directory:** `linux-typewrite-x11/dist/` (listed in `.gitignore`; rebuild locally before shipping).
+
+**What gets packed:** On an **x86_64** build host, the script installs **`bin/x11typewrite-x86_64`** and runs `ldd` on it, copying resolved shared objects into **`lib/x86_64/`** (Cairo, X11, FreeType, etc.). **glibc**, **libpthread**, **libm**, and the **dynamic linker** are **not** copied so the tarball stays compatible with typical desktop Linux distros.
+
+If **`x11typewrite-i686`** exists (see **`make i686`** above), the same archive also contains **`bin/x11typewrite-i686`** and **`lib/i686/`**. The tarball basename then includes **`x86_64+i686`**; otherwise it ends with **`x86_64`**. On **aarch64** hosts, the layout uses **`x11typewrite-aarch64`** and **`lib/aarch64/`**.
+
+**Launcher:** `run-x11typewrite.sh` chooses the binary and `LD_LIBRARY_PATH` from `uname -m` (`x86_64`, `i686` / `i386`, `aarch64`).
+
+**32-bit build deps (Debian/Ubuntu example):** multilib toolchain and i386 dev packages, e.g. `gcc-multilib`, `libc6-dev-i386`, `libx11-dev:i386`, `libcairo2-dev:i386`. If `pkg-config` for 32-bit Cairo is not on the default path, set **`PKG_CONFIG_I686_LIBDIR`** (see `Makefile`).
+
+```bash
+make -C linux-typewrite-x11 portable
+# same as: make all; make i686 (ignored if deps missing); ./make-portable-tarball.sh --no-build
+
+tar xf linux-typewrite-x11/dist/x11typewrite-portable-0.1.0-x86_64.tar.gz
+# or: ...-x86_64+i686.tar.gz when the i686 binary was built
+
+cd x11typewrite-portable-0.1.0-x86_64   # directory name matches the archive
+./run-x11typewrite.sh
+```
+
+You still need a working **X11** display and a **glibc** roughly as new as the build machine (e.g. Ubuntu 22.04+ when built on 22.04).
 
 ### Run
 
@@ -68,7 +99,7 @@ Start in fullscreen (EWMH `_NET_WM_STATE_FULLSCREEN`; applied after the window m
 - **F9**: cycle **status toast** interval: **1 min** (default) → **5** → **10** → **15** → **30** → **1 hr** → …
 - **F10**: toggle **word wrap** (default **on**). When a line fills, text after the **last space** moves to the **next row** if that row is empty; otherwise the editor keeps a **hard** break at the column edge (same as wrap off). Long words with no space still hard-wrap.
 - **F11**: toggle fullscreen via EWMH — **often captured by the window manager** before this client sees it; use **`--fullscreen`** or your WM’s own fullscreen binding if F11 does nothing
-- **Ctrl+S**: save (first save defaults to `Typewriter.txt` in the current directory); with a filename set, **autosave** runs every **5 minutes** while the buffer is dirty
+- **Ctrl+S**: save (first save defaults to `Typewriter.txt` in the current directory); with a filename set, **autosave** runs after about **10 seconds** with no document edits while the buffer is dirty
 - **Ctrl+P**: export **PDF** via **Cairo** (same basename as the current save path with a `.pdf` extension, or `Typewriter.pdf` if no file is set yet). Raster layout matches the document (margins, background, gutter numbers, `Page N of M`); no typewriter transform or cursor. Not available while the F1 help overlay has focus (same as other edit shortcuts except **Ctrl+S** / **Ctrl+Q** / **Ctrl+X**).
 - **Arrow keys** (incl. keypad): move the cursor; at page/line edges, **Up/Down** and **Left/Right** continue on the **previous/next** page or row as you would expect
 - **Home** / **End**: start of line / after last non-space on the line
@@ -79,7 +110,7 @@ Start in fullscreen (EWMH `_NET_WM_STATE_FULLSCREEN`; applied after the window m
 - **Enter**: newline in the document; with the **F1** menu open, **activates the highlighted row** (or closes on info-only rows)
 - Printable ASCII: inserts or overwrites per the current mode
 
-Autoloads `Typewriter.txt` if present when no `-f`/positional file is given; dirty buffers autosave every **5 minutes** when a filename is set.
+Autoloads `Typewriter.txt` if present when no `-f`/positional file is given; dirty buffers autosave after **~10 seconds idle** (no typing/editing) when a filename is set.
 
 ### Toasts
 

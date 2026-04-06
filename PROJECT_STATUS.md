@@ -34,7 +34,7 @@ make
 
 ## Linux X11 track (in tree)
 
-[`linux-typewrite-x11/`](linux-typewrite-x11/) builds **`x11typewrite`** on the host (Xlib + Cairo, shared **`TwDoc`** with UEFI). A **Debian/Ubuntu** binary package is defined under [`debian/`](debian/); see [`linux-typewrite-x11/README.md`](linux-typewrite-x11/README.md).
+[`linux-typewrite-x11/`](linux-typewrite-x11/) builds **`x11typewrite`** on the host (Xlib + Cairo, shared **`TwDoc`** with UEFI). A **Debian/Ubuntu** binary package is defined under [`debian/`](debian/); a **portable tarball** with bundled Cairo/X11 libraries (and optional **32-bit** binary when built with multilib) is produced under **`linux-typewrite-x11/dist/`** by **`make portable`**. Details: [`linux-typewrite-x11/README.md`](linux-typewrite-x11/README.md).
 
 The old **Buildroot**-based minimal Linux image, **`typewrite/`** framebuffer app package, and **`install-to-usb*.sh`** installers for that image were **removed** from this repository (2026).
 

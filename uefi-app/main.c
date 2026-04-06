@@ -385,8 +385,7 @@ static UINT32 G_pageContentY0 = 0;
 /* Blinking cursor: repaint only the cursor band, not the whole line. */
 static BOOLEAN CursorBlinkRedraw = FALSE;
 
-/* X11 defaults: typewriter view on, soft word wrap on, typeover (insert off). */
-static BOOLEAN TypewriterView = TRUE;
+/* X11 defaults: soft word wrap on, typeover (insert off). */
 static BOOLEAN DocWordWrap = TRUE;
 static BOOLEAN InsertMode = FALSE;
 
@@ -414,10 +413,6 @@ static VOID MarkFullRepaint(VOID) {
 }
 
 static VOID MarkDirtyRange(UINT32 top, UINT32 bot) {
-    if (TypewriterView) {
-        MarkFullRepaint();
-        return;
-    }
     if (RepaintFull)
         return;
     if (top > bot) {
@@ -548,33 +543,17 @@ static INT32 RowTextScreenY(UINT32 screenRow) {
     return (INT32)G_pageContentY0 + (INT32)(screenRow * G_lineStep) - (INT32)Doc.ScrollYPx;
 }
 
-/* Typewriter view: same mapping as linux-typewrite-x11 typewriter_buf_row_for_sy. */
+/*
+ * Screen row <-> buffer row. The EFI grid is exactly PAGE_ROWS tall (same as the viewport),
+ * so the X11 typewriter sliding-window math always collapses to “cursor on last row”; use
+ * identity mapping so the caret tracks the real buffer line and ScrollYPx handles paper scroll.
+ */
 static UINT32 TwBufRowForScreenRow(UINT32 sy) {
-    UINT32 V = PAGE_ROWS;
-    UINT32 cy = Doc.CursorRow;
-    UINT32 start_sy;
-    UINT32 buf0;
-
-    if (!TypewriterView)
-        return sy;
-    start_sy = (cy + 1 <= V) ? (V - (cy + 1)) : 0;
-    if (sy < start_sy)
-        return TW_NO_ROW;
-    buf0 = (cy + 1 <= V) ? 0 : (cy - (V - 1));
-    return buf0 + (sy - start_sy);
+    return sy;
 }
 
 static UINT32 TwScreenRowForBufRow(UINT32 br) {
-    UINT32 V = PAGE_ROWS;
-    UINT32 cy = Doc.CursorRow;
-    UINT32 start_sy;
-    UINT32 buf0;
-
-    if (!TypewriterView)
-        return br;
-    start_sy = (cy + 1 <= V) ? (V - (cy + 1)) : 0;
-    buf0 = (cy + 1 <= V) ? 0 : (cy - (V - 1));
-    return start_sy + (br - buf0);
+    return br;
 }
 
 static UINT32 ContentXForCol(UINT32 col) {
@@ -1384,7 +1363,7 @@ static VOID SlotCycleNext(EFI_HANDLE img);
 static VOID PageGoNext(EFI_HANDLE img);
 static VOID PageGoPrev(EFI_HANDLE img);
 
-#define MENU_ITEM_COUNT 19
+#define MENU_ITEM_COUNT 18
 #define MENU_FIRST_ITEM_LINE 4
 
 static const CHAR16 *const kMenuFontLabels[FONT_NUM] = {
@@ -1485,20 +1464,14 @@ static VOID MenuActivate(UINT32 item) {
             FileOpSetBannerOk(b);
             MarkFullRepaint();
             break;
-        case 10: /* F8 typewriter view */
-            TypewriterView = !TypewriterView;
-            UnicodeSPrint(b, sizeof(b), L"Typewriter view: %ls", TypewriterView ? L"on" : L"off");
-            FileOpSetBannerOk(b);
-            MarkFullRepaint();
-            break;
-        case 11: /* F9 status pulse interval */
+        case 10: /* F9 status pulse interval */
             StatusPulseIdx = (StatusPulseIdx + 1) % STATUS_PULSE_NUM;
             TwScheduleNextStatusPulse();
             UnicodeSPrint(b, sizeof(b), L"Status pulse: %u min", kStatusPulseMin[StatusPulseIdx]);
             FileOpSetBannerOk(b);
             HudNeedPaint = TRUE;
             break;
-        case 12:
+        case 11:
             fst = TypewriterSaveCurrentSlotPage(BootImageHandle);
             if (!EFI_ERROR(fst)) {
                 UnicodeSPrint(b, sizeof(b), L"Saved TWS%uP%02u", SaveSlotIndex + 1, ActiveRamPageIndex + 1);
@@ -1508,7 +1481,7 @@ static VOID MenuActivate(UINT32 item) {
             Print(L"[Typewrite] save %r\n", fst);
             MarkFullRepaint();
             break;
-        case 13:
+        case 12:
             fst = TypewriterLoadCurrentSlotPage(BootImageHandle);
             if (!EFI_ERROR(fst)) {
                 CopyDocToRamPage(ActiveRamPageIndex);
@@ -1519,24 +1492,24 @@ static VOID MenuActivate(UINT32 item) {
             Print(L"[Typewrite] load %r\n", fst);
             MarkFullRepaint();
             break;
-        case 14:
+        case 13:
             SlotCycleNext(BootImageHandle);
             break;
-        case 15:
+        case 14:
             PageGoNext(BootImageHandle);
             MarkFullRepaint();
             break;
-        case 16:
+        case 15:
             PageGoPrev(BootImageHandle);
             MarkFullRepaint();
             break;
-        case 17:
+        case 16:
             TypewriterSaveSettings(BootImageHandle);
             if (RT != NULL && RT->ResetSystem != NULL)
                 RT->ResetSystem(EfiResetShutdown, EFI_SUCCESS, 0, NULL);
             Running = FALSE;
             break;
-        case 18: /* F11 / resolution */
+        case 17: /* F11 / resolution */
             if (Gop && Gop->Mode)
                 TwTryResolutionMode(TwNextGopMode(Gop->Mode->Mode));
             break;
@@ -1564,7 +1537,7 @@ static VOID DrawMenuOverlay(FRAMEBUFFER *fb) {
 
     StrCpy(lines[n++], L"Typewrite OS — Help / settings (X11 parity)");
     StrCpy(lines[n++], L"↑↓ select · Enter/Space: run row · Home/End · F1/ESC: close");
-    StrCpy(lines[n++], L"F2–F8,F10,F11 when closed · Insert/Del · PgUp/PgDn pages");
+    StrCpy(lines[n++], L"F2–F7,F9,F10,F11 when closed · Insert/Del · PgUp/PgDn pages");
     StrCpy(lines[n++], L" ");
     UnicodeSPrint(lines[n++], sizeof(lines[0]), L"F2 Font — %ls", kMenuFontLabels[CurrentFontKind]);
     MenuFormatScale(sc, sizeof(sc));
@@ -1580,7 +1553,6 @@ static VOID DrawMenuOverlay(FRAMEBUFFER *fb) {
                   L"F7 Chars/line (%u–%u) — %u", PAGE_COLS_MARGINS_MIN,
                   PAGE_COLS_MARGINS_MAX, PageColsMargined);
     UnicodeSPrint(lines[n++], sizeof(lines[0]), L"F10 Word wrap — %ls", DocWordWrap ? L"on" : L"off");
-    UnicodeSPrint(lines[n++], sizeof(lines[0]), L"F8 Typewriter view — %ls", TypewriterView ? L"on" : L"off");
     UnicodeSPrint(lines[n++], sizeof(lines[0]), L"F9 Status pulse — %u min", kStatusPulseMin[StatusPulseIdx]);
     StrCpy(lines[n++], L"Save current page (UTF-8, boot volume)");
     StrCpy(lines[n++], L"Load current page");
@@ -2061,8 +2033,6 @@ static VOID TypewriterApplySettingsLine(const CHAR8 *line, UINTN linelen) {
             InsertMode = (v != 0);
         else if (i == 9 && CompareMem(line, "word_wrap", 9) == 0)
             DocWordWrap = (v != 0);
-        else if (i == 15 && CompareMem(line, "typewriter_view", 15) == 0)
-            TypewriterView = (v != 0);
         else if (i == 12 && CompareMem(line, "status_pulse", 12) == 0) {
             if (v < STATUS_PULSE_NUM)
                 StatusPulseIdx = v;
@@ -2196,7 +2166,6 @@ static VOID TypewriterSaveSettings(EFI_HANDLE img) {
                                 KeyDebugMode ? 1U : 0U);
     used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"gutter_mode", (UINT32)LineNumMode);
     used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"word_wrap", DocWordWrap ? 1U : 0U);
-    used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"typewriter_view", TypewriterView ? 1U : 0U);
     used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"insert_mode", InsertMode ? 1U : 0U);
     used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"status_pulse", StatusPulseIdx);
     used = TwAppendSettingsLine(buf, sizeof(buf), used, (const CHAR8 *)"slot", SaveSlotIndex);
@@ -2752,16 +2721,6 @@ EFI_STATUS RenderDocument(FRAMEBUFFER *fb) {
                     DrawRect(fb, cx, yu, cwBar, lineBox, fgColor);
                 else if (CursorMode == CURSOR_BLOCK || CursorMode == CURSOR_BLOCK_BLINK)
                     DrawRect(fb, cx, yu, CursorGlyphWidthOnLine(NULL), lineBox, fgColor);
-                /* X11 parity: red rule under the active typing line in typewriter view. */
-                if (TypewriterView && Doc.CursorCol < PageColsActive()) {
-                    UINT32 ruleY = yu + lineBodyH - 2;
-                    UINT32 ruleW = PageColsActive() * G_pageColPitch;
-                    UINT32 rx = G_pageContentX0;
-                    UINT32 ruleColor = RGB(192, 24, 24);
-
-                    if (ruleY + 2 < fb->Height && rx + ruleW <= fb->Width)
-                        DrawRect(fb, rx, ruleY, ruleW, 2, ruleColor);
-                }
             }
         }
         DirtyLineTop = 1;
@@ -2934,17 +2893,14 @@ EFI_STATUS HandleKey(EFI_INPUT_KEY *key) {
         case SCAN_F7:
             MenuActivate(8);
             break;
-        case SCAN_F8:
-            MenuActivate(10);
-            break;
         case SCAN_F9:
-            MenuActivate(11);
+            MenuActivate(10);
             break;
         case SCAN_F10:
             MenuActivate(9);
             break;
         case SCAN_F11:
-            MenuActivate(18);
+            MenuActivate(17);
             break;
         default:
             break;

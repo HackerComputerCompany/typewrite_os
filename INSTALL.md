@@ -37,6 +37,8 @@ make -C linux-typewrite-x11
 
 **Debian/Ubuntu package** (from repo root): see [`linux-typewrite-x11/README.md`](linux-typewrite-x11/README.md) — `build-deb.sh` / `dpkg-buildpackage`, then `sudo apt install ./x11typewrite_*_amd64.deb`.
 
+**Portable tarball** (no install, bundled libs except glibc): `make -C linux-typewrite-x11 portable` writes `linux-typewrite-x11/dist/x11typewrite-portable-*.tar.gz`; extract and run `./run-x11typewrite.sh` inside the unpacked directory (see README).
+
 ## Secure Boot
 
 Firmware may refuse unsigned loaders. Disable Secure Boot or enroll your own keys if the stick does not boot.

@@ -11,6 +11,27 @@ static int row_last_nonempty(const TwCore *tw, int row) {
     return c;
 }
 
+static int row_first_nonempty(const TwCore *tw, int row) {
+    int c = 0;
+    while (c < tw->cols && tw->cells[(size_t)row * (size_t)tw->cols + (size_t)c] == ' ')
+        c++;
+    if (c >= tw->cols)
+        return -1;
+    return c;
+}
+
+static int row_suffix_all_spaces(const TwCore *tw, int row, int from_col) {
+    if (!tw || row < 0 || row >= tw->rows || from_col < 0)
+        return 0;
+    if (from_col >= tw->cols)
+        return 1;
+    for (int c = from_col; c < tw->cols; c++) {
+        if (tw->cells[(size_t)row * (size_t)tw->cols + (size_t)c] != ' ')
+            return 0;
+    }
+    return 1;
+}
+
 /* Last row index on page with any non-space character, or -1 if page is all blank. */
 static int page_last_nonempty_row(const TwCore *tw) {
     if (!tw)
@@ -374,6 +395,58 @@ void twdoc_newline(TwDoc *d) {
     tw->cy = 0;
 }
 
+void twdoc_insert_newline(TwDoc *d) {
+    TwCore *tw = twdoc_cur(d);
+    if (!tw)
+        return;
+    if (!d->insert_mode) {
+        twdoc_newline(d);
+        return;
+    }
+
+    int cx = tw->cx;
+    int cy = tw->cy;
+    int cols = tw->cols;
+    int rows = tw->rows;
+    char *row = tw->cells + (size_t)cy * (size_t)cols;
+    int tail = cols - cx;
+
+    char *tmp = (char *)malloc((size_t)cols);
+    if (!tmp)
+        return;
+    memcpy(tmp, row + (size_t)cx, (size_t)tail);
+    memset(row + (size_t)cx, ' ', (size_t)tail);
+
+    if (cy < rows - 1) {
+        for (int r = rows - 1; r > cy + 1; r--)
+            memcpy(tw->cells + (size_t)r * (size_t)cols, tw->cells + (size_t)(r - 1) * (size_t)cols,
+                   (size_t)cols);
+        {
+            char *nr = tw->cells + (size_t)(cy + 1) * (size_t)cols;
+            memcpy(nr, tmp, (size_t)tail);
+            if (tail < cols)
+                memset(nr + (size_t)tail, ' ', (size_t)(cols - tail));
+        }
+        tw->cx = 0;
+        tw->cy = cy + 1;
+        free(tmp);
+        return;
+    }
+
+    twdoc_newline(d);
+    tw = twdoc_cur(d);
+    if (!tw) {
+        free(tmp);
+        return;
+    }
+    memcpy(tw->cells, tmp, (size_t)tail);
+    if (tail < cols)
+        memset(tw->cells + (size_t)tail, ' ', (size_t)(cols - tail));
+    tw->cx = 0;
+    tw->cy = 0;
+    free(tmp);
+}
+
 void twdoc_putc(TwDoc *d, char c) {
     TwCore *tw = twdoc_cur(d);
     if (!tw)
@@ -415,9 +488,104 @@ void twdoc_putc(TwDoc *d, char c) {
     }
 }
 
+/*
+ * Insert mode: Backspace at column 0 joins this row with the one above (removes the line break).
+ * If the current row is blank, removes that blank line and moves the cursor to the end of the
+ * previous row.
+ */
+static int twdoc_try_join_prev_line(TwDoc *d) {
+    TwCore *tw = twdoc_cur(d);
+    if (!tw || tw->cx != 0 || tw->cy <= 0)
+        return 0;
+    int cy = tw->cy;
+    int cols = tw->cols;
+
+    if (twdoc_row_all_spaces(tw, cy)) {
+        for (int r = cy; r < tw->rows - 1; r++)
+            memcpy(tw->cells + (size_t)r * (size_t)cols, tw->cells + (size_t)(r + 1) * (size_t)cols,
+                   (size_t)cols);
+        memset(tw->cells + (size_t)(tw->rows - 1) * (size_t)cols, ' ', (size_t)cols);
+        tw->cy = cy - 1;
+        {
+            int le = row_last_nonempty(tw, tw->cy);
+            tw->cx = le >= 0 ? le + 1 : 0;
+        }
+        return 1;
+    }
+
+    int le_prev = row_last_nonempty(tw, cy - 1);
+    int len_prev = le_prev >= 0 ? le_prev + 1 : 0;
+    int fs_cur = row_first_nonempty(tw, cy);
+    int le_cur = row_last_nonempty(tw, cy);
+    if (fs_cur < 0 || le_cur < 0)
+        return 0;
+    int len_cur = le_cur - fs_cur + 1;
+    if (len_prev + len_cur > cols)
+        return 0;
+
+    {
+        char *dest = tw->cells + (size_t)(cy - 1) * (size_t)cols;
+        memcpy(dest + (size_t)len_prev, tw->cells + (size_t)cy * (size_t)cols + (size_t)fs_cur,
+               (size_t)len_cur);
+        if (len_prev + len_cur < cols)
+            memset(dest + (size_t)len_prev + (size_t)len_cur, ' ', (size_t)(cols - len_prev - len_cur));
+    }
+
+    for (int r = cy; r < tw->rows - 1; r++)
+        memcpy(tw->cells + (size_t)r * (size_t)cols, tw->cells + (size_t)(r + 1) * (size_t)cols,
+               (size_t)cols);
+    memset(tw->cells + (size_t)(tw->rows - 1) * (size_t)cols, ' ', (size_t)cols);
+
+    tw->cy = cy - 1;
+    tw->cx = len_prev;
+    return 1;
+}
+
+/*
+ * Insert mode: Delete at end of line (only spaces to the right of the cursor) pulls the next row up.
+ */
+static int twdoc_try_join_next_line(TwDoc *d) {
+    TwCore *tw = twdoc_cur(d);
+    if (!tw)
+        return 0;
+    int cy = tw->cy;
+    int cx = tw->cx;
+    int cols = tw->cols;
+
+    if (!row_suffix_all_spaces(tw, cy, cx))
+        return 0;
+    if (cy >= tw->rows - 1)
+        return 0;
+    if (twdoc_row_all_spaces(tw, cy + 1))
+        return 0;
+
+    int fs = row_first_nonempty(tw, cy + 1);
+    int le = row_last_nonempty(tw, cy + 1);
+    if (fs < 0)
+        return 0;
+    int seg = le - fs + 1;
+    if (cx + seg > cols)
+        return 0;
+
+    {
+        char *row = tw->cells + (size_t)cy * (size_t)cols;
+        memcpy(row + (size_t)cx, tw->cells + (size_t)(cy + 1) * (size_t)cols + (size_t)fs, (size_t)seg);
+        if (cx + seg < cols)
+            memset(row + (size_t)cx + (size_t)seg, ' ', (size_t)(cols - cx - seg));
+    }
+
+    for (int r = cy + 1; r < tw->rows - 1; r++)
+        memcpy(tw->cells + (size_t)r * (size_t)cols, tw->cells + (size_t)(r + 1) * (size_t)cols,
+               (size_t)cols);
+    memset(tw->cells + (size_t)(tw->rows - 1) * (size_t)cols, ' ', (size_t)cols);
+    return 1;
+}
+
 void twdoc_backspace(TwDoc *d) {
     TwCore *tw = twdoc_cur(d);
     if (!tw)
+        return;
+    if (d->insert_mode && tw->cx == 0 && tw->cy > 0 && twdoc_try_join_prev_line(d))
         return;
     if (tw->cx > 0) {
         tw->cx--;
@@ -453,6 +621,10 @@ void twdoc_backspace(TwDoc *d) {
 void twdoc_delete_forward(TwDoc *d) {
     TwCore *tw = twdoc_cur(d);
     if (!tw)
+        return;
+    if (d->insert_mode && twdoc_try_join_next_line(d))
+        return;
+    if (d->insert_mode && tw->cx == 0 && tw->cy > 0 && twdoc_try_join_prev_line(d))
         return;
     char *row = tw->cells + (size_t)tw->cy * (size_t)tw->cols;
     if (d->insert_mode && tw->cx < tw->cols - 1) {

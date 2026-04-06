@@ -35,6 +35,8 @@ int twdoc_num_pages(const TwDoc *d);
 
 void twdoc_putc(TwDoc *d, char c);
 void twdoc_newline(TwDoc *d);
+/* Insert mode: split line at cursor and shift rows below; typeover: same as twdoc_newline. */
+void twdoc_insert_newline(TwDoc *d);
 void twdoc_backspace(TwDoc *d);
 void twdoc_delete_forward(TwDoc *d);
 

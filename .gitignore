@@ -3,6 +3,9 @@
 /typewrite/tests/test_document
 /linux-typewrite/fbtypewrite
 /linux-typewrite-x11/x11typewrite
+/linux-typewrite-x11/x11typewrite-x86_64
+/linux-typewrite-x11/x11typewrite-i686
+/linux-typewrite-x11/dist/
 /tic80-uefi/TIC80.efi
 /linux-typewrite-x11/Typewriter.txt
 

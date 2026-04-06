@@ -87,7 +87,7 @@ For QEMU, run [`../start-qemu.sh`](../start-qemu.sh) from the repo root (it runs
 | Key | Action |
 |-----|--------|
 | **F1** | Open / close **help / settings** (same idea as the X11 app): **↑/↓**, **Home/End**, **Space** or **Enter** to run the highlighted row. |
-| **F2–F11** | When the menu is **closed**, same actions as in the menu (**F2** font, **F3** cursor, **F4** background, **F5** gutter, **F6** margins, **F7** chars/line, **F10** word wrap, **F8** typewriter view, **F9** status pulse interval, **F11** resolution). |
+| **F2–F11** | When the menu is **closed**, same actions as in the menu (**F2** font, **F3** cursor, **F4** background, **F5** gutter, **F6** margins, **F7** chars/line, **F10** word wrap, **F9** status pulse interval, **F11** resolution). **F8** is unused (firmware may still deliver the scan code). |
 | **ESC** | If **resolution confirm** is active: **revert** to the previous GOP mode. If the **menu** is open: close it. Otherwise **exit** the app (UEFI **SCAN_ESC** `0x0017`, not Up Arrow `0x0001`). |
 | **← → ↑ ↓** | Move the **cursor** in the page grid (navigation only; does not open the menu). |
 | **Home** / **End** | Start of line / after last non-space on the line (when the menu is closed). |
@@ -97,7 +97,7 @@ For QEMU, run [`../start-qemu.sh`](../start-qemu.sh) from the repo root (it runs
 
 ### Settings menu rows (F1)
 
-Aligned with **linux-typewrite-x11** where practical: **font**, **larger / smaller** scale, **background**, **cursor**, **key debug**, **gutter** (off / line 1…n / rows remaining on the page), **page margins**, **chars per line**, **word wrap**, **typewriter view** (bottom-anchored grid + red rule), **status pulse** interval (drives periodic HUD refresh), **save** / **load**, **slot**, **page** next/prev, **shutdown**, **resolution** — see below.
+Aligned with **linux-typewrite-x11** where practical: **font**, **larger / smaller** scale, **background**, **cursor**, **key debug**, **gutter** (off / line 1…n / rows remaining on the page), **page margins**, **chars per line**, **word wrap**, **status pulse** interval (drives periodic HUD refresh), **save** / **load**, **slot**, **page** next/prev, **shutdown**, **resolution** — see below. The document grid uses **buffer row = screen row** (the X11 typewriter window math would always pin the caret to the bottom here because the EFI page is only **PAGE_ROWS** tall).
 
 ### GOP resolution (try / confirm / revert)
 
@@ -121,7 +121,7 @@ ASCII key/value lines (also written after successful saves / shutdown as configu
 | `bg`, `cursor`, `keydbg`, `slot` | As named |
 | `gutter_mode` | `0` off, `1` ascending line index, `2` rows remaining (per page) |
 | `linenums` | Legacy: `1` → same as `gutter_mode=1` |
-| `word_wrap`, `typewriter_view`, `insert_mode` | `0` / `1` |
+| `word_wrap`, `insert_mode` | `0` / `1` |
 | `status_pulse` | `0`…`5` → interval index (1 min … 60 min) |
 | **`gop_mode`** | GOP mode index to prefer at boot; **ignored** if `>= MaxMode` on this machine (prevents bad values from another PC) |
 | **`autoload`** | `1` (default): after the **first editor frame**, try to open **`Typewriter.txt`**. `0`: skip that open entirely (workaround if firmware **hangs** in `Open()` while a splash bitmap is still visible — e.g. some Lenovo laptops). |

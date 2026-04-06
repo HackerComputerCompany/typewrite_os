@@ -11,7 +11,7 @@ Use this file when you (or an assistant) return to the repo after time away. It 
 | Track | Role | Buildable in this repo? |
 |--------|------|-------------------------|
 | **Native UEFI** | `Typewriter.efi` — boots from firmware, no Linux | **Yes** — primary work under `uefi-app/` |
-| **Linux X11** | Host editor: shared `TwDoc` core, Cairo PDF, same bitmap fonts | **Yes** — `linux-typewrite-x11/`; **`.deb`** via `debian/` / `linux-typewrite-x11/build-deb.sh` |
+| **Linux X11** | Host editor: shared `TwDoc` core, Cairo PDF, same bitmap fonts | **Yes** — `linux-typewrite-x11/`; **`.deb`** via `debian/` / `linux-typewrite-x11/build-deb.sh`; **portable `.tar.gz`** via `make -C linux-typewrite-x11 portable` → `linux-typewrite-x11/dist/` (gitignored) |
 
 The **vendored Buildroot** tree and **`install-to-usb*.sh`** scripts that produced a full Linux USB image were **removed** (2026) to keep the repository small. **`FEATURES.md`** still describes an older framebuffer product; cross-check **`MILESTONE.md`**, **`REQUIREMENTS.md`**, and **`linux-typewrite-x11/README.md`** for what is implemented today.
 
@@ -51,7 +51,7 @@ Invalid PE output used to make the firmware report **“Unsupported format”**.
 | `fonts/README.md` | **Nine UI fonts** (F2): sources, licenses, `convert_font.py` workflow |
 | `fonts/*.h`, `fonts/*.ttf` | Bitmap headers + upstream TTFs (Virgil, Inter, six OFL/Apache faces, etc.) |
 | `uefi-app/fs/` | QEMU FAT contents (e.g. copied `Typewriter.efi`) |
-| `linux-typewrite-x11/` | X11 + Cairo client; **`build-deb.sh`** for Debian package |
+| `linux-typewrite-x11/` | X11 + Cairo client; **`build-deb.sh`** for `.deb`; **`make-portable-tarball.sh`** / **`make portable`** for bundled-lib tarball (`dist/`) |
 | `debian/` | Source packaging for **`x11typewrite`** `.deb` |
 | `start-qemu.sh` | QEMU launcher |
 | `write-typewriter-to-usb.sh`, `install-uefi-app.sh` | UEFI USB / ESP deployment |
@@ -77,4 +77,4 @@ Invalid PE output used to make the firmware report **“Unsupported format”**.
 - Prefer **small, task-focused diffs**; do not “clean up” unrelated code.
 - After changing the EFI build, verify **`Typewriter.efi`** is still valid PE32+ (see `BUILD_SYSTEM.md`).
 
-Last reviewed: **2026-04-04** (Buildroot tree removed; Linux path = X11 + `.deb`).
+Last reviewed: **2026-04-05** (portable tarball: `bin/x11typewrite-x86_64` ± `x11typewrite-i686`, per-arch `lib/`; `make i686` for 32-bit ELF).
