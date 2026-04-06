@@ -3,9 +3,10 @@
 #include "tw_core.h"
 
 /*
- * Multi-page document: each page is a TwCore grid of d->cols × d->rows.
- * New page when the cursor leaves the last row (newline or wrap) instead of
- * scrolling the grid (which breaks typewriter-style rendering).
+ * Multi-page document: each page is a TwCore grid of d->cols × d->rows (lines ×
+ * columns of character cells). New page when the cursor leaves the last row
+ * (newline or wrap) instead of scrolling the grid (which breaks typewriter-style
+ * rendering). Nominal paper size and margin semantics: tw_paper.h.
  *
  * Save/load: pages are separated by ASCII form feed '\f' in the file.
  */

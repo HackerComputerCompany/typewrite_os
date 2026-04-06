@@ -78,7 +78,10 @@ typedef enum {
 } LineNumMode;
 
 typedef struct {
-    int margin_px;
+    int margin_left_px;
+    int margin_right_px;
+    int margin_top_px;
+    int margin_bottom_px;
     int gutter_px;
     int paper_x, paper_y, paper_w, paper_h;
     int text_x0, text_y0;
@@ -156,7 +159,10 @@ static void compute_view_layout(int win_w, int win_h, const TwBitmapFont *font, 
         L->rows = max_rows;
     }
 
-    L->margin_px = margin_px;
+    L->margin_left_px = margin_px;
+    L->margin_right_px = margin_px;
+    L->margin_top_px = margin_px;
+    L->margin_bottom_px = margin_px;
     L->gutter_px = gutter_px;
 }
 
@@ -257,7 +263,7 @@ static void footer_layout(const ViewLayout *lay, const TwBitmapFont *font, int v
 
     if (paper_bot - text_bot >= cell_h + 2) {
         fy = text_bot + (paper_bot - text_bot - cell_h) / 2 + (int)font->max_top;
-        fx = lay->paper_x + lay->paper_w - lay->margin_px - stamp_w;
+        fx = lay->paper_x + lay->paper_w - lay->margin_right_px - stamp_w;
     } else {
         fy = lay->text_y0 + (int)font->max_top;
         fx = lay->paper_x + lay->paper_w - stamp_w - 4;
@@ -386,13 +392,13 @@ static void draw_toast(uint32_t *pix, int w, int h, const TwBitmapFont *font, in
     }
 
     const int cell_w = (int)font->max_width + 1;
-    int tx = lay->paper_x + (lay->margin_px > 0 ? lay->margin_px : 4);
+    int tx = lay->paper_x + (lay->margin_left_px > 0 ? lay->margin_left_px : 4);
     int ty;
     int max_right;
 
     if (toast->top_band) {
         ty = toast_top_baseline_y(lay, font);
-        max_right = lay->paper_x + lay->paper_w - (lay->margin_px > 0 ? lay->margin_px : 4) - 4;
+        max_right = lay->paper_x + lay->paper_w - (lay->margin_right_px > 0 ? lay->margin_right_px : 4) - 4;
     } else {
         FooterLayout fl;
         footer_layout(lay, font, view_rows, cur_page0, n_pages, &fl);
@@ -502,8 +508,8 @@ static void render(uint32_t *pix, int w, int h, const TwCore *tw, const TwBitmap
             snprintf(nb, sizeof(nb), "%d", val);
             int baselineY = lay->text_y0 + sy * cell_h + (int)font->max_top;
             int nx = lay->text_x0 - (int)strlen(nb) * cell_w - 4;
-            if (nx < lay->paper_x + lay->margin_px + 2)
-                nx = lay->paper_x + lay->margin_px + 2;
+            if (nx < lay->paper_x + lay->margin_left_px + 2)
+                nx = lay->paper_x + lay->margin_left_px + 2;
             draw_text_mono(pix, w, h, nx, baselineY, font, nb, ln_fg, paper_bg);
         }
     }
@@ -1380,9 +1386,11 @@ int main(int argc, char **argv) {
                 }
                 if (ks == XK_BackSpace && !show_help) {
                     twdoc_backspace(&doc);
+                    /* TwPlaySoundForFont(font_idx); */
                     mark_document_edited(&dirty, &last_doc_edit_ms);
                 } else if ((ks == XK_Delete || ks == XK_KP_Delete) && !show_help) {
                     twdoc_delete_forward(&doc);
+                    /* TwPlaySoundForFont(font_idx); */
                     mark_document_edited(&dirty, &last_doc_edit_ms);
                 } else if ((ks == XK_Left || ks == XK_KP_Left) && !show_help) {
                     doc_cursor_left(&doc);
@@ -1482,6 +1490,7 @@ int main(int argc, char **argv) {
                 } else if (n > 0 && is_printable_ascii((unsigned char)buf[0]) && !show_help) {
                     uint64_t t = mono_ms();
                     twdoc_putc(&doc, buf[0]);
+                    /* TwPlaySoundForFont(font_idx); */
                     typing_pace_note_char(&typing_pace, t);
                     session_typing_units += 1u;
                     mark_document_edited(&dirty, &last_doc_edit_ms);
