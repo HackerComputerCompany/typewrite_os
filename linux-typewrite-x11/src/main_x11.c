@@ -70,6 +70,11 @@ static const char *const k_status_pulse_label[STATUS_PULSE_NUM] = {
 
 #define HELP_MENU_ROWS 24
 
+/* =============================================================================
+ * SECTION: LAYOUT TYPES
+ * LineNumMode, ViewLayout, CursorMode, FooterLayout
+ * ============================================================================= */
+
 typedef enum {
     LINE_NUM_OFF = 0,
     LINE_NUM_ASC,  /* 1..n top→bottom: line index on the page */
@@ -87,6 +92,11 @@ typedef struct {
     int text_x0, text_y0;
     int cols, rows;
 } ViewLayout;
+
+/* =============================================================================
+ * SECTION: LAYOUT COMPUTATION
+ * compute_view_layout, footer_layout, toast_top_baseline_y
+ * ============================================================================= */
 
 static void compute_view_layout(int win_w, int win_h, const TwBitmapFont *font, int page_margins,
                                 LineNumMode line_num_mode, int cols_margined, ViewLayout *L) {
@@ -185,6 +195,11 @@ static void mark_document_edited(int *dirty_flag, uint64_t *last_edit_ms) {
     *dirty_flag = 1;
     *last_edit_ms = mono_ms();
 }
+
+/* =============================================================================
+ * SECTION: DRAWING HELPERS
+ * fill_rect, fill_rect_soft_edge, draw_text_mono
+ * ============================================================================= */
 
 static void fill_rect(uint32_t *pix, int w, int h, int x0, int y0, int rw, int rh, uint32_t col) {
     if (rw <= 0 || rh <= 0)
@@ -357,6 +372,11 @@ static uint32_t lerp_ink_to_paper(uint32_t ink_argb, uint32_t paper_argb, float 
     return pack_xrgb8888((r << 16) | (g << 8) | b);
 }
 
+/* =============================================================================
+ * SECTION: TOAST & TYPING PACE
+ * ToastState, TypingPace, toast_show, typing_pace_note_char, draw_toast
+ * ============================================================================= */
+
 static void draw_toast(uint32_t *pix, int w, int h, const TwBitmapFont *font, int bg_idx, const ViewLayout *lay,
                        int view_rows, int cur_page0, int n_pages, ToastState *toast, uint64_t now) {
     if (!toast || !toast->active || toast->len == 0 || !font)
@@ -470,6 +490,11 @@ static void draw_page_footer(uint32_t *pix, int w, int h, const TwBitmapFont *fo
     snprintf(f, sizeof(f), "Page %d of %d", cur_page0 + 1, n_pages);
     draw_text_mono(pix, w, h, fl.page_fx, fl.fy, font, f, stamp, paper_bg);
 }
+
+/* =============================================================================
+ * SECTION: RENDER
+ * render, typewriter mapping functions
+ * ============================================================================= */
 
 static void render(uint32_t *pix, int w, int h, const TwCore *tw, const TwBitmapFont *font,
                    CursorMode cursor_mode, int cursor_visible, int bg_idx, const ViewLayout *lay,
@@ -1100,6 +1125,11 @@ static void format_status_pulse_toast(char *buf, size_t buflen, const TwDoc *doc
     snprintf(buf, buflen, "%u wpm | session %lu words | doc %lu words | %s", wpm, sess_words, doc_words, timestr);
 }
 
+/* =============================================================================
+ * SECTION: HELP MENU
+ * help_fill_lines, help selection handlers
+ * ============================================================================= */
+
 static void help_fill_lines(char lines[HELP_MENU_ROWS][160], int bg_idx, int cols_margined, int status_pulse_idx,
                             int word_wrap_on) {
     snprintf(lines[0], sizeof(lines[0]),
@@ -1133,6 +1163,11 @@ static void help_fill_lines(char lines[HELP_MENU_ROWS][160], int bg_idx, int col
     snprintf(lines[22], sizeof(lines[22]), "Ctrl+Q / Ctrl+X  save and exit");
     snprintf(lines[23], sizeof(lines[23]), "Esc   close menu (when open)");
 }
+
+/* =============================================================================
+ * SECTION: MAIN
+ * main, X11 initialization, event loop
+ * ============================================================================= */
 
 int main(int argc, char **argv) {
     Display *dpy = NULL;
