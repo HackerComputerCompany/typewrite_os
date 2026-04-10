@@ -22,23 +22,28 @@ static struct {
     char *base_path;
     SDL_AudioDeviceID audio_device;
     bool audio_opened;
-    Uint8 *sample_buf;
-    Uint32 sample_len;
+    Uint8 *play_ptr;      /* current position in decoded PCM */
+    Uint8 *play_buf_orig; /* base pointer for SDL_FreeWAV when playback finishes */
+    Uint32 play_len;      /* bytes remaining */
 } gSound;
 
 static void audio_callback(void *userdata, Uint8 *stream, int len) {
     (void)userdata;
-    if (!gSound.sample_buf || gSound.sample_len == 0) {
+    if (!gSound.play_ptr || gSound.play_len == 0) {
+        memset(stream, 0, (size_t)len);
         return;
     }
-    int to_copy = (len < (int)gSound.sample_len) ? len : (int)gSound.sample_len;
-    memcpy(stream, gSound.sample_buf, to_copy);
-    if (to_copy < len) {
-        memset(stream + to_copy, 0, len - to_copy);
+    int to_copy = (len < (int)gSound.play_len) ? len : (int)gSound.play_len;
+    memcpy(stream, gSound.play_ptr, (size_t)to_copy);
+    if (to_copy < len)
+        memset(stream + to_copy, 0, (size_t)(len - to_copy));
+    gSound.play_ptr += to_copy;
+    gSound.play_len -= (Uint32)to_copy;
+    if (gSound.play_len == 0 && gSound.play_buf_orig) {
+        SDL_FreeWAV(gSound.play_buf_orig);
+        gSound.play_ptr = NULL;
+        gSound.play_buf_orig = NULL;
     }
-    gSound.sample_len = 0;
-    SDL_free(gSound.sample_buf);
-    gSound.sample_buf = NULL;
 }
 
 static char *dirname_copy(const char *path) {
@@ -66,7 +71,6 @@ static const TwAssetsEntry *FindEntry(const char *name) {
 }
 
 static bool load_assets_from_memory(const uint8_t *data, uint32_t size) {
-    fprintf(stderr, "load_assets_from_memory: data=%p size=%u\n", (void*)data, size);
     if (size < 16) return false;
 
     uint32_t magic;
@@ -75,8 +79,6 @@ static bool load_assets_from_memory(const uint8_t *data, uint32_t size) {
     memcpy(&magic, data, 4);
     memcpy(&version, data + 4, 2);
     memcpy(&entry_count, data + 6, 2);
-
-    fprintf(stderr, "  magic=0x%x version=%u entry_count=%u\n", magic, version, entry_count);
 
     if (magic != TW_ASSETS_MAGIC || version != TW_ASSETS_VERSION) {
         return false;
@@ -87,7 +89,6 @@ static bool load_assets_from_memory(const uint8_t *data, uint32_t size) {
     gSound.assets.data = malloc(size);
     if (!gSound.assets.data) return false;
     memcpy(gSound.assets.data, data, size);
-    fprintf(stderr, "  allocated assets.data at %p\n", (void*)gSound.assets.data);
 
     gSound.assets.entries = calloc(entry_count, sizeof(TwAssetsEntry));
     if (!gSound.assets.entries) {
@@ -95,7 +96,6 @@ static bool load_assets_from_memory(const uint8_t *data, uint32_t size) {
         gSound.assets.data = NULL;
         return false;
     }
-    fprintf(stderr, "  allocated assets.entries at %p\n", (void*)gSound.assets.entries);
 
     const uint8_t *idx = data + 16;
     for (uint32_t i = 0; i < entry_count; i++) {
@@ -109,11 +109,7 @@ static bool load_assets_from_memory(const uint8_t *data, uint32_t size) {
 }
 
 bool TwSoundInit(const char *assets_path) {
-    fprintf(stderr, "TwSoundInit: START assets_path=%s\n", assets_path ? assets_path : "NULL");
-    fprintf(stderr, "  gSound.initialized=%d gSound.assets.data=%p\n", gSound.initialized, (void*)gSound.assets.data);
-    
     if (gSound.initialized) {
-        fprintf(stderr, "  already initialized, returning true\n");
         return true;
     }
 
@@ -129,12 +125,10 @@ bool TwSoundInit(const char *assets_path) {
     bool loaded = false;
 
     if (gSound.assets.data) {
-        fprintf(stderr, "  freeing existing assets.data\n");
         free(gSound.assets.data);
         gSound.assets.data = NULL;
     }
     if (gSound.assets.entries) {
-        fprintf(stderr, "  freeing existing assets.entries\n");
         free(gSound.assets.entries);
         gSound.assets.entries = NULL;
     }
@@ -198,6 +192,14 @@ void TwSoundShutdown(void) {
 
     gSound.enabled = false;
     if (gSound.audio_opened && gSound.audio_device != 0) {
+        SDL_LockAudioDevice(gSound.audio_device);
+        if (gSound.play_buf_orig) {
+            SDL_FreeWAV(gSound.play_buf_orig);
+            gSound.play_buf_orig = NULL;
+        }
+        gSound.play_ptr = NULL;
+        gSound.play_len = 0;
+        SDL_UnlockAudioDevice(gSound.audio_device);
         SDL_CloseAudioDevice(gSound.audio_device);
     }
 
@@ -209,29 +211,40 @@ void TwSoundShutdown(void) {
     if (gSound.assets.entries) {
         free(gSound.assets.entries);
     }
-    if (gSound.sample_buf) {
-        SDL_free(gSound.sample_buf);
-    }
     free(gSound.base_path);
 
     memset(&gSound, 0, sizeof(gSound));
 }
 
 bool TwPlaySound(TwSoundId id) {
-    fprintf(stderr, "TwPlaySound: id=%d enabled=%d data=%p entries=%u device=%d opened=%d\n", 
-            id, gSound.enabled, (void*)gSound.assets.data, gSound.assets.entry_count,
-            gSound.audio_device, gSound.audio_opened);
-    if (!gSound.enabled || id == SOUND_NONE) {
-        fprintf(stderr, "TwPlaySound: early exit (enabled=%d, id=%d)\n", gSound.enabled, id);
+    if (!gSound.enabled) {
+        fprintf(stderr, "TwPlaySound: disabled\n");
+        return false;
+    }
+    if (id == SOUND_NONE || id < 0 || id >= SOUND_COUNT) {
+        fprintf(stderr, "TwPlaySound: bad id %d\n", id);
         return false;
     }
 
-    if (!gSound.assets.data || gSound.assets.entry_count == 0) {
-        fprintf(stderr, "TwPlaySound: no assets\n");
+    if (!gSound.audio_opened || gSound.audio_device == 0) {
+        fprintf(stderr, "TwPlaySound: no audio device (opened=%d device=%d)\n", 
+                gSound.audio_opened, gSound.audio_device);
         return false;
     }
 
-    static const char *id_to_name[] = {
+    if (!gSound.assets.data) {
+        fprintf(stderr, "TwPlaySound: no assets.data\n");
+        return false;
+    }
+    if (gSound.assets.entry_count == 0) {
+        fprintf(stderr, "TwPlaySound: 0 entries\n");
+        return false;
+    }
+    fprintf(stderr, "TwPlaySound: assets OK data=%p entries=%u\n", 
+            (void*)gSound.assets.data, gSound.assets.entry_count);
+
+    /* Sound ID to name lookup */
+    static const char *const id_to_name[] = {
         [SOUND_TYPEWRITER_KEY] = "typewriter_key",
         [SOUND_TYPEWRITER_CARRIAGE] = "typewriter_carr",
         [SOUND_TYPEWRITER_BELL] = "typewriter_bell",
@@ -250,24 +263,22 @@ bool TwPlaySound(TwSoundId id) {
         [SOUND_VIRGIL_PAPER] = "virgil_paper",
         [SOUND_SIMPLE_BLIP] = "simple_blip",
     };
-
     if (id < 0 || id >= SOUND_COUNT || id_to_name[id] == NULL) {
+        fprintf(stderr, "TwPlaySound: no name for id %d\n", id);
         return false;
     }
+    const char *name = id_to_name[id];
+    fprintf(stderr, "TwPlaySound: id=%d name=%s\n", id, name);
 
-    const TwAssetsEntry *entry = FindEntry(id_to_name[id]);
+    const TwAssetsEntry *entry = FindEntry(name);
     if (!entry) {
-        fprintf(stderr, "TwPlaySound: entry not found for name=%s\n", id_to_name[id]);
         return false;
     }
 
     const uint8_t *wav_data = (const uint8_t *)gSound.assets.data + entry->offset;
     uint32_t wav_size = entry->size;
 
-    fprintf(stderr, "TwPlaySound: name=%s offset=%u size=%u\n", entry->name, entry->offset, entry->size);
-
     if (wav_size < WAV_HEADER_SIZE) {
-        fprintf(stderr, "TwPlaySound: wav too small\n");
         return false;
     }
 
@@ -285,10 +296,19 @@ bool TwPlaySound(TwSoundId id) {
     }
     SDL_RWclose(rw);
 
-    gSound.sample_buf = buf;
-    gSound.sample_len = len;
+    SDL_LockAudioDevice(gSound.audio_device);
+    if (gSound.play_buf_orig) {
+        SDL_FreeWAV(gSound.play_buf_orig);
+        gSound.play_buf_orig = NULL;
+        gSound.play_ptr = NULL;
+        gSound.play_len = 0;
+    }
+    gSound.play_buf_orig = buf;
+    gSound.play_ptr = buf;
+    gSound.play_len = len;
+    SDL_UnlockAudioDevice(gSound.audio_device);
+
     SDL_PauseAudioDevice(gSound.audio_device, 0);
-    SDL_Delay(50);
     return true;
 }
 

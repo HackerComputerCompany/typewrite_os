@@ -27,6 +27,26 @@ static uint32_t pack_xrgb8888(uint32_t rgb) {
     return 0xff000000u | (rgb & 0x00ffffffu);
 }
 
+static void typing_sound_newline(int font_idx) {
+    /* TwSoundId carr = TwSoundForFontCarriage(font_idx);
+    if (carr != SOUND_NONE)
+        TwPlaySound(carr);
+    else
+        TwPlaySoundForFont(font_idx); */
+}
+
+/* Last-column margin bell for typewriter fonts; otherwise keystroke sample. */
+static void typing_sound_before_printable(TwDoc *doc, int font_idx) {
+    (void)doc;
+    (void)font_idx;
+    /* TwSoundId bell = TwSoundForFontBell(font_idx);
+    if (bell != SOUND_NONE) {
+        TwPlaySound(bell);
+        return;
+    }
+    TwPlaySoundForFont(font_idx); */
+}
+
 static const uint32_t kBgColors[10] = {
     0x001e1e1e, /* Dark */
     0x00f0f0e6, /* Cream/Paper */
@@ -841,6 +861,7 @@ static int help_menu_activate_selection(int sel, HelpMenuEnv *e) {
         break;
     case 6: { /* Tab */
         uint64_t t = mono_ms();
+        /* TwPlaySoundForFont(*e->font_idx); */
         for (int ti = 0; ti < 4; ti++)
             twdoc_putc(e->doc, ' ');
         typing_pace_note_char(e->typing_pace, t);
@@ -902,6 +923,7 @@ static int help_menu_activate_selection(int sel, HelpMenuEnv *e) {
             *e->ui_settings_dirty = 1;
         break;
     case 17:
+        /* TwPlaySoundForFont(*e->font_idx); */
         twdoc_delete_forward(e->doc);
         *e->dirty = 1;
         if (e->last_doc_edit_ms)
@@ -1240,7 +1262,6 @@ int main(int argc, char **argv) {
 
     TwSoundSetBasePath(argv[0]);
     TwSoundInit("sounds.assets");
-    fprintf(stderr, "MAIN: Sound initialized (no startup sounds for debug)\n");
 
     screen = DefaultScreen(dpy);
 
@@ -1447,12 +1468,12 @@ int main(int argc, char **argv) {
                     goto out;
                 }
                 if (ks == XK_BackSpace && !show_help) {
-                    twdoc_backspace(&doc);
                     /* TwPlaySoundForFont(font_idx); */
+                    twdoc_backspace(&doc);
                     mark_document_edited(&dirty, &last_doc_edit_ms);
                 } else if ((ks == XK_Delete || ks == XK_KP_Delete) && !show_help) {
-                    twdoc_delete_forward(&doc);
                     /* TwPlaySoundForFont(font_idx); */
+                    twdoc_delete_forward(&doc);
                     mark_document_edited(&dirty, &last_doc_edit_ms);
                 } else if ((ks == XK_Left || ks == XK_KP_Left) && !show_help) {
                     doc_cursor_left(&doc);
@@ -1510,6 +1531,7 @@ int main(int argc, char **argv) {
                     dirty = 1;
                 } else if (ks == XK_Tab && !show_help) {
                     uint64_t t = mono_ms();
+                    /* TwPlaySoundForFont(font_idx); */
                     for (int ti = 0; ti < 4; ti++)
                         twdoc_putc(&doc, ' ');
                     typing_pace_note_char(&typing_pace, t);
@@ -1544,6 +1566,7 @@ int main(int argc, char **argv) {
                             goto out;
                     } else {
                         uint64_t t = mono_ms();
+                        typing_sound_newline(font_idx);
                         twdoc_insert_newline(&doc);
                         typing_pace_note_char(&typing_pace, t);
                         session_typing_units += 1u;
@@ -1551,8 +1574,8 @@ int main(int argc, char **argv) {
                     }
                 } else if (n > 0 && is_printable_ascii((unsigned char)buf[0]) && !show_help) {
                     uint64_t t = mono_ms();
+                    typing_sound_before_printable(&doc, font_idx);
                     twdoc_putc(&doc, buf[0]);
-                    /* TwPlaySoundForFont(font_idx); */
                     typing_pace_note_char(&typing_pace, t);
                     session_typing_units += 1u;
                     mark_document_edited(&dirty, &last_doc_edit_ms);
@@ -1687,6 +1710,7 @@ out:
     }
     free(back);
     twdoc_destroy(&doc);
+    TwSoundShutdown();
     XFreeGC(dpy, gc);
     XDestroyWindow(dpy, win);
     XCloseDisplay(dpy);
