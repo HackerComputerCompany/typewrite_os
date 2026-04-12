@@ -23,7 +23,7 @@ static struct {
     SDL_AudioDeviceID audio_device;
     bool audio_opened;
     Uint8 *play_ptr;      /* current position in decoded PCM */
-    Uint8 *play_buf_orig; /* base pointer for SDL_FreeWAV when playback finishes */
+    Uint8 *play_buf_orig; /* base pointer for free() when playback finishes */
     Uint32 play_len;      /* bytes remaining */
 } gSound;
 
@@ -40,7 +40,7 @@ static void audio_callback(void *userdata, Uint8 *stream, int len) {
     gSound.play_ptr += to_copy;
     gSound.play_len -= (Uint32)to_copy;
     if (gSound.play_len == 0 && gSound.play_buf_orig) {
-        SDL_FreeWAV(gSound.play_buf_orig);
+        free(gSound.play_buf_orig);
         gSound.play_ptr = NULL;
         gSound.play_buf_orig = NULL;
     }
@@ -194,7 +194,7 @@ void TwSoundShutdown(void) {
     if (gSound.audio_opened && gSound.audio_device != 0) {
         SDL_LockAudioDevice(gSound.audio_device);
         if (gSound.play_buf_orig) {
-            SDL_FreeWAV(gSound.play_buf_orig);
+            free(gSound.play_buf_orig);
             gSound.play_buf_orig = NULL;
         }
         gSound.play_ptr = NULL;
@@ -275,37 +275,31 @@ bool TwPlaySound(TwSoundId id) {
         return false;
     }
 
-    const uint8_t *wav_data = (const uint8_t *)gSound.assets.data + entry->offset;
-    uint32_t wav_size = entry->size;
+    /* Raw PCM data from assets - just copy directly */
+    const uint8_t *pcm_data = (const uint8_t *)gSound.assets.data + entry->offset;
+    uint32_t pcm_size = entry->size;
 
-    if (wav_size < WAV_HEADER_SIZE) {
+    if (pcm_size == 0) {
         return false;
     }
 
-    SDL_RWops *rw = SDL_RWFromConstMem(wav_data, wav_size);
-    if (!rw) {
+    /* Copy PCM data to a buffer we own */
+    Uint8 *buf = malloc(pcm_size);
+    if (!buf) {
         return false;
     }
-
-    SDL_AudioSpec spec;
-    Uint8 *buf;
-    Uint32 len;
-    if (!SDL_LoadWAV_RW(rw, 1, &spec, &buf, &len)) {
-        SDL_RWclose(rw);
-        return false;
-    }
-    SDL_RWclose(rw);
+    memcpy(buf, pcm_data, pcm_size);
 
     SDL_LockAudioDevice(gSound.audio_device);
     if (gSound.play_buf_orig) {
-        SDL_FreeWAV(gSound.play_buf_orig);
+        free(gSound.play_buf_orig);
         gSound.play_buf_orig = NULL;
         gSound.play_ptr = NULL;
         gSound.play_len = 0;
     }
     gSound.play_buf_orig = buf;
     gSound.play_ptr = buf;
-    gSound.play_len = len;
+    gSound.play_len = pcm_size;
     SDL_UnlockAudioDevice(gSound.audio_device);
 
     SDL_PauseAudioDevice(gSound.audio_device, 0);
