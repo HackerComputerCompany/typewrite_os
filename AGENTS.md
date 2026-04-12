@@ -6,75 +6,73 @@ Use this file when you (or an assistant) return to the repo after time away. It 
 
 **Typewrite OS** is a distraction-free, typewriter-style writing environment (Freewrite-inspired): minimal UI, typewriter semantics, document persistence.
 
-## Implementation tracks (important)
+## Two Projects (Important)
 
-| Track | Role | Buildable in this repo? |
-|--------|------|-------------------------|
-| **Native UEFI** | `Typewriter.efi` — boots from firmware, no Linux | **Yes** — primary work under `uefi-app/` |
-| **Linux X11** | Host editor: shared `TwDoc` core, Cairo PDF, same bitmap fonts | **Yes** — `linux-typewrite-x11/`; **`.deb`** via `debian/` / `linux-typewrite-x11/build-deb.sh`; **portable `.tar.gz`** via `make -C linux-typewrite-x11 portable` → `linux-typewrite-x11/dist/` (gitignored) |
+This repo contains **two separate projects** that share the `fonts/` directory:
 
-The **vendored Buildroot** tree and **`install-to-usb*.sh`** scripts that produced a full Linux USB image were **removed** (2026) to keep the repository small. **`FEATURES.md`** still describes an older framebuffer product; cross-check **`MILESTONE.md`**, **`REQUIREMENTS.md`**, and **`linux-typewrite-x11/README.md`** for what is implemented today.
+| Project | Location | What it builds |
+|---------|----------|----------------|
+| **TypewriteApp** | `TypewriteApp/x11/` | Linux X11 app with SDL2 + Cairo |
+| **HackerComputerCompanyOS** | `HackerComputerCompanyOS/app/` | UEFI firmware (Typewriter.efi) |
 
-**Authoritative “what works now”** for firmware: **`MILESTONE.md`**, `uefi-app/README.md`, **`fonts/README.md`**, `BUILD_SYSTEM.md`, `GRAPHICS_DEBUG.md`.
-
-## Quick start (UEFI app)
+### TypewriteApp (X11)
 
 ```bash
-cd uefi-app
-make    # default: build + ship (commit/push if uefi-app/ changed); make all = compile only
+cd TypewriteApp/x11
+make    # builds x11typewrite (x86_64)
 ```
 
-Requirements:
+Requires: `libx11-dev`, `libcairo2-dev`, `gnu-efi` (sibling to repo: `../../../gnu-efi`).
 
-- **gnu-efi**: `uefi-app/Makefile` defaults `EFIDIR` to a **sibling** directory `../gnu-efi` (next to the repo). Override with `export EFIDIR=/path` or `make EFIDIR=/path all` if your clone lives elsewhere.
-- **gcc/ld/objutils** for `x86_64`, as documented in `BUILD_SYSTEM.md`.
+Output: `x11typewrite` + copy `x11typewrite-x86_64`.
 
-QEMU + OVMF: from repo root run **`./start-qemu.sh`** — it **builds** `uefi-app`, **syncs** `Typewriter.efi` → `uefi-app/fs/`, then launches QEMU. Use `./start-qemu.sh --help`; full options in [`BUILD_SYSTEM.md`](BUILD_SYSTEM.md#testing).
+Portable tarball:
+```bash
+make portable   # → TypewriteApp/x11/dist/
+```
 
-## Critical build detail (do not regress)
+### HackerComputerCompanyOS (UEFI)
 
-Invalid PE output used to make the firmware report **“Unsupported format”**. The fix is **linker flags + `objcopy --target efi-app-x86_64`** (not `-O efi-app-x86_64`) and keeping **`.reloc`**. Full analysis: **`BUILD_SYSTEM.md`**.
+```bash
+cd HackerComputerCompanyOS/app
+make    # builds Typewriter.efi
+```
 
-## Open problems (UEFI / graphics)
+Requires: **gnu-efi** sibling to repo (`../gnu-efi`).
 
-- **`GRAPHICS_DEBUG.md`**: Bitmap font decode is fixed (proportional stride, baseline via `bitmap_top`, etc.). **Direct GOP framebuffer** drawing (off-screen pool + `CopyMem` reverted — black screen on some OVMF builds). **GOP pitch** must not be 0 (`PixelsPerScanLine` clamp). **Apple** uses pool + **`Blt`**; **non-Apple** direct FB. **F1 menu → Resolution** cycles modes with **try / 10s confirm / auto-revert**; **`gop_mode`** in **`Typewriter.settings`** when kept. Typing uses **incremental** stripe repaint; future **`Blt()`** for non-Apple if needed.
+QEMU test:
+```bash
+./start-qemu.sh    # builds app, syncs to fs/, launches QEMU
+```
 
-## Key paths
+## Shared Assets
+
+- `TypewriteApp/fonts/` — 9 bitmap fonts (Virgil, Inter, Special Elite, etc.)
+- `TypewriteApp/sounds/` — WAV sound effects
+
+## Key Paths
 
 | Path | Contents |
 |------|-----------|
-| `uefi-app/main.c` | Main UEFI application |
-| `uefi-app/Makefile` | EFI build; default **ship** (git); `make all` for compile only |
-| `uefi-vi/` | **`UefiVi.efi`** — text-console vi-like editor (no GOP); `make all` only |
-| `uefi-menu/` | **`BootMenu.efi`** — text menu: Typewriter, UefiVi, TIC80 (`LoadImage`); exit on 4 |
-| `tic80-uefi/` | **`TIC80.efi`** — TIC-80 UEFI scaffold (`make`); full port links TIC-80 static libs built with `-DTIC80_UEFI=ON` |
-| `fonts/README.md` | **Nine UI fonts** (F2): sources, licenses, `convert_font.py` workflow |
-| `fonts/*.h`, `fonts/*.ttf` | Bitmap headers + upstream TTFs (Virgil, Inter, six OFL/Apache faces, etc.) |
-| `uefi-app/fs/` | QEMU FAT contents (e.g. copied `Typewriter.efi`) |
-| `linux-typewrite-x11/` | X11 + Cairo client; **`build-deb.sh`** for `.deb`; **`make-portable-tarball.sh`** / **`make portable`** for bundled-lib tarball (`dist/`) |
-| `debian/` | Source packaging for **`x11typewrite`** `.deb` |
-| `start-qemu.sh` | QEMU launcher |
-| `write-typewriter-to-usb.sh`, `install-uefi-app.sh` | UEFI USB / ESP deployment |
-| `ARCHITECTURE.md` | USB layout, UEFI component view |
-| `FEATURES.md` | Product behavior (mostly Linux app design) |
+| `TypewriteApp/x11/src/main_x11.c` | X11 application |
+| `TypewriteApp/x11/Makefile` | X11 build config |
+| `TypewriteApp/lib/src/tw_core.c` | Shared document core |
+| `HackerComputerCompanyOS/app/main.c` | UEFI application |
+| `HackerComputerCompanyOS/app/Makefile` | EFI build config |
 
-## Doc index
+## Docs
 
-- **`MILESTONE.md`** — Beta milestone summary (UEFI editor capabilities, March 2026)
-- **`fonts/README.md`** — Font inventory, attribution, regenerating `*.h` from TTF
-- **`BUILD_SYSTEM.md`** — PE32+ / objcopy / linker, QEMU invocation
-- **`GRAPHICS_DEBUG.md`** — GOP / framebuffer test status
-- **`uefi-app/README.md`** — UEFI experiment overview and build flow
-- **`PROJECT_STATUS.md`** — High-level status (Linux + UEFI), updated for current repo state
-- **`FEATURES.md`** — Keyboard shortcuts and typewriter rules (Linux-oriented but useful product spec)
-- **`ARCHITECTURE.md`** — System and disk layout
-- **`INSTALL.md`**, **`REQUIREMENTS.md`** — Setup and dependencies
-- **`TIC80_UEFI_PORT.md`** — Approach + status for porting [TIC-80](https://github.com/nesbox/TIC-80) to UEFI (`tic80-uefi/`, `-DTIC80_UEFI=ON`)
-- **`THREAD_CONTEXT.md`** — Handoff when pausing TIC-80 UEFI; **next**: Linux framebuffer typewriter, then X11 (see file)
+- `TypewriteApp/x11/README.md` — X11 build and usage
+- `HackerComputerCompanyOS/app/README.md` — UEFI build
+- `TypewriteApp/fonts/README.md` — Font sources and licenses
+- `BUILD_SYSTEM.md` — EFI build details (PE32+, objcopy)
+- `GRAPHICS_DEBUG.md` — GOP/framebuffer notes
 
-## Conventions for agents
+## Previous Folder Structure (Pre-2026-04)
 
-- Prefer **small, task-focused diffs**; do not “clean up” unrelated code.
-- After changing the EFI build, verify **`Typewriter.efi`** is still valid PE32+ (see `BUILD_SYSTEM.md`).
+The old structure had all code in root-level folders (`uefi-app/`, `linux-typewrite-x11/`, etc.). The split to `TypewriteApp/` and `HackerComputerCompanyOS/` was done on branch `dev-divide`.
 
-Last reviewed: **2026-04-05** (portable tarball: `bin/x11typewrite-x86_64` ± `x11typewrite-i686`, per-arch `lib/`; `make i686` for 32-bit ELF).
+## Conventions
+
+- Prefer **small, task-focused diffs**
+- After EFI changes, verify PE32+ validity (see `BUILD_SYSTEM.md`)
