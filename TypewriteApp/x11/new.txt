@@ -1,0 +1,156 @@
+This is a new file.
+I would like to have some toast messages.
+This xxx I would know that something happened
+
+
+I get that the lines are sparse in some places but
+don't understand the number of pages, nor the ^L s in the
+document
+one issue I am having is the r is the default
+
+
+Blank lines seem to keep getting injected, bu
+t at least th
+e toast message at the top worked pretty well
+
+Ok so now how about a toast?
+I wonder if we could keep track of the users
+wpm score and
+ then auto adjust based on that
+
+Ok so lets see when I try to save a line what
+
+
+ happens
+Well we so the auto save so that was kinda co
+
+
+ol and yah
+ came in with a blue color and I liked that.
+Feels like a really smart effect lets try som
+
+
+ething els
+yep I disabled the gutter and enabled the lin
+
+
+
+e numbers
+so that worked how about we reverse the count
+
+
+. The mess
+was not the best but thats ok it was good eno
+
+
+ugh--- the
+
+
+sue that I am having right now is this Page 1
+
+
+ of 5 thin
+I am pretty sure that there are extra newline
+
+
+s being en
+ed in and I need to find
+the cause of the newline.
+Ok now with a diffrent color it still looks r
+
+
+eally nice
+ you ask me wow. Now this is saying taht I am
+
+
+ still on
+e 1 or 5 so lets see the line numbers again s
+
+
+
+
+
+hall we?
+oh so it just happens we where on the last li
+
+
+ne of the.
+
+
+Well and now we are at page 11 I feel like th
+
+is thing
+just keeps getting bigger without me making i
+
+t so, and
+I am pretty dang sure that
+
+
+
+Page now we are on a new page, I am going to
+change col
+again.
+
+
+
+Huh well this is the thing, I guess we are co
+
+
+nsidering
+ number of lines based on the size of the fon
+
+
+t.
+
+
+
+
+
+This is not exactly a bad idea however it doe
+
+
+s make the
+ font size more important I think.
+
+Geese this case feels very retro lol. Like I
+am back on
+an 8bit system. Next qestion is going to star
+
+
+t being ho
+and when is fon't going to be for display vs
+estetics.
+e I might want to consider that. But I will s
+
+
+ay this ke
+
+me typing, I am wondering if. This is the dar
+
+
+k background
+now the "what you see is what you get" is an
+important -
+part of these kind of systems
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

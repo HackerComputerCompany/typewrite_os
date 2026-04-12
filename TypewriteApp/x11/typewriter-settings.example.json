@@ -1,0 +1,15 @@
+{
+  "font_index": 2,
+  "background": 1,
+  "cursor_mode": 3,
+  "gutter_mode": 0,
+  "page_margins": true,
+  "cols_margined": 58,
+  "typewriter_view": true,
+  "word_wrap": true,
+  "status_pulse": 0,
+  "insert_mode": false,
+  "start_fullscreen": false,
+  "window_width": 960,
+  "window_height": 540
+}
