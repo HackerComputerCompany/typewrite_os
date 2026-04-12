@@ -190,7 +190,7 @@ bool TwPlaySound(TwSoundId id) {
 
     char path[1024];
     const char *search_dirs[] = {
-        "../../sounds/all",
+        "../sounds/all",
         "sounds/all",
         "sounds",
         ".",

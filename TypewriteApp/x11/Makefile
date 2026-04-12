@@ -2,11 +2,11 @@ CC ?= cc
 
 OPT_CFLAGS ?= -O2 -g
 WARN_CFLAGS := -Wall -Wextra -Wshadow -Wundef -Wstrict-prototypes -Wmissing-prototypes
-LOCAL_INC := -I./src -I../linux-typewrite/src
+LOCAL_INC := -I./src -I../lib/src -I../fonts
 ## Font headers include <efi.h>; we only want typedefs/macros, not warnings.
 NOISE_CFLAGS := -Wno-strict-prototypes -Wno-undef
 # Default: vendored gnu-efi next to repo root. For Debian/Ubuntu: make USE_SYSTEM_GNU_EFI=1 (needs gnu-efi package).
-GNUEFI ?= ../../gnu-efi
+GNUEFI ?= ../../../gnu-efi
 ifeq ($(USE_SYSTEM_GNU_EFI),1)
 EFI_INC := /usr/include/efi
 else
@@ -36,8 +36,8 @@ BIN_X64 := $(BIN_DIR)/x11typewrite-x86_64
 BIN_I686 := $(BIN_DIR)/x11typewrite-i686
 
 SRC_SHARED := \
-	../linux-typewrite/src/tw_core.c \
-	../linux-typewrite/src/tw_doc.c
+	../lib/src/tw_core.c \
+	../lib/src/tw_doc.c
 
 SRC := src/main_x11.c src/tw_bitmapfont_uefi.c src/pdf_export.c src/tw_x11_settings.c src/tw_sound.c
 
