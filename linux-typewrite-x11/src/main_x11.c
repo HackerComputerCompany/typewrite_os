@@ -28,23 +28,22 @@ static uint32_t pack_xrgb8888(uint32_t rgb) {
 }
 
 static void typing_sound_newline(int font_idx) {
-    /* TwSoundId carr = TwSoundForFontCarriage(font_idx);
+    TwSoundId carr = TwSoundForFontCarriage(font_idx);
     if (carr != SOUND_NONE)
         TwPlaySound(carr);
     else
-        TwPlaySoundForFont(font_idx); */
+        TwPlaySoundForFont(font_idx);
 }
 
 /* Last-column margin bell for typewriter fonts; otherwise keystroke sample. */
 static void typing_sound_before_printable(TwDoc *doc, int font_idx) {
     (void)doc;
-    (void)font_idx;
-    /* TwSoundId bell = TwSoundForFontBell(font_idx);
+    TwSoundId bell = TwSoundForFontBell(font_idx);
     if (bell != SOUND_NONE) {
         TwPlaySound(bell);
         return;
     }
-    TwPlaySoundForFont(font_idx); */
+    TwPlaySoundForFont(font_idx);
 }
 
 static const uint32_t kBgColors[10] = {
@@ -861,7 +860,7 @@ static int help_menu_activate_selection(int sel, HelpMenuEnv *e) {
         break;
     case 6: { /* Tab */
         uint64_t t = mono_ms();
-        /* TwPlaySoundForFont(*e->font_idx); */
+        TwPlaySoundForFont(*e->font_idx);
         for (int ti = 0; ti < 4; ti++)
             twdoc_putc(e->doc, ' ');
         typing_pace_note_char(e->typing_pace, t);
@@ -923,7 +922,7 @@ static int help_menu_activate_selection(int sel, HelpMenuEnv *e) {
             *e->ui_settings_dirty = 1;
         break;
     case 17:
-        /* TwPlaySoundForFont(*e->font_idx); */
+        TwPlaySoundForFont(*e->font_idx);
         twdoc_delete_forward(e->doc);
         *e->dirty = 1;
         if (e->last_doc_edit_ms)
@@ -1468,11 +1467,11 @@ int main(int argc, char **argv) {
                     goto out;
                 }
                 if (ks == XK_BackSpace && !show_help) {
-                    /* TwPlaySoundForFont(font_idx); */
+                    TwPlaySoundForFont(font_idx);
                     twdoc_backspace(&doc);
                     mark_document_edited(&dirty, &last_doc_edit_ms);
                 } else if ((ks == XK_Delete || ks == XK_KP_Delete) && !show_help) {
-                    /* TwPlaySoundForFont(font_idx); */
+                    TwPlaySoundForFont(font_idx);
                     twdoc_delete_forward(&doc);
                     mark_document_edited(&dirty, &last_doc_edit_ms);
                 } else if ((ks == XK_Left || ks == XK_KP_Left) && !show_help) {
@@ -1531,7 +1530,7 @@ int main(int argc, char **argv) {
                     dirty = 1;
                 } else if (ks == XK_Tab && !show_help) {
                     uint64_t t = mono_ms();
-                    /* TwPlaySoundForFont(font_idx); */
+                    TwPlaySoundForFont(font_idx);
                     for (int ti = 0; ti < 4; ti++)
                         twdoc_putc(&doc, ' ');
                     typing_pace_note_char(&typing_pace, t);
