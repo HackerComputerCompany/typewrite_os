@@ -12,7 +12,7 @@ REPO_ROOT       := $(abspath $(CURDIR)/..)
 
 # gnu-efi tree (clone + `make` in gnu-efi). Default: sibling dir next to this repo,
 # e.g. .../projects/typewrite_os/../gnu-efi. Override: `EFIDIR=/path make all` or export EFIDIR.
-EFIDIR          ?= $(REPO_ROOT)/../gnu-efi
+EFIDIR          ?= $(REPO_ROOT)/../../gnu-efi
 EFIINC          = $(EFIDIR)/inc
 EFIINCS         = -I$(EFIINC) -I$(EFIINC)/$(ARCH) -I$(EFIINC)/protocol
 LIB             = $(EFIDIR)/$(ARCH)/lib
